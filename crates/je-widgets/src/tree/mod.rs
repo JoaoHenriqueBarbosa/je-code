@@ -5,6 +5,7 @@ pub mod index_tree_model;
 pub mod object_tree_model;
 pub mod tree_types;
 pub mod abstract_tree;
+pub mod tree_dnd;
 pub mod sticky_scroll;
 pub mod tree_renderer;
 pub mod tree_trait;

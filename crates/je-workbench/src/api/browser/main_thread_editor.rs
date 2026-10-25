@@ -84,6 +84,18 @@ impl IActiveCodeEditor for CodeEditorWidget {
         ICodeEditor::has_widget_focus(self)
     }
 
+    fn has_text_focus(&self) -> bool {
+        ICodeEditor::has_text_focus(self)
+    }
+
+    fn focus(&self) {
+        ICodeEditor::focus(self)
+    }
+
+    fn get_model_uri(&self) -> Option<je_base::uri::URI> {
+        ICodeEditor::get_model(self).map(|model| model.uri())
+    }
+
     fn get_language_id(&self) -> Option<String> {
         ICodeEditor::get_model(self).map(|model| model.get_language_id())
     }
@@ -786,7 +798,7 @@ impl MainThreadTextEditor {
                 return Ok(false);
             };
 
-            code_editor.focus();
+            ICodeEditor::focus(&*code_editor);
 
             // make modifications as snippet edit
             let edits: Vec<SnippetEdit> = ranges.iter().map(|range| SnippetEdit { range: *range, template: JsString::from(template.clone()), keep_whitespace: None }).collect();

@@ -39,7 +39,7 @@ use crate::config::diff_editor::{
 use crate::config::editor_options::{boolean, clamped_float, clamped_int, string_set};
 use crate::diff::range_mapping::LineRangeMapping;
 use crate::diff_editor_view_model::{DiffEditorViewModel, DiffState};
-use crate::diff_editor_view_zones::allows_true_inline_diff_rendering;
+use crate::diff_editor::components::diff_editor_view_zones::allows_true_inline_diff_rendering;
 pub use crate::multi_diff_editor_options::DiffEditorVariant;
 
 /// O estado das opções: o `IEditorOptions & Required<IDiffEditorBaseOptions>` do original.

@@ -490,6 +490,12 @@ macro_rules! impl_base_text_editor_model {
             fn is_disposed(&self) -> bool {
                 self.$base.is_disposed()
             }
+
+            fn into_text_editor_model(
+                self: ::std::rc::Rc<Self>,
+            ) -> Option<::std::rc::Rc<dyn $crate::services::textmodel_resolver::resolver_service::ITextEditorModel>> {
+                Some(self)
+            }
         }
 
         impl $crate::services::textmodel_resolver::resolver_service::ITextEditorModel for $ty {

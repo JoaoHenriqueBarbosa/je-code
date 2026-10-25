@@ -41,7 +41,7 @@ pub mod compressed_virtualized_scroll_layout;
 pub mod compressed_virtualized_scroll_view;
 pub mod multi_diff_editor_options;
 pub mod monarch;
-pub mod standalone_configuration_service;
+pub mod standalone;
 pub mod languages;
 pub mod languages_registry;
 pub mod line_range;
@@ -187,6 +187,7 @@ pub mod view_context;
 pub mod rendering_context;
 pub mod dynamic_view_overlay;
 pub mod word_wrap_indicator;
+pub mod whitespace;
 pub mod view_model_impl_support;
 pub mod gpu;
 
@@ -273,6 +274,10 @@ pub mod keybinding_cancellation;
 pub mod get_links;
 pub mod inlay_hints;
 pub mod goto_symbol;
+pub mod inlay_hints_locations;
+pub mod peek_view;
+pub mod zone_widget;
+pub mod click_link_gesture;
 pub mod rename;
 pub mod semantic_tokens;
 pub mod semantic_tokens_provider_styling;
@@ -283,6 +288,9 @@ pub mod observable_code_editor;
 
 pub mod diff_editor_options;
 pub mod diff_editor_utils;
-pub mod diff_editor_view_zones;
 pub mod diff_provider_factory_service;
 pub mod multi_diff_editor;
+
+pub mod diff_editor;
+
+pub mod sticky_scroll;

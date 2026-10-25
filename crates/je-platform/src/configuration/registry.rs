@@ -13,10 +13,10 @@
 //! - `allSettings`, `windowSettings` etc. são os dicionários de esquema que alimentam a validação do
 //!   `settings.json`; cada um guarda o objeto de esquema da propriedade, que continua vivo (uma
 //!   mudança posterior na propriedade aparece neles, como no original).
-//! - O `IJSONContributionRegistry` (`registerSchema` do `vs/platform/jsonschemas`) ainda não existe:
-//!   o esquema `resourceLanguage` fica acessível por [`ConfigurationRegistry::resource_language_settings_schema`].
-//!   TODO(integração): registrar `resourceLanguageSettingsSchemaId` quando o registro de contribuições
-//!   JSON for portado.
+//! - O esquema `resourceLanguage` ([`RESOURCE_LANGUAGE_SETTINGS_SCHEMA_ID`]) é registrado no
+//!   `IJSONContributionRegistry` (`je_base::json_contribution_registry`) na criação do registro e de novo a cada
+//!   `registerConfigurations`, `deregisterConfigurations` e `updateConfigurations`, como o original; o objeto
+//!   registrado é o vivo, também acessível por [`ConfigurationRegistry::resource_language_settings_schema`].
 //! - Políticas (`IPolicy`, `policyReference`), `agentHost`, `experiment` e `managedSettingsPresentation`
 //!   ficam como valores dinâmicos dentro do esquema, porque `vs/base/common/policy.ts` não está portado.
 //! - A ordem de iteração dos dicionários de propriedades é a de inserção (chaves que são inteiros
@@ -30,6 +30,7 @@ use je_base::JsString;
 use je_base::arrays;
 use je_base::dynamic::{Dynamic, ObjectRef, Truthy};
 use je_base::event::{Emitter, Event};
+use je_base::json_contribution_registry::get_json_contribution_registry;
 use je_base::lifecycle::mark_as_singleton;
 use je_base::map::OrderedMap;
 use je_base::nls::localize;
@@ -609,8 +610,14 @@ impl ConfigurationRegistry {
             on_did_schema_change: mark_as_singleton(Emitter::new()),
             on_did_update_configuration: mark_as_singleton(Emitter::new()),
         };
+        registry.register_resource_language_settings_schema();
         registry.register_override_property_pattern_key();
         registry
+    }
+
+    /// `contributionRegistry.registerSchema(resourceLanguageSettingsSchemaId, this.resourceLanguageSettingsSchema)`.
+    fn register_resource_language_settings_schema(&self) {
+        get_json_contribution_registry().register_schema(RESOURCE_LANGUAGE_SETTINGS_SCHEMA_ID, self.resource_language_settings_schema(), None);
     }
 
     /// `onDidSchemaChange`.
@@ -655,6 +662,7 @@ impl ConfigurationRegistry {
     pub fn register_configurations(&self, configurations: &[ConfigurationNode], validate: bool) {
         let mut properties = StringSet::new();
         self.do_register_configurations(configurations, validate, &mut properties);
+        self.register_resource_language_settings_schema();
         self.fire_update(properties, None);
     }
 
@@ -662,6 +670,7 @@ impl ConfigurationRegistry {
     pub fn deregister_configurations(&self, configurations: &[ConfigurationNode]) {
         let mut properties = StringSet::new();
         self.do_deregister_configurations(configurations, &mut properties);
+        self.register_resource_language_settings_schema();
         self.fire_update(properties, None);
     }
 
@@ -670,6 +679,7 @@ impl ConfigurationRegistry {
         let mut properties = StringSet::new();
         self.do_deregister_configurations(remove, &mut properties);
         self.do_register_configurations(add, false, &mut properties);
+        self.register_resource_language_settings_schema();
         self.fire_update(properties, None);
     }
 

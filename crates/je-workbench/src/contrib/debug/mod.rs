@@ -17,6 +17,7 @@ pub mod debugger;
 pub mod debug_hover;
 pub mod debug_model;
 pub mod debug_protocol;
+pub mod debug_schemas;
 pub mod debug_session;
 pub mod debug_source;
 pub mod debug_types;

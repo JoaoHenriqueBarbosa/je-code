@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 
 use je_base::product::{
-    ConfigurationSyncStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
+    ConfigurationSyncStore, EditSessionsStore, ExtensionUntrustedWorkspaceSupport, ExtensionVirtualWorkspaceSupport, ICopilotVersions, IExeBasedExtensionTip, IExtensionRecommendations,
     IExtensionsGallery, IRemoteExtensionTip, IStringDictionary, ITasConfig, IVirtualWorkspaceExtensionTip, StringsOrDictionary,
 };
 use je_base::product::IConfigBasedExtensionTip as IRawConfigBasedExtensionTip;
@@ -70,6 +70,10 @@ pub trait IProductService {
     fn extension_virtual_workspaces_support(&self) -> Option<&IStringDictionary<ExtensionVirtualWorkspaceSupport>>;
     /// `configurationSync.store`: o servidor do Settings Sync, quando o produto declara.
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore>;
+    /// `editSessions.store`: o servidor do Cloud Changes (edit sessions), quando o produto declara. Padrão: nenhum.
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        None
+    }
     /// `defaultChatAgent`, só com os dois identificadores de extensão que o `ExtensionEnablementService` lê
     /// (`extensionId` e `chatExtensionId`). Padrão: o produto não declara o agente de chat.
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
@@ -141,6 +145,14 @@ pub trait IProductService {
     fn date(&self) -> Option<&str> {
         None
     }
+    /// `target`: o tipo de instalador do produto (`user`, `system`, `archive`), quando ele declara. Padrão: ausente.
+    fn target(&self) -> Option<&str> {
+        None
+    }
+    /// `darwinUniversalAssetId`: o identificador do pacote universal do macOS, quando o produto declara. Padrão: ausente.
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        None
+    }
     /// `trustedExtensionPublishers`: os publishers (em minúsculas) cujas extensões se atualizam sem a espera da
     /// quarentena. Padrão: nenhum.
     fn trusted_extension_publishers(&self) -> Vec<String> {
@@ -164,6 +176,15 @@ pub trait IProductService {
     /// Padrão: o produto não declara.
     fn tas_config(&self) -> Option<&ITasConfig> {
         None
+    }
+    /// `tunnelApplicationName`: o nome do executável da CLI do túnel remoto (lido pelo `CodeTunnelCli`). Padrão: o
+    /// produto não declara.
+    fn tunnel_application_name(&self) -> Option<&str> {
+        None
+    }
+    /// `win32VersionedUpdate`: se a instalação no Windows usa a pasta versionada (lido pelo `CodeTunnelCli`). Padrão: falso.
+    fn win32_versioned_update(&self) -> bool {
+        false
     }
 }
 
@@ -214,6 +235,7 @@ pub struct ProductService {
     pub extension_untrusted_workspace_support: Option<IStringDictionary<ExtensionUntrustedWorkspaceSupport>>,
     pub extension_virtual_workspaces_support: Option<IStringDictionary<ExtensionVirtualWorkspaceSupport>>,
     pub configuration_sync_store: Option<ConfigurationSyncStore>,
+    pub edit_sessions_store: Option<EditSessionsStore>,
     pub default_chat_agent: Option<DefaultChatAgentExtensions>,
     pub sessions_window_allowed_extensions: Vec<String>,
     pub extensions_gallery: Option<IExtensionsGallery>,
@@ -221,6 +243,10 @@ pub struct ProductService {
     pub copilot_versions: Option<ICopilotVersions>,
     /// `date`.
     pub date: Option<String>,
+    /// `target`.
+    pub target: Option<String>,
+    /// `darwinUniversalAssetId`.
+    pub darwin_universal_asset_id: Option<String>,
     /// `trustedExtensionPublishers`.
     pub trusted_extension_publishers: Vec<String>,
     /// `extensionKeywords`.
@@ -243,6 +269,10 @@ pub struct ProductService {
     pub exe_based_extension_tips: Option<IStringDictionary<IExeBasedExtensionTip>>,
     /// `tasConfig`.
     pub tas_config: Option<ITasConfig>,
+    /// `tunnelApplicationName`.
+    pub tunnel_application_name: Option<String>,
+    /// `win32VersionedUpdate`.
+    pub win32_versioned_update: bool,
 }
 
 impl Default for ProductService {
@@ -270,11 +300,14 @@ impl Default for ProductService {
             extension_untrusted_workspace_support: None,
             extension_virtual_workspaces_support: None,
             configuration_sync_store: None,
+            edit_sessions_store: None,
             default_chat_agent: None,
             sessions_window_allowed_extensions: Vec::new(),
             extensions_gallery: None,
             copilot_versions: None,
             date: None,
+            target: None,
+            darwin_universal_asset_id: None,
             trusted_extension_publishers: Vec::new(),
             extension_keywords: None,
             extension_recommendations: None,
@@ -286,6 +319,8 @@ impl Default for ProductService {
             config_based_extension_tips: None,
             exe_based_extension_tips: None,
             tas_config: None,
+            tunnel_application_name: None,
+            win32_versioned_update: false,
         }
     }
 }
@@ -369,6 +404,9 @@ impl IProductService for ProductService {
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
     }
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        self.edit_sessions_store.as_ref()
+    }
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
         self.default_chat_agent.clone()
     }
@@ -383,6 +421,12 @@ impl IProductService for ProductService {
     }
     fn date(&self) -> Option<&str> {
         self.date.as_deref()
+    }
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        self.darwin_universal_asset_id.as_deref()
     }
     fn trusted_extension_publishers(&self) -> Vec<String> {
         self.trusted_extension_publishers.clone()
@@ -417,9 +461,21 @@ impl IProductService for ProductService {
     fn tas_config(&self) -> Option<&ITasConfig> {
         self.tas_config.as_ref()
     }
+    fn tunnel_application_name(&self) -> Option<&str> {
+        self.tunnel_application_name.as_deref()
+    }
+    fn win32_versioned_update(&self) -> bool {
+        self.win32_versioned_update
+    }
 }
 
 impl IProductService for je_base::product::IProductConfiguration {
+    fn tunnel_application_name(&self) -> Option<&str> {
+        self.tunnel_application_name.as_deref()
+    }
+    fn win32_versioned_update(&self) -> bool {
+        self.win32_versioned_update.unwrap_or(false)
+    }
     fn tas_config(&self) -> Option<&ITasConfig> {
         self.tas_config.as_ref()
     }
@@ -528,6 +584,9 @@ impl IProductService for je_base::product::IProductConfiguration {
     fn configuration_sync_store(&self) -> Option<&ConfigurationSyncStore> {
         self.configuration_sync_store.as_ref()
     }
+    fn edit_sessions_store(&self) -> Option<&EditSessionsStore> {
+        self.edit_sessions_store.as_ref()
+    }
     fn default_chat_agent(&self) -> Option<DefaultChatAgentExtensions> {
         Some(DefaultChatAgentExtensions { extension_id: self.default_chat_agent.extension_id.clone(), chat_extension_id: self.default_chat_agent.chat_extension_id.clone() })
     }
@@ -545,5 +604,14 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn built_in_extensions_enabled_with_auto_updates(&self) -> Vec<String> {
         self.built_in_extensions_enabled_with_auto_updates.clone()
+    }
+    fn date(&self) -> Option<&str> {
+        self.date.as_deref()
+    }
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        self.darwin_universal_asset_id.as_deref()
     }
 }

@@ -98,7 +98,7 @@ pub fn fix_setting_links(text: &str) -> String {
 }
 
 /// `escapeInvisibleChars`.
-fn escape_invisible_chars(enum_value: &str) -> String {
+pub(crate) fn escape_invisible_chars(enum_value: &str) -> String {
     enum_value.replace('\n', "\\n").replace('\r', "\\r")
 }
 

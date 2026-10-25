@@ -94,7 +94,6 @@ use je_editor::smart_select::{SelectionRangesOptions, provide_selection_ranges};
 use je_editor::suggest::suggest::execute_completion_item_provider;
 use je_editor::text_model::TextModel;
 use je_editor::word_highlighter::get_occurrences_at_position;
-use je_instantiation::ServiceId;
 use je_platform::commands::commands::{CommandHandler, commands_registry};
 use je_platform::configuration::ConfigurationOverrides;
 use je_platform::configuration::service::I_CONFIGURATION_SERVICE;
@@ -110,8 +109,8 @@ use crate::api::common::ext_host_types::illegal_argument;
 use crate::api::common::ext_host_values::{ApiValue, is_instance_of};
 use crate::api::common::hierarchy_execute_commands::register_hierarchy_execute_commands;
 
-/// `ILanguageFeaturesService`.
-pub const I_LANGUAGE_FEATURES_SERVICE: ServiceId<LanguageFeaturesService> = ServiceId::new("languageFeaturesService");
+/// `ILanguageFeaturesService`: o identificador mora em `je_editor::language_features_service`, onde o serviço é definido.
+pub use je_editor::language_features_service::I_LANGUAGE_FEATURES_SERVICE;
 
 // ---- o resultado como valor ---------------------------------------------------------------------------------
 

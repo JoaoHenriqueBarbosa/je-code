@@ -23,8 +23,8 @@
 //!   o `.monaco-button-dropdown > .monaco-button`) é um [`ButtonCss`] instalado com [`Button::set_css`]:
 //!   uma função que ajusta a [`ButtonBox`] calculada a partir das classes, antes dos estilos "inline" que
 //!   as opções do botão escrevem (os que o original põe em `element.style`).
-//! - `aria-*`, `data-label` e `tabIndex` não existem no `je-ui`: ficam no botão ([`Button::attribute`],
-//!   [`Button::tab_index`]); o `aria-label` também vai para o rótulo do nó.
+//! - `aria-*` e `data-label` ficam no nó ([`Button::attribute`], [`je_ui::Tree::set_attribute`]; o
+//!   `aria-label` é o rótulo do nó); o `tabIndex` fica no botão ([`Button::tab_index`]).
 //!
 //! Fica de fora, por enquanto: o toque (`Gesture`, `TouchEventType.Tap`), o rótulo em Markdown com HTML
 //! (o `renderMarkdown` e o `safeSetInnerHtml` são `TODO(integração)`: o valor vira texto, com ícones) e o
@@ -34,7 +34,6 @@ mod composite;
 pub(crate) mod flex;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use je_base::event::{Emitter, Event as BaseEvent};
@@ -207,25 +206,6 @@ pub trait IButtonWithDescription: IButton {
     fn set_description(&self, value: &str);
 }
 
-/// Os atributos de um elemento que o `je-ui` não guarda (`aria-*`, `data-*`): o `getAttribute` e o
-/// `setAttribute` dos widgets deste módulo.
-#[derive(Default)]
-pub struct Attributes(RefCell<HashMap<String, String>>);
-
-impl Attributes {
-    pub fn get(&self, name: &str) -> Option<String> {
-        self.0.borrow().get(name).cloned()
-    }
-
-    pub fn set(&self, name: &str, value: impl Into<String>) {
-        self.0.borrow_mut().insert(name.to_owned(), value.into());
-    }
-
-    pub fn remove(&self, name: &str) {
-        self.0.borrow_mut().remove(name);
-    }
-}
-
 /// Um trecho do rótulo: um `<span>` de texto ou um `<span class="codicon ...">`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabelPart {
@@ -395,7 +375,6 @@ pub struct Button {
     pointer_over: Cell<bool>,
     focused: Cell<bool>,
     tab_index: Cell<i32>,
-    attributes: Attributes,
     inline: Cell<InlineStyle>,
     css: RefCell<Option<ButtonCss>>,
     width_mode: Cell<WidthMode>,
@@ -442,7 +421,6 @@ impl Button {
             pointer_over: Cell::new(false),
             focused: Cell::new(false),
             tab_index: Cell::new(0),
-            attributes: Attributes::default(),
             inline: Cell::new(InlineStyle::default()),
             css: RefCell::new(None),
             width_mode: Cell::new(WidthMode::Css),
@@ -697,16 +675,12 @@ impl Button {
 
     /// `getAttribute`.
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.element, name).map(str::to_owned)
     }
 
-    /// `setAttribute`: o `aria-label` também é o rótulo de acessibilidade do nó.
+    /// `setAttribute`: o atributo vive no nó (o `aria-label` é o rótulo de acessibilidade dele).
     pub fn set_attribute(&self, name: &str, value: impl Into<String>) {
-        let value = value.into();
-        if name == "aria-label" {
-            self.ui.tree_mut().set_label(self.element, value.clone());
-        }
-        self.attributes.set(name, value);
+        self.ui.tree_mut().set_attribute(self.element, name, value);
     }
 
     /// O ponteiro está sobre o botão (o `:hover` do CSS).

@@ -19,7 +19,7 @@ use je_base::lifecycle::{DisposableRef, mark_as_singleton, to_disposable};
 use je_base::linked_list::LinkedList;
 use je_base::promise::Promise;
 use je_base::types::{TypeConstraint, validate_constraints};
-use je_instantiation::{ServicesAccessor, service_id};
+use je_instantiation::{InstantiationService, ServicesAccessor, service_id};
 
 use crate::action::LocalizedString;
 
@@ -38,6 +38,32 @@ pub trait ICommandService {
 }
 
 service_id!(pub I_COMMAND_SERVICE: dyn ICommandService = "commandService");
+
+/// O miolo comum do `executeCommand` do `CommandService` (workbench) e do `StandaloneCommandService` (editor standalone):
+/// procura o comando no registro, dispara `onWillExecuteCommand`, roda o handler dentro de `invokeFunction`, dispara
+/// `onDidExecuteCommand` e devolve o resultado como promessa resolvida. Comando ausente ou handler que lança (pânico)
+/// voltam como promessa rejeitada.
+pub fn invoke_registered_command(
+    instantiation_service: &InstantiationService,
+    id: &str,
+    args: Vec<Dynamic>,
+    on_will_execute_command: &Emitter<CommandEvent>,
+    on_did_execute_command: &Emitter<CommandEvent>,
+) -> Promise<Dynamic> {
+    let Some(command) = commands_registry().get_command(id) else {
+        return Promise::rejected(Error::new(format!("command '{id}' not found")));
+    };
+    let result = errors::catch(|| {
+        on_will_execute_command.fire(CommandEvent { command_id: id.to_owned(), args: args.clone() });
+        let result = instantiation_service.invoke_function(|accessor| (command.handler)(accessor, &args));
+        on_did_execute_command.fire(CommandEvent { command_id: id.to_owned(), args: args.clone() });
+        result
+    });
+    match result {
+        Ok(result) => Promise::resolved(result),
+        Err(error) => Promise::rejected(error),
+    }
+}
 
 /// `ICommandHandler`.
 pub type CommandHandler = Rc<dyn Fn(&ServicesAccessor, &[Dynamic]) -> Dynamic>;

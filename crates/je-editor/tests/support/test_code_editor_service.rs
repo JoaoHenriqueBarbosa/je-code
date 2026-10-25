@@ -16,6 +16,7 @@
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
+use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
 use je_base::uri::URI;
@@ -57,9 +58,25 @@ impl IDisposable for TestCodeEditorService {
 }
 
 impl ICodeEditorService for TestCodeEditorService {
+    fn on_code_editor_add(&self) -> Event<CodeEditorHandle> {
+        self.registry().on_code_editor_add()
+    }
+
+    fn on_code_editor_remove(&self) -> Event<CodeEditorHandle> {
+        self.registry().on_code_editor_remove()
+    }
+
+    fn list_code_editors(&self) -> Vec<CodeEditorHandle> {
+        self.registry.get().map(|registry| registry.list_code_editors()).unwrap_or_default()
+    }
+
     fn get_focused_code_editor(&self) -> Option<CodeEditorHandle> {
         let registry = self.registry.get()?;
-        registry.get_focused_code_editor().map(|editor| -> CodeEditorHandle { editor })
+        registry.get_focused_code_editor()
+    }
+
+    fn get_active_code_editor(&self) -> Option<CodeEditorHandle> {
+        None
     }
 
     fn open_code_editor(

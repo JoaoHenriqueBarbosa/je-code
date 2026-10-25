@@ -5,8 +5,8 @@
 //!
 //! O contrato do serviço, o [`ListService`](je_platform::list::list_service::ListService) e as chaves de contexto (`listFocus`,
 //! `listHasSelectionOrFocus`...) ficam em `je-platform/src/list/list_service.rs`, que não depende de widgets. Estas árvores
-//! precisam de `je-widgets` (a `AsyncDataTree`, a `ObjectTree`) e do `ResourceNavigator`, que já mora em `je-workbench`
-//! ([`crate::browser::resource_navigator`]); por isso o código que toca widgets fica aqui, ao lado dele.
+//! precisam de `je-widgets` (a `AsyncDataTree`, a `ObjectTree`) e do `ResourceNavigator`, que mora em `je-widgets`
+//! ([`je_widgets::list::resource_navigator`], o `je-editor` o usa no peek); por isso o código que toca widgets fica aqui.
 //!
 //! Divergências:
 //! - **Herança.** Cada `WorkbenchXTree extends XTree` do original é um [`WorkbenchTree`] sobre o widget (`Deref` para ele), com os
@@ -18,11 +18,15 @@
 //!   serviço.
 //! - **`overrideStyles`.** O `IStyleOverride<IListStyles>` do original (nomes de cor) já chega resolvido como [`IListStyles`] (quem
 //!   conhece o tema resolve); `tree.style(overrideStyles ? getListStyles(overrideStyles) : defaultListStyles)` fica igual.
-//! - **O que o widget ainda não tem.** O `typeNavigationMode`, o `horizontalScrolling`, o `keyboardNavigationDelegate`, o
-//!   `keyboardNavigationEventFilter`, o `multipleSelectionController`, o `scrollToActiveElement`, o `contextViewProvider` e o
-//!   `findWidgetStyles` não existem nas opções das árvores do `je-widgets`; o `useAltAsMultipleSelectionModifier` é lido e mantido
+//! - **O que o widget ainda não tem.** O `horizontalScrolling`, o `multipleSelectionController`, o `scrollToActiveElement`, o
+//!   `contextViewProvider` e o `findWidgetStyles` não existem nas opções das árvores do `je-widgets`; o
+//!   `useAltAsMultipleSelectionModifier` é lido e mantido
 //!   atualizado por [`WorkbenchTree::use_alt_as_multiple_selection_modifier`] para quando o controlador existir. A árvore abstrata
 //!   não emite `onDidChangeFindOpenState`, então a chave `treeFindOpen` é criada (com o padrão `false`) mas ainda não é guiada.
+//! - **Navegação por tipo.** O widget tem `typeNavigationMode`, `keyboardNavigationDelegate` e `keyboardNavigationEventFilter`
+//!   (`list::type_navigation`), mas o `workbenchTreeDataPreamble` daqui ainda não os liga: o `typeNavigationMode` da
+//!   configuração `workbench.list.typeNavigationMode` e o `keyboardNavigationDelegate` do `IKeybindingService` (que o
+//!   `WorkbenchTreeServices` não carrega) ficam nos padrões do widget (modo automático e o delegate padrão).
 //! - **Serviço de chaves escopado.** O `createScoped(widget.getHTMLElement())` usa o [`ContextKeyTarget`] avulso do porte (como o
 //!   editor), porque o alvo do serviço não é o nó do `je-ui`.
 
@@ -47,21 +51,21 @@ use je_platform::list::list_service::{
 use je_ui::{EventKind, NodeId, Ui};
 use je_widgets::list::list_styles::IListStyles;
 use je_widgets::list::list_types::IListVirtualDelegate;
-use je_widgets::tree::abstract_tree::{AbstractTree, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick, TreeFindMatchType, TreeFindMode};
+use je_widgets::tree::abstract_tree::{AbstractTree, AbstractTreeOptions, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick, TreeFindMatchType, TreeFindMode};
 use je_widgets::tree::async_data_tree::{AsyncDataTree, AsyncDataTreeBackend, ObjectBackend};
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeOptions, AsyncNode, IAsyncDataTreeRenderer};
 use je_widgets::tree::compressible_async_data_tree::{CompressibleAsyncDataTreeOptions, CompressibleBackend, ICompressibleAsyncDataTreeRenderer, ITreeCompressionDelegate};
-use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeOptions};
-use je_widgets::tree::object_tree_model::ObjectTreeModel;
+use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeModelLike, ObjectTreeOptions};
+use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelOptions};
 use je_widgets::tree::tree_renderer::RenderIndentGuides;
-use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeModel, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeNodeApi};
+use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeModel, ITreeRenderer, ITreeSorter, TreeEvent, TreeMouseEvent, TreeNodeApi};
 
 use crate::browser::parts::editor::editor_group_view::ContextKeyTarget;
-use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
+use je_widgets::list::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::services::editor::editor_resolver_service::workbench_configuration_node_base;
 
 pub const MULTI_SELECT_MODIFIER_SETTING_KEY: &str = "workbench.list.multiSelectModifier";
-pub const OPEN_MODE_SETTING_KEY: &str = "workbench.list.openMode";
+pub use je_widgets::list::resource_navigator::OPEN_MODE_SETTING_KEY;
 pub const HORIZONTAL_SCROLLING_KEY: &str = "workbench.list.horizontalScrolling";
 pub const DEFAULT_FIND_MODE_SETTING_KEY: &str = "workbench.list.defaultFindMode";
 pub const TYPE_NAVIGATION_MODE_SETTING_KEY: &str = "workbench.list.typeNavigationMode";
@@ -78,7 +82,7 @@ pub const TREE_EXPAND_MODE: &str = "workbench.tree.expandMode";
 pub const TREE_STICKY_SCROLL: &str = "workbench.tree.enableStickyScroll";
 pub const TREE_STICKY_SCROLL_MAX_ELEMENTS: &str = "workbench.tree.stickyScrollMaxItemCount";
 
-fn config_number(service: &dyn IConfigurationService, key: &str) -> Option<f64> {
+pub(crate) fn config_number(service: &dyn IConfigurationService, key: &str) -> Option<f64> {
     match service.get_value(Some(key), None) {
         Dynamic::Number(number) => Some(number),
         _ => None,
@@ -93,8 +97,44 @@ fn config_string(service: &dyn IConfigurationService, key: &str) -> Option<Strin
 }
 
 /// `Boolean(configurationService.getValue(key))`.
-fn config_bool(service: &dyn IConfigurationService, key: &str) -> bool {
+pub(crate) fn config_bool(service: &dyn IConfigurationService, key: &str) -> bool {
     service.get_value(Some(key), None).is_truthy()
+}
+
+/// `createScopedContextKeyService(contextKeyService, widget)`: o serviço de chaves escopado ao widget, com a chave de foco da
+/// lista ligada. Comum às árvores e à `WorkbenchTable`.
+pub(crate) fn create_scoped_context_key_service(context_key_service: &Rc<dyn IContextKeyService>) -> Rc<dyn IScopedContextKeyService> {
+    let result = context_key_service.create_scoped(ContextKeyTarget::new());
+    raw_workbench_list_focus_context_key().bind_to(&*result);
+    result
+}
+
+/// `createScrollObserver(contextKeyService, widget)`: mantém a chave `listScrollAtBoundary` (`both`, `top`, `bottom`, `none`)
+/// conforme a rolagem do widget, que chega como as leituras e o evento. Comum às árvores e à `WorkbenchTable`.
+pub(crate) fn create_scroll_observer(
+    context_key_service: &dyn IContextKeyService,
+    scroll_top: impl Fn() -> f64 + 'static,
+    scroll_height: impl Fn() -> f64 + 'static,
+    render_height: impl Fn() -> f64 + 'static,
+    on_did_scroll: &Event<()>,
+) -> DisposableRef {
+    let list_scroll_at = raw_workbench_list_scroll_at_boundary_context_key().bind_to(context_key_service);
+    let update = move || {
+        let at_top = scroll_top() == 0.0;
+
+        // We need a threshold `1` since scrollHeight is rounded.
+        // https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollHeight#determine_if_an_element_has_been_totally_scrolled
+        let at_bottom = scroll_height() - render_height() - scroll_top() < 1.0;
+        let position = match (at_top, at_bottom) {
+            (true, true) => "both",
+            (true, false) => "top",
+            (false, true) => "bottom",
+            (false, false) => "none",
+        };
+        list_scroll_at.set(Dynamic::string(position));
+    };
+    update();
+    on_did_scroll.listen(move |_| update())
 }
 
 /// `useAltAsMultipleSelectionModifier(configurationService)`.
@@ -445,32 +485,13 @@ impl WorkbenchTreeInternals {
         let base = Disposable::new();
 
         // createScopedContextKeyService
-        let context_key_service = services.context_key_service.create_scoped(ContextKeyTarget::new());
+        let context_key_service = create_scoped_context_key_service(&services.context_key_service);
         let keys: &dyn IContextKeyService = &*context_key_service;
-        raw_workbench_list_focus_context_key().bind_to(keys);
         base.register(context_key_service.clone());
 
         // createScrollObserver
-        let list_scroll_at = raw_workbench_list_scroll_at_boundary_context_key().bind_to(keys);
-        let update_scroll = {
-            let host = host.clone();
-            move || {
-                let at_top = host.scroll_top() == 0.0;
-
-                // We need a threshold `1` since scrollHeight is rounded.
-                // https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollHeight#determine_if_an_element_has_been_totally_scrolled
-                let at_bottom = host.scroll_height() - host.render_height() - host.scroll_top() < 1.0;
-                let position = match (at_top, at_bottom) {
-                    (true, true) => "both",
-                    (true, false) => "top",
-                    (false, true) => "bottom",
-                    (false, false) => "none",
-                };
-                list_scroll_at.set(Dynamic::string(position));
-            }
-        };
-        update_scroll();
-        base.register(host.on_did_scroll().listen(move |_| update_scroll()));
+        let (top, height, render) = (host.clone(), host.clone(), host.clone());
+        base.register(create_scroll_observer(keys, move || top.scroll_top(), move || height.scroll_height(), move || render.render_height(), &host.on_did_scroll()));
 
         let list_supports_multi_select = workbench_list_supports_multi_select_context_key().bind_to(keys);
         list_supports_multi_select.set(Dynamic::Bool(options.multiple_selection_support != Some(false)));
@@ -715,8 +736,9 @@ fn navigator_options(workbench: &IWorkbenchTreeOptions, services: &WorkbenchTree
     }
 }
 
-/// `WorkbenchObjectTree<T, TFilterData>`.
-pub type WorkbenchObjectTree<T, F = ()> = WorkbenchTree<ObjectTree<T, F>, T>;
+/// `WorkbenchObjectTree<T, TFilterData>`. O terceiro parâmetro é o modelo que o `createModel` sobrescrito devolve
+/// ([`WorkbenchTree::with_model`]); sem subclasse é o `ObjectTreeModel`.
+pub type WorkbenchObjectTree<T, F = (), M = ObjectTreeModel<T, F>> = WorkbenchTree<ObjectTree<T, F, M>, T>;
 
 impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> WorkbenchTree<ObjectTree<T, F>, T> {
     #[allow(clippy::too_many_arguments)]
@@ -726,18 +748,37 @@ impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> WorkbenchTree<ObjectTre
         container: NodeId,
         delegate: Rc<dyn IListVirtualDelegate<T>>,
         renderers: Vec<Rc<dyn ITreeRenderer<ObjectTreeModel<T, F>>>>,
-        mut options: ObjectTreeOptions<T, F>,
+        options: ObjectTreeOptions<T, F>,
+        workbench: IWorkbenchTreeOptions,
+        services: &WorkbenchTreeServices,
+    ) -> Rc<Self> {
+        Self::with_model(user, ui, container, delegate, renderers, options.tree, options.sorter, ObjectTreeModel::new, workbench, services)
+    }
+}
+
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static, M: ObjectTreeModelLike<T, F>> WorkbenchTree<ObjectTree<T, F, M>, T> {
+    /// O construtor com o `createModel(user, options)` sobrescrito da subclasse (ver [`ObjectTree::with_model`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_model(
+        user: &str,
+        ui: &Ui,
+        container: NodeId,
+        delegate: Rc<dyn IListVirtualDelegate<T>>,
+        renderers: Vec<Rc<dyn ITreeRenderer<M>>>,
+        mut options: AbstractTreeOptions<M>,
+        sorter: Option<Rc<dyn ITreeSorter<T>>>,
+        create_model: impl FnOnce(&str, ObjectTreeModelOptions<T, F>) -> M,
         workbench: IWorkbenchTreeOptions,
         services: &WorkbenchTreeServices,
     ) -> Rc<Self> {
         let internals_options = WorkbenchTreeInternalsOptions {
-            multiple_selection_support: options.tree.update.multiple_selection_support,
-            find_widget_enabled: options.tree.find_widget_enabled,
-            overrides: TreeOptionOverrides::of(&options.tree.update),
+            multiple_selection_support: options.update.multiple_selection_support,
+            find_widget_enabled: options.find_widget_enabled,
+            overrides: TreeOptionOverrides::of(&options.update),
         };
-        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.tree.update, &mut options.tree.keyboard_support);
+        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.update, &mut options.keyboard_support);
 
-        let tree = ObjectTree::new(user, ui, container, delegate, renderers, options);
+        let tree = ObjectTree::with_model(user, ui, container, delegate, renderers, options, sorter, create_model);
 
         let host: Rc<dyn WorkbenchTreeHost> = Rc::new(AbstractTreeHost { tree: tree.abstract_tree().clone(), to_user: Rc::new(|element: &T| Rc::new(element.clone()) as Rc<dyn Any>), input: None });
 

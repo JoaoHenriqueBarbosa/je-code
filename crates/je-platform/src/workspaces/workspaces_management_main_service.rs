@@ -23,7 +23,8 @@
 //! - **`doResolveLocalWorkspace`** tem duas sobrecargas no original (síncrona e assíncrona); só a assíncrona é chamada
 //!   (`resolveLocalWorkspace`), e a leitura de arquivo daqui é síncrona (ver a divergência de execução em [`pfs`]), então o
 //!   corpo é [`WorkspacesManagementMainService::do_resolve_local_workspace`], uma função comum.
-//! - **O diálogo do `showMessageBox`** perde o argumento de janela (ver [`crate::dialogs::dialog_main_service`]).
+//! - **O diálogo do `showMessageBox`** não leva janela (como no original), e por isso passa `None` (ver
+//!   [`crate::dialogs::dialog_main_service`]).
 //! - **O erro de workspace inválido** vem de [`do_parse_stored_workspace`] (a cópia do `common`, que no original difere
 //!   só em `path.toString(true)` na mensagem: o parâmetro `skip_encoding_in_message` escolhe).
 
@@ -359,12 +360,16 @@ impl WorkspacesManagementMainService {
         if find_window_on_workspace_or_folder(windows, workspace_path, &self.ext_uri).is_some() {
             let workspace_name = self.ext_uri.basename(workspace_path, None);
             self.dialog_main_service
-                .show_message_box(MessageBoxOptions {
-                    message_box_type: Some(MessageBoxType::Info),
-                    buttons: vec![localize("ok", "&&OK", &[])],
-                    message: localize("workspaceOpenedMessage", "Unable to save workspace '{0}'", &[workspace_name.as_str()]),
-                    detail: Some(localize("workspaceOpenedDetail", "The workspace is already opened in another window. Please close that window first and then try again.", &[])),
-                })
+                .show_message_box(
+                    MessageBoxOptions {
+                        message_box_type: Some(MessageBoxType::Info),
+                        buttons: vec![localize("ok", "&&OK", &[])],
+                        message: localize("workspaceOpenedMessage", "Unable to save workspace '{0}'", &[workspace_name.as_str()]),
+                        detail: Some(localize("workspaceOpenedDetail", "The workspace is already opened in another window. Please close that window first and then try again.", &[])),
+                        ..MessageBoxOptions::default()
+                    },
+                    None,
+                )
                 .await?;
 
             return Ok(false);

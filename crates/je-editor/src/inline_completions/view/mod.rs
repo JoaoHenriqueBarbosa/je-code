@@ -2,3 +2,4 @@
 
 pub mod ghost_text_view;
 pub mod inline_edits;
+pub mod inline_suggestions_view;

@@ -20,7 +20,18 @@ const DISABLED: Rgba = Rgba::opaque(0x55, 0x55, 0x55);
 const HIGHLIGHT: Rgba = Rgba::opaque(0x2a, 0xaa, 0xff);
 
 fn text_styles() -> HighlightedLabelStyles {
-    HighlightedLabelStyles { foreground: TEXT, highlight_foreground: Some(HIGHLIGHT), highlight_weight: 400, font_size: 13.0, font_weight: 400, line_height: Some(22.0), italic: false, strikethrough: false }
+    HighlightedLabelStyles {
+        foreground: TEXT,
+        highlight_foreground: Some(HIGHLIGHT),
+        highlight_background: None,
+        highlight_weight: 400,
+        font_size: 13.0,
+        font_weight: 400,
+        line_height: Some(22.0),
+        italic: false,
+        strikethrough: false,
+        inherit_foreground: false,
+    }
 }
 
 fn styles() -> IconLabelStyles {

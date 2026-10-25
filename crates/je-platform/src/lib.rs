@@ -28,13 +28,17 @@ pub mod js;
 pub mod keyboard_layout;
 pub mod keybinding;
 pub mod layout;
+pub mod lifecycle;
 pub mod log;
 pub mod markers;
 pub mod notification;
+pub mod native;
 pub mod policy;
 pub mod progress;
 pub mod request;
 pub mod product;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod protocol;
 pub mod resources;
 pub mod state;
 pub mod telemetry;
@@ -85,6 +89,7 @@ pub mod encryption;
 pub mod external_terminal;
 pub mod registry;
 pub mod secrets;
+pub mod sign;
 
 pub mod label;
 pub mod list;
@@ -96,3 +101,5 @@ pub mod diagnostics;
 
 pub mod metered_connection;
 pub mod observable;
+
+pub mod git;

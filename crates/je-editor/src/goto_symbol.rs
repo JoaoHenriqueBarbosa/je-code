@@ -16,7 +16,18 @@
 //! - `Promise.resolve(provide(...)).then(undefined, err => { onUnexpectedExternalError(err); return undefined; })` é o
 //!   `then_result` que transforma a rejeição em `None`.
 //! - Os comandos `_execute*Provider` (`registerModelAndPositionCommand` com `_sortedAndDeduped`) dependem de
-//!   `ServicesAccessor`, `IModelService` e do `ReferencesModel` (a árvore de referências, sem porte): ficam de fora.
+//!   `ServicesAccessor` e `IModelService`: ficam de fora.
+//!
+//! O resto do módulo `src/vs/editor/contrib/gotoSymbol/browser` mora na pasta `goto_symbol/`: `referencesModel.ts`
+//! ([`references_model`], a árvore de referências agrupada por arquivo), `symbolNavigation.ts`
+//! ([`symbol_navigation`], a navegação pelo teclado entre os resultados e a chave de contexto `hasSymbols`) e
+//! `goToCommands.ts` ([`go_to_commands`], `DefinitionAction` e companhia). O `goToDefinitionWithLocation` que o sticky scroll
+//! chama não é de `goToCommands.ts`: é de `inlayHints/browser/inlayHintsLocations.ts` ([`crate::inlay_hints_locations`]).
+
+pub mod go_to_commands;
+pub mod peek;
+pub mod references_model;
+pub mod symbol_navigation;
 
 use std::rc::Rc;
 
@@ -47,7 +58,7 @@ fn should_include_uri(source_model: &TextModel, uri: &URI) -> bool {
 }
 
 /// `Location` lida como `LocationLink` (ver a nota do módulo).
-fn location_as_link(location: Location) -> LocationLink {
+pub fn location_as_link(location: Location) -> LocationLink {
     LocationLink { origin_selection_range: None, uri: location.uri, range: location.range, target_selection_range: None }
 }
 

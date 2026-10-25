@@ -5,15 +5,15 @@
 //! que o renderer converte de volta com `downcast_ref`), porque a lista guarda renderers de vários tipos de
 //! template ao mesmo tempo (o `IListRenderer<any, any>` do original). O `HTMLElement` do contêiner é o
 //! [`NodeId`] do `je-ui`. O `UIEvent` do `browserEvent` é o [`BrowserEvent`].
-//! `IListDragAndDrop`, `IListTouchEvent`, `IListGestureEvent` e `IListContextMenuEvent` ficam de fora até
-//! o `je-ui` ter arrastar e soltar, toque e menu de contexto.
+//! `IListDragAndDrop` e `IListDragOverReaction` estão em [`crate::list::list_dnd`]. `IListTouchEvent`,
+//! `IListGestureEvent` e `IListContextMenuEvent` ficam de fora até o `je-ui` ter toque e menu de contexto.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use je_ui::{Modifiers, NodeId, PointerButton};
+use je_ui::{KeyData, Modifiers, NodeId, PointerButton, Role};
 
 /// Os renderers de uma lista por `templateId`, compartilhados com o cache de linhas.
 pub type RendererMap<T> = Rc<RefCell<HashMap<String, Rc<dyn IListRenderer<T>>>>>;
@@ -107,6 +107,23 @@ pub trait IIdentityProvider<T> {
     }
 }
 
+/// `IListAccessibilityProvider<T>`: o rótulo e o papel ARIA da lista e de cada linha. O `getAriaLevel`, o
+/// `isChecked` e o `onDidChangeActiveDescendant` não existem: o `je-ui` guarda só `role` e `label` por nó.
+pub trait IListAccessibilityProvider<T> {
+    /// `getAriaLabel(element)`: `null` ou vazio tira o rótulo da linha.
+    fn get_aria_label(&self, element: &T) -> Option<String>;
+    /// `getWidgetAriaLabel()`.
+    fn get_widget_aria_label(&self) -> String;
+    /// `getWidgetRole?()`: sem ele, `list`.
+    fn get_widget_role(&self) -> Option<Role> {
+        None
+    }
+    /// `getRole?(element)`: sem ele, `listitem`.
+    fn get_role(&self, _element: &T) -> Option<Role> {
+        None
+    }
+}
+
 /// `ListError`.
 pub fn list_error(user: &str, message: &str) -> je_base::errors::Error {
     je_base::errors::Error::new(format!("ListError [{user}] {message}"))
@@ -152,3 +169,16 @@ impl<T, K: std::hash::Hash + Eq> IListVirtualDelegate<T> for CachedListVirtualDe
 pub trait IKeyboardNavigationLabelProvider<T> {
     fn get_keyboard_navigation_label(&self, element: &T) -> Vec<Option<String>>;
 }
+
+/// `IKeyboardNavigationDelegate`: diz à lista se uma tecla pode produzir um caractere imprimível (o que liga a navegação
+/// por tipo). O `mightProducePrintableCharacter` não é do `IKeyboardNavigationLabelProvider`: o original o põe aqui, e o
+/// `StringRepresentationProvider` do peek o declara por conta própria (`referencesTree.ts`). O padrão da lista é o
+/// [`DefaultKeyboardNavigationDelegate`](crate::list::type_navigation::DefaultKeyboardNavigationDelegate); o workbench
+/// injeta o do `IKeybindingService` (`listService.ts`).
+pub trait IKeyboardNavigationDelegate {
+    fn might_produce_printable_character(&self, event: &KeyData) -> bool;
+}
+
+/// `IKeyboardNavigationEventFilter`: `(e: StandardKeyboardEvent) => boolean`, a condição para uma tecla começar a navegação
+/// por tipo (a lista aceita tudo quando não há filtro).
+pub type IKeyboardNavigationEventFilter = Rc<dyn Fn(&KeyData) -> bool>;

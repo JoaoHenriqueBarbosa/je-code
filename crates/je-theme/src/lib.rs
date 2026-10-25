@@ -7,12 +7,14 @@
 //! (ou da customização) se existe, senão o padrão do registro para o tipo do tema.
 //!
 //! - [`color`]: a classe `Color` de `src/vs/base/common/color.ts`.
+//! - [`icon_registry`]: `iconRegistry.ts` (o registro de ícones e das fontes de ícones).
 //! - [`registry`]: `colorUtils.ts` e `colorRegistry.ts` (o registro e a resolução de valores).
 //! - [`registered_colors`]: as cores registradas pelo VS Code (gerado).
 //! - [`theme_defaults`]: os padrões por tipo de tema e `normalizeColor` de `colorThemeData.ts`.
 //! - [`token_classification_registry`]: `tokenClassificationRegistry.ts` (tipos e modificadores de semantic tokens).
 
 pub mod color;
+pub mod icon_registry;
 #[rustfmt::skip]
 pub mod registered_colors;
 pub mod registry;

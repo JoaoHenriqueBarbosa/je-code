@@ -547,6 +547,7 @@ impl ActivitybarPart {
                 active_border_bottom_color: None,
             }),
             overflow_action_size: composite_size,
+            compact: false,
         };
 
         (self.composite_bar_factory)(CompositeBarRequest {

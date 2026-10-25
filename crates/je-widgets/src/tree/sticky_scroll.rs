@@ -14,7 +14,7 @@
 //!   protegia, os mapas por nó do `TreeRenderer`, é resolvido por
 //!   [`TreeRenderer::render_element_detached`], que devolve os mapas ao estado anterior.
 //! - `data-index`, `data-parity`, `id` e `aria-*` (`setAccessibilityAttributes`, o `autorun` do rótulo
-//!   ARIA) não são escritos: o `je-ui` só tem `role` e `label`, e a `AbstractTreeOptions` não tem
+//!   ARIA) não são escritos: a `AbstractTreeOptions` não tem
 //!   `accessibilityProvider`. O `data-index` é substituído por
 //!   [`ListView::set_external_row_index`](crate::list::list_view::ListView::set_external_row_index), que
 //!   faz os eventos de ponteiro na linha fixada resolverem o elemento da lista.

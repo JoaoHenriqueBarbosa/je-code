@@ -7,13 +7,13 @@
 //!   threads. Cada thread vê o seu próprio registro (os testes ficam isolados). No original os tamanhos
 //!   base entram porque `sizeRegistry.ts` importa `sizes/baseSizes.ts`; aqui o singleton nasce já com
 //!   [`crate::sizes::base_sizes::register_base_sizes`] aplicado, e [`SizeRegistry::new`] é um registro vazio.
-//! - `platform.Registry.add(Extensions.SizeContribution, ...)` e o
-//!   `IJSONContributionRegistry.registerSchema(workbenchSizesSchemaId, ...)` com o `RunOnceScheduler` de
-//!   200 ms que chama `notifySchemaChanged` são da camada de plataforma, que `je-theme` não tem (o
-//!   registro de cores também não os tem). O que fica aqui é o que ela precisa: [`EXTENSIONS_SIZE_CONTRIBUTION`],
-//!   [`WORKBENCH_SIZES_SCHEMA_ID`], o schema vivo ([`SizeRegistry::get_size_schema`], que é o mesmo objeto
-//!   atualizado a cada registro) e o evento [`SizeRegistry::on_did_change_schema`], no qual a plataforma
-//!   se inscreve e agenda o `notifySchemaChanged`.
+//! - `platform.Registry.add(Extensions.SizeContribution, ...)` é da camada de plataforma, que `je-theme` não tem (o
+//!   registro de cores também não o tem): ficam [`EXTENSIONS_SIZE_CONTRIBUTION`] e [`WORKBENCH_SIZES_SCHEMA_ID`].
+//!   O `IJSONContributionRegistry.registerSchema(workbenchSizesSchemaId, ...)` e o `RunOnceScheduler` de 200 ms que
+//!   chama `notifySchemaChanged` existem: o singleton registra o schema vivo ([`SizeRegistry::get_size_schema`], o mesmo
+//!   objeto atualizado a cada registro) em `je_base::json_contribution_registry` e agenda o aviso a cada
+//!   [`SizeRegistry::on_did_change_schema`]. Como no original, a subscrição vem antes dos tamanhos base, que então já
+//!   agendam o primeiro aviso.
 //! - `IColorTheme` é [`ColorThemeContext`], como no registro de cores (só o `type` é lido).
 //!
 //! Divergências de tradução:
@@ -34,8 +34,10 @@ use std::fmt;
 use std::rc::Rc;
 
 use je_base::JsString;
+use je_base::async_::RunOnceScheduler;
 use je_base::dynamic::{ArrayRef, Dynamic, ObjectRef, number_to_js_string};
 use je_base::event::{Emitter, Event};
+use je_base::json_contribution_registry::get_json_contribution_registry;
 use je_base::lifecycle::IDisposable;
 
 use crate::ThemeType;
@@ -425,8 +427,34 @@ impl fmt::Display for SizeRegistry {
     }
 }
 
+/// Atraso do `RunOnceScheduler` que avisa a mudança do schema de tamanhos.
+const SIZES_SCHEMA_NOTIFY_DELAY_MS: u64 = 200;
+
+/// O trecho de `sizeUtils.ts` que registra `workbenchSizesSchemaId` no `jsonContributionRegistry` e agenda o
+/// `notifySchemaChanged` a cada `onDidChangeSchema`.
+fn register_sizes_schema(registry: &SizeRegistry) {
+    let schema_registry = get_json_contribution_registry();
+    schema_registry.register_schema(WORKBENCH_SIZES_SCHEMA_ID, registry.get_size_schema(), None);
+
+    let delayer = RunOnceScheduler::new(
+        || get_json_contribution_registry().notify_schema_changed(WORKBENCH_SIZES_SCHEMA_ID),
+        SIZES_SCHEMA_NOTIFY_DELAY_MS,
+    );
+    registry.on_did_change_schema().listen(move |_| {
+        if !delayer.is_scheduled() {
+            delayer.schedule(None);
+        }
+    });
+}
+
 thread_local! {
-    static SIZE_REGISTRY: Rc<SizeRegistry> = Rc::new(SizeRegistry::with_base_sizes());
+    // O registro e as inscrições dele nascem na importação do módulo no original, fora do rastreio de descartáveis.
+    static SIZE_REGISTRY: Rc<SizeRegistry> = je_base::lifecycle::without_disposable_tracker(|| {
+        let registry = Rc::new(SizeRegistry::new());
+        register_sizes_schema(&registry);
+        register_base_sizes(&registry);
+        registry
+    });
 }
 
 /// `getSizeRegistry()`: o registro global, com os tamanhos base do VS Code.

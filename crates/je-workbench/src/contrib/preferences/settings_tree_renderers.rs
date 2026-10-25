@@ -1,0 +1,4553 @@
+//! Porte parcial de `src/vs/workbench/contrib/preferences/browser/settingsTree.ts`, linhas 856 a 2208 (e o que o template
+//! delas usa de fora dessa faixa): a base [`AbstractSettingRenderer`] (o template comum com título, categoria, descrição em
+//! Markdown, indicadores, barra de ferramentas, mensagem de depreciação, `renderSettingElement`, o rastreio de foco, a ordem de
+//! tabulação e os eventos), o [`SettingGroupRenderer`], o [`SettingNewExtensionsRenderer`], o [`SettingComplexRenderer`], o
+//! [`SettingComplexObjectRenderer`], o [`SettingArrayRenderer`], o [`AbstractSettingObjectRenderer`] com o
+//! [`SettingObjectRenderer`] e o [`SettingBoolObjectRenderer`], o [`SettingIncludeExcludeRenderer`] com o
+//! [`SettingExcludeRenderer`] e o [`SettingIncludeRenderer`] (fatias 1 e 2), e os renderizadores de valor simples da fatia 3: o
+//! [`AbstractSettingTextRenderer`] com o [`SettingTextRenderer`] e o [`SettingMultilineTextRenderer`], o [`SettingEnumRenderer`],
+//! o [`SettingNumberRenderer`], o [`SettingBoolRenderer`] e o [`SettingsExtensionToggleRenderer`] (linhas 1778 a 2208), com os
+//! tipos de template, os eventos (`ISettingChangeEvent`, `ISettingLinkClickEvent`, `HeightChangeParams`) e os identificadores de
+//! template (`SETTINGS_*_TEMPLATE_ID`, linhas 792 a 806).
+//!
+//! A fatia 4 (a parte de `settingsTree.ts` que vem depois da linha 2208) está no fim deste módulo: o [`SettingTreeRenderers`]
+//! (linhas 2209 a 2363, que monta todos os renderizadores acima e preenche o `accessibility_host` e o `telemetry_service` do
+//! [`SettingRendererServices`] a partir do [`SettingTreeRenderersServices`]) e as ações de copiar, sincronizar e aplicar a todos os
+//! perfis (linhas 2752 a 2899). O delegado de alturas, o provedor de acessibilidade, o modelo sem colapso e o `SettingsTree` estão
+//! em `settings_tree.rs`. Os serviços que só esses renderizadores leem (`IExtensionsWorkbenchService`, `IExtensionService`)
+//! entram no [`SettingRendererServices`] com a fatia que os usa; o `ITelemetryService` entrou com a fatia 3 (o toggle de extensão
+//! registra `ManageExtensionClick` e `DismissExtensionClick`).
+//!
+//! De fora da faixa, porque o template da faixa os chama: `cleanRenderedMarkdown` (em `settings_markdown_view`),
+//! `fixSettingLinks` (linhas 2426 a 2435, [`fix_setting_links`]; não é o homônimo de `preferences_models.rs`, que é o de
+//! `preferencesModels.ts`), `getObjectDisplayValue` com os auxiliares que ele usa (linhas 124 a 256,
+//! [`get_object_display_value`]), `renderValidations` do complexo (linhas 1275 a 1284), `renderArrayValidations` (linhas 2386
+//! a 2411), `renderValidations` de texto e número (linhas 2365 a 2384, [`TextValidator`]), `addChildrenToTabOrder` com
+//! `removeChildrenFromTabOrder` (linhas 821 a 849), `escapeInvisibleChars` (linhas 2437 a 2441, a de `preferences_models.rs`,
+//! que é a mesma função) e os auxiliares de valor dos renderizadores desta fatia: `getIncludeExcludeDisplayValue`,
+//! `areAllPropertiesDefined`, `getBoolObjectDisplayValue`, `createArraySuggester`, `createObjectKeySuggester`,
+//! `createObjectValueSuggester`, `isNonNullableNumericType`, `parseNumericObjectValues`, `getListDisplayValue` e
+//! `getShowAddButtonList` (linhas 83 a 122 e 258 a 465).
+//!
+//! Divergências:
+//! - **Herança.** `AbstractSettingRenderer` é uma estrutura concreta, e `SettingComplexRenderer` e `SettingComplexObjectRenderer`
+//!   a envolvem (cada um dá `Deref` ao anterior, como o `ObjectSettingDropdownWidget` em `settings_widgets.rs`). O método
+//!   abstrato `renderValue` e a chamada virtual dele dentro de `renderSettingElement` são o parâmetro `render_value` de
+//!   [`AbstractSettingRenderer::render_setting_element`]; por isso o objeto complexo, que sobrescreve `renderValue`, tem o seu
+//!   próprio `render_element` (o herdado chamaria o `renderValue` do pai). O `index` de `renderSettingElement` não é lido e não
+//!   existe.
+//! - **Serviços.** Os serviços decorados do construtor (`@IThemeService`, `@IContextViewService`, `@IOpenerService`,
+//!   `@IInstantiationService`, `@ICommandService`, `@IContextMenuService`, `@IKeybindingService`, `@IConfigurationService`,
+//!   `@IHoverService`, `@IMarkdownRendererService`) vão no [`SettingRendererServices`]: o tema vira os [`SettingRendererStyles`]
+//!   e os estilos de `SettingsWidgetServices`, o `IContextViewService` e o `IHoverService` são os de `SettingsWidgetServices`, o
+//!   `IContextMenuService` é o `IContextMenuProvider` que o `ToolBar` recebe, o `IInstantiationService.createInstance` é a
+//!   chamada direta ao construtor, e o `IMarkdownRendererService` é a função `render_markdown` com o
+//!   [`OwnedMarkdownEnvironment`] (a plataforma ainda não tem o serviço; ver `settings_markdown_view`).
+//! - **Templates.** Um template é um [`TemplateData`] (`Rc<dyn Any>`) que cada renderizador converte de volta com
+//!   `downcast_ref`. O `...common` do TypeScript é o campo `common` mais o `Deref`. `context` é um `Rc<RefCell<_>>` porque os
+//!   ouvintes criados em `renderTemplate` o leem depois, como leem o objeto `template` no original.
+//! - **`isDisposable(action)`.** `IAction` não tem `dispose`: uma ação do `disposableActionFactory` é descartada com o elemento
+//!   quando é uma `Action` (`as_base_action`, o `instanceof Action`), o caso em que o original a descarta.
+//! - **`isIOS`** é falso (os alvos são Windows, Linux, macOS e web), então `renderDropdownAsChildElement` é sempre verdadeiro.
+//! - **`settingsMoreActionIcon`** (`preferencesIcons.ts`, não portado) é o ícone `gear`, o padrão que o original registra.
+//! - **Eventos.** Os `Emitter` do original são [`Emitter`] de `je-base`; os protegidos (`_onDidChangeSetting`,
+//!   `_onDidOpenSettings`, `_onDidFocusSetting`, `_onDidChangeSettingHeight`, `_onApplyFilter`) são `pub(crate)` para as fatias
+//!   seguintes.
+//! - **`ISettingChangeEvent.type`** é `SettingValueType | SettingValueType[]`, o [`SettingChangeType`]; o `value: unknown` é um
+//!   [`Dynamic`] (`undefined` é reset ou desconfigurar).
+//! - **`SettingsTreeGroupChild` como elemento da árvore.** O `ObjectTreeModel` exige `Eq + Hash` do elemento; o original compara
+//!   os objetos por identidade, e este módulo dá ao [`SettingsTreeGroupChild`] a igualdade e o hash pelo endereço do `Rc`.
+//! - **Layout.** Não há motor de CSS: [`AbstractSettingRenderer::layout_setting_item`] empilha as partes do template com as
+//!   medidas de `settingsEditor2.css` (`.monaco-tl-contents` com `max-width: 1400px`, `padding: 0 24px` e `margin: auto`;
+//!   `.setting-item-contents` com `padding: 12px 14px 18px` (26 px em `bool` e `list`); título com `padding-bottom: 2px`;
+//!   descrição com `margin-top: -1px`; valor com `margin-top: 9px`; depreciação com `margin-top: 3px`; barra de ferramentas
+//!   absoluta em `left: -22px; top: 8px`; indicador de modificação absoluto em `left: 5px; top: 15px`). O título não quebra
+//!   linha (o original deixa os indicadores flutuarem para a linha de baixo), e os indicadores fluem em linha logo depois do
+//!   rótulo. O renderizador de cada valor calcula o tamanho do controle e chama a função, que devolve a altura da linha e a
+//!   guarda em [`ISettingItemTemplate::height`]. NÃO MEDIDO contra o oráculo: a altura de uma linha completa.
+//! - **Mensagem de validação do complexo.** `position: absolute` abaixo do conteúdo (sem afetar a altura da linha), com a largura
+//!   do texto mais o `padding: 5px` e a borda de `1px`.
+//! - **Tabulação.** `tabindex` é um atributo do nó (o `je-ui` não modela o foco por tabulação): os elementos "focalizáveis" que
+//!   `removeChildrenFromTabOrder` procura (`input`, `select`, `textarea`, `a`, `button`) são os nós de papel `Button`, `Link`,
+//!   `TextInput`, `ComboBox`, `ListBox`, `Checkbox`, `Radio` e `Switch` sem `tabindex="-1"`, e os de `tabindex="0"`.
+//! - **`getObjectDisplayValue`.** O `filter(item => !isUndefinedOrNull(item.value.data))` final é sempre verdadeiro (`'' + x` e
+//!   `!!x` nunca são `undefined`) e não existe; `'' + data` é [`js_text`]; a `RegExp` de um padrão inválido lança `SyntaxError`,
+//!   como o `new RegExp` do original.
+//! - **Herança dos renderizadores de objeto e de include e exclude.** `AbstractSettingObjectRenderer` é uma estrutura que envolve
+//!   o [`AbstractSettingRenderer`] (com `Deref`), e o [`SettingObjectRenderer`] e o [`SettingBoolObjectRenderer`] a envolvem. O
+//!   `SettingIncludeExcludeRenderer` abstrato com o `isExclude()` e as duas subclasses é uma estrutura com o campo `is_exclude`;
+//!   [`SettingExcludeRenderer`] e [`SettingIncludeRenderer`] só têm o construtor (como `ExcludeSettingWidget` e
+//!   `IncludeSettingWidget` em `settings_widgets.rs`). O `objectDropdownWidget?`/`objectCheckboxWidget?` do template é o
+//!   [`ObjectWidget`] (um dos dois, o que o `instanceof` decidia); o `!` de cada `renderValue` é o `let ... else` do caso certo.
+//! - **Template e `onChange`.** O `onChange` do template é um [`OnChangeSlot`] compartilhado (`Rc<RefCell<_>>`), porque os
+//!   ouvintes dos widgets, criados em `renderTemplate`, o leem depois como leem `template.onChange` no original. Os ouvintes
+//!   guardam o `context` e o slot (e um `Weak` do widget, para não fechar um ciclo), e as funções que o original tem como
+//!   métodos (`computeNewList`, `onDidChangeObject`, `onDidChangeIncludeExclude`) são funções associadas sem `self`.
+//! - **`aria.status`.** `renderArrayValidations` fala com o `status` do aria; o porte o entrega ao `IAccessibilityHost` do
+//!   [`SettingRendererServices`] (o mesmo hospedeiro de `aria.alert` e `aria.status` do `AccessibilityService`).
+//! - **`console.warn`** (evento inesperado do objeto bool) é `eprintln!`.
+//! - **Mensagem de validação em fluxo.** Nos renderizadores de array e de objeto (`setting-item-list`) a mensagem fica depois
+//!   da descrição e, com `invalid-input`, é `position: static; margin-top: 1rem` (16 px), com `padding: 5px` e borda de `1px`:
+//!   [`AbstractSettingRenderer::layout_setting_item`] a empilha entre a descrição e o valor quando o template registra o nó em
+//!   [`ISettingItemTemplate::flow_validation_message`]. O `renderArrayValidations` adiciona `invalid-input` sem condição (o
+//!   original só o tira quando há validador e o valor passa); a visibilidade do nó segue essa classe.
+//! - **`computeNewList`.** `targetIndex` é `usize` (o ramo de `targetIndex === -1`, "append" do original, não existe: o
+//!   widget sempre informa o índice); um índice além do fim preenche com `undefined`, como a atribuição de índice do JavaScript.
+//! - **`item.value.data = ...`.** O original muda o objeto do item que a lista compartilha; aqui o item da lista de
+//!   novos itens é trocado por uma cópia com o dado novo ([`with_object_value_data`]), e o `setValue(newItems)` seguinte
+//!   substitui a lista do widget, o mesmo efeito.
+//! - **`splice(-1, 1)`.** O `newItems.splice(itemToDelete, 1)` de remoção de objeto, com `itemToDelete` igual a `-1`, apaga o
+//!   último item no JavaScript; o porte mantém esse caso.
+//! - **Campo de texto (fatia 3).** O `InputBox` do `je-widgets` é de linha única: `flexibleHeight`, `flexibleWidth` e
+//!   `flexibleMaxHeight` (o `<textarea>` do multilinha) não existem e o `onDidHeightChange` nunca dispara. Por isso o
+//!   `useMultiline` de `renderTemplate`, que só alimentava `flexibleHeight`, não é parâmetro, e o multilinha difere do texto só
+//!   no `renderValue` (o ouvinte de altura e a atualização do valor do elemento) e na ausência do ouvinte das setas. `type:
+//!   'number'` e `step` também não existem: o campo de número é um campo de texto, e o valor dele é lido como o `<input
+//!   type=number>` o dá (vazio quando o texto não é um número de ponto flutuante válido do HTML, [`number_input_value`]). O
+//!   `step` só mudava as setas de rotação, que o CSS esconde, e não tem efeito.
+//! - **Herança (fatia 3).** `AbstractSettingTextRenderer` é uma estrutura que envolve o [`AbstractSettingRenderer`], e o
+//!   [`SettingTextRenderer`] e o [`SettingMultilineTextRenderer`] a envolvem (cada um dá `Deref` ao anterior); o `renderValue`
+//!   protegido do abstrato é [`AbstractSettingTextRenderer::render_value`], que o multilinha chama como o `super.renderValue`.
+//!   O `renderTemplate` do número é igual ao do texto salvo as opções e a classe, então os dois chamam o mesmo
+//!   [`render_text_item_template`], e o `renderValidations` e o layout também são um só para os dois.
+//! - **Validação de texto.** O `inputElement.parentElement` do `aria-label` é o pai do nó do campo. O [`TextValidator`] guarda um
+//!   `Weak` do campo, para o `onChange` do template (que o ouvinte do campo lê) não fechar um ciclo.
+//! - **Medidas (fatia 3).** O controle de texto tem `width: 420px` com `flex-shrink` e o de número `min-width: 200px`;
+//!   o `<select>` do enum tem `width: 320px` e, sendo o mínimo do flex o conteúdo, não encolhe; a mensagem de validação absoluta
+//!   tem `width: 420px` (texto) e `width: 200px` (número). NÃO MEDIDO contra o oráculo: o piso de encolhimento do controle de
+//!   texto (aqui, a largura do texto), a altura de 26 px e o `padding: 2px 6px` de `.setting-item-contents .monaco-select-box`
+//!   (o `SelectBox` usa a medida natural dele), a folga de linha dos botões inline-block do toggle de extensão e a quebra de
+//!   linha da mensagem de validação (aqui ela fica numa linha só).
+//! - **Enum.** O `SelectBox` é o customizado (o `<select>` nativo não existe, ver `select_box.rs`), então `useCustomDrawn` não
+//!   tem efeito e o `selectElement` é o nó dele (`SelectBox::select_element`). A descrição em Markdown de cada opção aparece
+//!   como texto (o widget não tem renderizador, e por isso o `descriptionMarkdownActionHandler`, que abria o link no
+//!   `IOpenerService`, não existe). O `DisposableStore` local que `renderValue` cria e não usa não existe. `decoratorRight` e
+//!   `detail` vazios do original são `None` (a string vazia é falsa para o widget). O `enumDescriptionElement` é o bloco vazio
+//!   do original, de altura zero, logo depois da descrição.
+//! - **Bool.** O template do original monta o DOM à mão (`.setting-item-value-description` com o controle e a descrição,
+//!   sem o contêiner de valor comum). Aqui o [`SettingBoolRenderer`] usa o template comum e o reorganiza para o mesmo DOM: a
+//!   descrição vai para dentro do `value_element` (o `.setting-item-value-description`), depois do controle
+//!   (`.setting-item-bool-control`), e o `value_element` passa para antes do indicador de modificação. O `Toggle` com o ícone
+//!   `check` é o `Checkbox` de `je-widgets` (ver `settings_widgets.rs`), com a classe `setting-value-checkbox` e as cores de
+//!   `settings.checkbox*`. Como o `.monaco-custom-toggle` é `float: left`, o controle não ocupa altura e a descrição (um
+//!   `display: flex` vizinho do float) fica `18px + 9px` à direita: [`AbstractSettingRenderer::layout_setting_item`] trata o tipo
+//!   `bool` assim. O `closest('a')` do clique na descrição é o antepassado com papel `Link`.
+//! - **Toggle de extensão.** `ITelemetryService.publicLog2` é `public_log2` do serviço no [`SettingRendererServices`]. Os dois
+//!   botões são `inline-block` depois do último filho em fluxo do contêiner: a altura deles entra na linha pelo
+//!   [`ISettingItemTemplate::tail_height`]. O `displayExtensionId!` é sempre definido para este tipo de valor (o modelo só o
+//!   escolhe quando o id existe), então a ausência encerra o `renderValue`.
+
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::hash::{Hash, Hasher};
+use std::ops::Deref;
+use std::rc::{Rc, Weak};
+
+use je_base::JsString;
+use je_base::actions::{Action, ActionRef, IAction, Separator};
+use je_base::async_::async_fn;
+use je_base::collator::locale_compare;
+use je_base::dynamic::{Dynamic, ObjectRef, Truthy, json_stringify_indented, number_to_js_string};
+use je_base::errors::{self, Error, on_unexpected_error};
+use je_base::event::{Emitter, Event as BaseEvent, any as any_event};
+use je_base::html_content::{IMarkdownString, IsTrusted};
+use je_base::key_codes::KeyCode;
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, plain_disposable, to_disposable};
+use je_base::markdown::{MarkdownRenderOptions, render_markdown};
+use je_base::nls::localize;
+use je_base::promise::{MaybePromise, Promise};
+use je_base::themables::ThemeIcon;
+use je_base::uri::{URI, UriComponents};
+use je_editor::language_service::ILanguageService;
+use je_editor::services::clipboard_service::IClipboardService;
+use je_platform::accessibility::accessibility_service::IAccessibilityHost;
+use je_platform::commands::commands::ICommandService;
+use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, get_language_tag_setting_plain_key};
+use je_platform::contextview::context_view::IContextViewService;
+use je_platform::product::IProductService;
+use je_platform::configuration::registry::{ConfigurationDefaultSource, ConfigurationDefaultValueSource, ConfigurationScope};
+use je_platform::js::{parse_float, to_number};
+use je_platform::keybinding::keybinding::IKeybindingService;
+use je_platform::opener::opener::{AllowCommands, IOpenerService, OpenOptions, OpenResource};
+use je_platform::telemetry::telemetry::ITelemetryService;
+use je_platform::terminal::shell_integration_addon::parse_int;
+use je_platform::user_data_sync::settings_merge::get_ignored_settings;
+use je_platform::user_data_sync::user_data_sync::{IUserDataSyncEnablementService, get_default_ignored_settings};
+use je_render::Rgba;
+use je_render::kurbo::Rect;
+use je_theme::ColorTheme;
+use je_ui::{Border, Content, Cursor, EventKind, NodeId, Role, Tree, Ui};
+use je_widgets::button::{Button, ButtonLabel, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
+use je_widgets::context_view_api::{Anchor, IContextMenuDelegate, IContextMenuEvent, IContextMenuProvider};
+use je_widgets::dom::{FocusTracker, StandardKeyboardEvent, clear_node, create_detached_el, create_el};
+use je_widgets::highlighted_label::HighlightedLabelStyles;
+use je_widgets::hover_api::{HoverContent, HoverTarget, IHoverOptions};
+use je_widgets::input_box::{InputBox, InputBoxOptions, InputBoxStyles, default_input_box_styles};
+use je_widgets::list::list_types::TemplateData;
+use je_widgets::select_box::{ISelectBoxDelegate, ISelectBoxOptions, ISelectOptionItem, SelectBox};
+use je_widgets::simple_icon_label::SimpleIconLabel;
+use je_widgets::text::{UI_FONT_SIZE, WORKBENCH_LINE_HEIGHT, ellipsize, measure_text, ui_font};
+use je_widgets::toggle::Checkbox;
+use je_widgets::toolbar::{IToolBarOptions, ToolBar};
+use je_widgets::tree::index_tree_model::TreeNode;
+use crate::contrib::preferences::settings_tree::NonCollapsibleObjectTreeModel;
+use je_widgets::tree::tree_types::{ITreeRenderer, TreeElementRenderDetails};
+use zyarr::RegExp;
+
+use crate::contrib::preferences::common::preferences::{LANGUAGE_SETTING_TAG, SETTINGS_EDITOR_COMMAND_SHOW_CONTEXT_MENU};
+use crate::contrib::preferences::preferences_widgets::SettingsTarget;
+use crate::contrib::preferences::settings_editor_setting_indicators::{ISettingOverrideClickEvent, SettingsTreeIndicatorsLabel};
+use crate::contrib::preferences::settings_markdown_view::{MarkdownView, MarkdownViewSlot, MarkdownViewStyles, OwnedMarkdownEnvironment, clean_rendered_markdown};
+use crate::contrib::preferences::settings_tree_models::{
+    SettingsTreeElement, SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeNewExtensionsElement, SettingsTreeSettingElement,
+    object_setting_supports_remove_default_value, setting_key_to_display_format,
+};
+use crate::contrib::preferences::settings_widgets::{
+    BoolObjectSetValueOptions, ExcludeSettingWidget, IBoolObjectDataItem, IIncludeExcludeDataItem, IListDataItem, IObjectDataItem, IncludeSettingWidget,
+    ListSetValueOptions, ListSettingWidget, ListSettingWidgetOptions, ObjectEnumData, ObjectEnumOption, ObjectKey, ObjectKeySuggester, ObjectSetValueOptions,
+    ObjectSettingCheckboxWidget, ObjectSettingDropdownWidget, ObjectValue, ObjectValueSuggester, SettingListEvent, SettingsWidgetServices,
+};
+use crate::services::configuration::common::configuration::{APPLICATION_SCOPES, APPLY_ALL_PROFILES_SETTING, IWorkbenchConfigurationService};
+use crate::services::preferences::preferences::{ISetting, SettingSchemaType, SettingValueType};
+use crate::services::preferences::preferences_models::escape_invisible_chars;
+use crate::services::preferences::preferences_validation::get_invalid_type_error;
+
+// ---- identificadores de template (linhas 792 a 806) ------------------------------------------------------------------------
+
+pub const SETTINGS_TEXT_TEMPLATE_ID: &str = "settings.text.template";
+pub const SETTINGS_MULTILINE_TEXT_TEMPLATE_ID: &str = "settings.multilineText.template";
+pub const SETTINGS_NUMBER_TEMPLATE_ID: &str = "settings.number.template";
+pub const SETTINGS_ENUM_TEMPLATE_ID: &str = "settings.enum.template";
+pub const SETTINGS_BOOL_TEMPLATE_ID: &str = "settings.bool.template";
+pub const SETTINGS_ARRAY_TEMPLATE_ID: &str = "settings.array.template";
+pub const SETTINGS_EXCLUDE_TEMPLATE_ID: &str = "settings.exclude.template";
+pub const SETTINGS_INCLUDE_TEMPLATE_ID: &str = "settings.include.template";
+pub const SETTINGS_OBJECT_TEMPLATE_ID: &str = "settings.object.template";
+pub const SETTINGS_BOOL_OBJECT_TEMPLATE_ID: &str = "settings.boolObject.template";
+pub const SETTINGS_COMPLEX_TEMPLATE_ID: &str = "settings.complex.template";
+pub const SETTINGS_COMPLEX_OBJECT_TEMPLATE_ID: &str = "settings.complexObject.template";
+pub const SETTINGS_NEW_EXTENSIONS_TEMPLATE_ID: &str = "settings.newExtensions.template";
+pub const SETTINGS_ELEMENT_TEMPLATE_ID: &str = "settings.group.template";
+pub const SETTINGS_EXTENSION_TOGGLE_TEMPLATE_ID: &str = "settings.extensionToggle.template";
+
+// ---- medidas de settingsEditor2.css ---------------------------------------------------------------------------------------
+
+/// `.monaco-tl-contents { max-width: min(100%, 1400px) }`.
+const ROW_MAX_WIDTH: f64 = 1400.0;
+/// `.monaco-tl-contents { padding-left: 24px; padding-right: 24px }`.
+const ROW_PADDING_X: f64 = 24.0;
+/// `.setting-item-contents { padding: 12px 14px 18px }`.
+const ITEM_PADDING_TOP: f64 = 12.0;
+const ITEM_PADDING_X: f64 = 14.0;
+const ITEM_PADDING_BOTTOM: f64 = 18.0;
+/// `.setting-item-bool .setting-item-contents, .setting-item-list .setting-item-contents { padding-bottom: 26px }`.
+const ITEM_PADDING_BOTTOM_TALL: f64 = 26.0;
+/// `.setting-item-title { padding-bottom: 2px }`.
+const TITLE_PADDING_BOTTOM: f64 = 2.0;
+/// `.setting-item-label { margin-right: 7px }`.
+const LABEL_MARGIN_RIGHT: f64 = 7.0;
+/// `.setting-item-description { margin-top: -1px }`.
+const DESCRIPTION_MARGIN_TOP: f64 = -1.0;
+/// `.setting-item-value { margin-top: 9px }`.
+const VALUE_MARGIN_TOP: f64 = 9.0;
+/// `.setting-item-deprecation-message { margin-top: 3px }` e a variante informativa (`--vscode-spacing-size60`).
+const DEPRECATION_MARGIN_TOP: f64 = 3.0;
+const DEPRECATION_INFO_MARGIN_TOP: f64 = 6.0;
+/// O `margin-right: 4px` do codicon da depreciação e o tamanho dele.
+const DEPRECATION_ICON_SIZE: f64 = 16.0;
+const DEPRECATION_ICON_MARGIN: f64 = 4.0;
+/// `.setting-toolbar-container { position: absolute; left: -22px; top: 8px; width: 22px; height: 22px }`.
+const TOOLBAR_LEFT: f64 = -22.0;
+const TOOLBAR_TOP: f64 = 8.0;
+const TOOLBAR_SIZE: f64 = 22.0;
+/// `.setting-item-modified-indicator { left: 5px; top: 15px; bottom: 18px; width: 6px; border-left-width: 2px }`.
+const MODIFIED_LEFT: f64 = 5.0;
+const MODIFIED_TOP: f64 = 15.0;
+const MODIFIED_WIDTH: f64 = 6.0;
+const MODIFIED_BORDER: f64 = 2.0;
+/// `bottom: 23px` do indicador em `bool` e `list`.
+const MODIFIED_BOTTOM_TALL: f64 = 23.0;
+/// `data-focusable`: a marca de `removeChildrenFromTabOrder`.
+const ELEMENT_FOCUSABLE_ATTR: &str = "data-focusable";
+/// `.setting-item-validation-message { padding: 5px; border: 1px }`.
+const VALIDATION_PADDING: f64 = 5.0;
+const VALIDATION_BORDER: f64 = 1.0;
+/// `.setting-item-list .setting-item-contents.invalid-input .setting-item-validation-message { margin-top: 1rem }`.
+const VALIDATION_MARGIN_TOP: f64 = 16.0;
+/// `.complex-object-edit-in-settings-button-container { margin-top: 9px }`.
+const COMPLEX_BUTTON_MARGIN_TOP: f64 = 9.0;
+/// `.settings-group-title-label { padding: 10px; padding-left: 15px }` e os tamanhos por nível.
+const GROUP_PADDING: f64 = 10.0;
+const GROUP_PADDING_LEFT: f64 = 15.0;
+/// `.setting-item-new-extensions .settings-new-extensions-button { margin-bottom: 15px }`.
+const NEW_EXTENSIONS_MARGIN_BOTTOM: f64 = 15.0;
+/// `.setting-item.setting-item-text .setting-item-control { width: 420px }` (e a mensagem de validação do texto).
+const TEXT_CONTROL_WIDTH: f64 = 420.0;
+/// `.setting-item-number .setting-item-value > .setting-item-control { min-width: 200px }` (e a mensagem de validação do número).
+const NUMBER_CONTROL_WIDTH: f64 = 200.0;
+/// `.setting-item-enum .setting-item-value > .setting-item-control > select { width: 320px }`.
+const ENUM_SELECT_WIDTH: f64 = 320.0;
+/// `.setting-item-bool .setting-value-checkbox { height: 18px; width: 18px; margin-right: 9px }`.
+const BOOL_CHECKBOX_SIZE: f64 = 18.0;
+const BOOL_CHECKBOX_MARGIN_RIGHT: f64 = 9.0;
+/// `.setting-item-extension-dismiss-button { margin-left: 8px }`.
+const EXTENSION_DISMISS_MARGIN_LEFT: f64 = 8.0;
+
+/// O `isIOS` do original (ver o `//!`).
+const IS_IOS: bool = false;
+
+// ---- eventos e templates -----------------------------------------------------------------------------------------------------
+
+/// `HeightChangeParams`.
+#[derive(Clone)]
+pub struct HeightChangeParams {
+    pub element: Rc<SettingsTreeSettingElement>,
+    pub height: f64,
+}
+
+/// `SettingValueType | SettingValueType[]`.
+#[derive(Clone)]
+pub enum SettingChangeType {
+    Single(SettingValueType),
+    Many(Vec<SettingValueType>),
+}
+
+/// `ISettingChangeEvent`.
+#[derive(Clone)]
+pub struct ISettingChangeEvent {
+    pub key: String,
+    /// `undefined` é reset ou desconfigurar.
+    pub value: Dynamic,
+    pub r#type: SettingChangeType,
+    pub manual_reset: bool,
+    pub scope: Option<ConfigurationScope>,
+}
+
+/// `ISettingLinkClickEvent`.
+#[derive(Clone)]
+pub struct ISettingLinkClickEvent {
+    pub source: Rc<SettingsTreeSettingElement>,
+    pub target_key: String,
+}
+
+/// O `onChange?` do template: compartilhado com os ouvintes dos widgets (ver o `//!`).
+pub type OnChangeSlot = Rc<RefCell<Option<Rc<dyn Fn(Dynamic)>>>>;
+
+/// `template.onChange?.(value)`, sem segurar o empréstimo durante a chamada.
+fn call_on_change(on_change: &OnChangeSlot, value: Dynamic) {
+    let callback = on_change.borrow().clone();
+    if let Some(callback) = callback {
+        callback(value);
+    }
+}
+
+/// `ISettingItemTemplate`, com os nós do DOM que o original deixa de fora do template mas o layout precisa (`row_element`,
+/// `title_element`, `label_container_element`, `modified_indicator_element`, `value_element`, `toolbar_container`).
+pub struct ISettingItemTemplate {
+    pub to_dispose: Rc<DisposableStore>,
+    pub element_disposables: Rc<DisposableStore>,
+    /// `onChange?`.
+    pub on_change: OnChangeSlot,
+    pub context: Rc<RefCell<Option<Rc<SettingsTreeSettingElement>>>>,
+    pub row_element: NodeId,
+    pub container_element: NodeId,
+    pub title_element: NodeId,
+    pub category_element: NodeId,
+    pub label_container_element: NodeId,
+    pub label_element: Rc<SimpleIconLabel>,
+    pub description_element: NodeId,
+    pub modified_indicator_element: NodeId,
+    pub value_element: NodeId,
+    pub control_element: NodeId,
+    pub deprecation_warning_element: NodeId,
+    pub toolbar_container: NodeId,
+    pub indicators_label: Rc<SettingsTreeIndicatorsLabel>,
+    pub toolbar: Rc<ToolBar>,
+    /// A classe de tipo (`setting-item-<type_class>`), que decide o `padding-bottom`.
+    pub type_class: String,
+    pub description_view: MarkdownViewSlot,
+    pub deprecation_view: MarkdownViewSlot,
+    /// A altura que o último [`AbstractSettingRenderer::layout_setting_item`] deu à linha.
+    pub height: Cell<f64>,
+    /// Onde o conteúdo termina (a altura menos o `padding-bottom`).
+    pub content_bottom: Cell<f64>,
+    /// A mensagem de validação que fica em fluxo entre a descrição e o valor (`setting-item-list`); os renderizadores de array e
+    /// de objeto a registram (ver o `//!`).
+    pub flow_validation_message: Cell<Option<NodeId>>,
+    /// A altura do que vem depois da mensagem de depreciação, em fluxo (os botões `inline-block` do toggle de extensão); o
+    /// renderizador a registra antes do layout e [`AbstractSettingRenderer::layout_setting_item`] a soma ao conteúdo.
+    pub tail_height: Cell<f64>,
+}
+
+/// `ISettingComplexItemTemplate`.
+pub struct ISettingComplexItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub button: NodeId,
+    pub validation_error_message_element: NodeId,
+}
+
+impl Deref for ISettingComplexItemTemplate {
+    type Target = ISettingItemTemplate;
+
+    fn deref(&self) -> &ISettingItemTemplate {
+        &self.common
+    }
+}
+
+/// `ISettingComplexObjectItemTemplate`.
+pub struct ISettingComplexObjectItemTemplate {
+    pub complex: ISettingComplexItemTemplate,
+    pub object_setting_widget: Rc<ObjectSettingDropdownWidget>,
+    /// O `.complex-object-edit-in-settings-button-container` que envolve o botão.
+    pub button_container: NodeId,
+}
+
+impl Deref for ISettingComplexObjectItemTemplate {
+    type Target = ISettingComplexItemTemplate;
+
+    fn deref(&self) -> &ISettingComplexItemTemplate {
+        &self.complex
+    }
+}
+
+/// `ISettingNewExtensionsTemplate`.
+pub struct ISettingNewExtensionsTemplate {
+    pub to_dispose: Rc<DisposableStore>,
+    pub button: Rc<Button>,
+    pub context: Rc<RefCell<Option<Rc<SettingsTreeNewExtensionsElement>>>>,
+}
+
+/// `IGroupTitleTemplate`.
+pub struct IGroupTitleTemplate {
+    pub to_dispose: Rc<DisposableStore>,
+    pub context: RefCell<Option<Rc<SettingsTreeGroupElement>>>,
+    pub parent: NodeId,
+}
+
+// ---- o elemento da árvore ----------------------------------------------------------------------------------------------------
+
+/// A identidade de um filho de grupo (o `===` do original): a variante e o endereço do `Rc`.
+pub(crate) fn child_identity(child: &SettingsTreeGroupChild) -> (u8, usize) {
+    match child {
+        SettingsTreeGroupChild::Group(element) => (0, Rc::as_ptr(element) as usize),
+        SettingsTreeGroupChild::Setting(element) => (1, Rc::as_ptr(element) as usize),
+        SettingsTreeGroupChild::NewExtensions(element) => (2, Rc::as_ptr(element) as usize),
+    }
+}
+
+impl PartialEq for SettingsTreeGroupChild {
+    fn eq(&self, other: &Self) -> bool {
+        child_identity(self) == child_identity(other)
+    }
+}
+
+impl Eq for SettingsTreeGroupChild {}
+
+impl Hash for SettingsTreeGroupChild {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        child_identity(self).hash(state);
+    }
+}
+
+/// O modelo da árvore de configurações: o [`NonCollapsibleObjectTreeModel`] de [`SettingsTreeGroupChild`], que o `createModel`
+/// do `SettingsTree` devolve.
+pub type SettingsObjectTreeModel = NonCollapsibleObjectTreeModel<SettingsTreeGroupChild>;
+/// O nó desse modelo.
+pub type SettingsTreeNode = TreeNode<Option<SettingsTreeGroupChild>>;
+
+fn setting_of(node: &SettingsTreeNode) -> Option<&Rc<SettingsTreeSettingElement>> {
+    node.element.as_ref()?.as_setting()
+}
+
+// ---- estilos e serviços ------------------------------------------------------------------------------------------------------
+
+/// As cores do template, resolvidas do tema (o que o CSS lê com `var(--vscode-...)`).
+#[derive(Clone)]
+pub struct SettingRendererStyles {
+    pub foreground: Rgba,
+    /// `--vscode-settings-headerForeground`: o rótulo, a categoria e o título do grupo.
+    pub header_foreground: Rgba,
+    /// `--vscode-settings-modifiedItemIndicator`.
+    pub modified_item_indicator: Option<Rgba>,
+    /// `--vscode-settings-rowHoverBackground`.
+    pub row_hover_background: Option<Rgba>,
+    /// `--vscode-errorForeground`: a mensagem de depreciação.
+    pub error_foreground: Rgba,
+    /// `--vscode-editorInfo-foreground`: o ícone da depreciação informativa.
+    pub info_foreground: Rgba,
+    pub validation_error_background: Option<Rgba>,
+    pub validation_error_foreground: Rgba,
+    pub validation_error_border: Option<Rgba>,
+    /// `getInputBoxStyle({ inputBackground: settingsNumberInputBackground, ... })` (`settingsNumberInputBoxStyles`).
+    pub number_input_box: InputBoxStyles,
+    pub markdown: MarkdownViewStyles,
+}
+
+impl SettingRendererStyles {
+    pub fn from_theme(theme: &ColorTheme) -> Self {
+        let color = |id: &str| theme.get_color(id);
+        let foreground = color("foreground").unwrap_or(Rgba::opaque(0xcc, 0xcc, 0xcc));
+        let mut number_input_box = default_input_box_styles(theme);
+        number_input_box.input_background = color("settings.numberInputBackground");
+        number_input_box.input_foreground = color("settings.numberInputForeground");
+        number_input_box.input_border = color("settings.numberInputBorder");
+        Self {
+            foreground,
+            header_foreground: color("settings.headerForeground").unwrap_or(foreground),
+            modified_item_indicator: color("settings.modifiedItemIndicator"),
+            row_hover_background: color("settings.rowHoverBackground"),
+            error_foreground: color("errorForeground").unwrap_or(Rgba::opaque(0xf4, 0x87, 0x71)),
+            info_foreground: color("editorInfo.foreground").unwrap_or(Rgba::opaque(0x37, 0x94, 0xff)),
+            validation_error_background: color("inputValidation.errorBackground"),
+            validation_error_foreground: color("inputValidation.errorForeground").unwrap_or(foreground),
+            validation_error_border: color("inputValidation.errorBorder"),
+            number_input_box,
+            markdown: MarkdownViewStyles::from_theme(theme),
+        }
+    }
+}
+
+/// O pacote de serviços do construtor do `AbstractSettingRenderer` (ver o `//!`).
+#[derive(Clone)]
+pub struct SettingRendererServices {
+    /// A janela, o provedor de vista de contexto, o hover e os estilos dos widgets.
+    pub widgets: SettingsWidgetServices,
+    pub styles: SettingRendererStyles,
+    pub opener_service: Rc<dyn IOpenerService>,
+    pub command_service: Rc<dyn ICommandService>,
+    /// O que o `IContextMenuService` dá ao `ToolBar`.
+    pub context_menu_provider: Rc<dyn IContextMenuProvider>,
+    pub keybinding_service: Rc<dyn IKeybindingService>,
+    pub configuration_service: Rc<dyn IWorkbenchConfigurationService>,
+    pub language_service: Rc<dyn ILanguageService>,
+    pub user_data_sync_enablement_service: Rc<dyn IUserDataSyncEnablementService>,
+    pub markdown_environment: Rc<OwnedMarkdownEnvironment>,
+    /// `aria.alert` e `aria.status` (o `renderArrayValidations` anuncia o erro de validação).
+    pub accessibility_host: Rc<dyn IAccessibilityHost>,
+    /// `ITelemetryService` (o toggle de extensão registra `ManageExtensionClick` e `DismissExtensionClick`).
+    pub telemetry_service: Rc<dyn ITelemetryService>,
+}
+
+impl SettingRendererServices {
+    fn ui(&self) -> &Ui {
+        &self.widgets.ui
+    }
+}
+
+/// `this._register(new Emitter<T>())`.
+fn registered_emitter<T: 'static>(base: &Disposable) -> Rc<Emitter<T>> {
+    let emitter = Emitter::<T>::new();
+    base.register(emitter.clone());
+    emitter
+}
+
+/// `(setting: ISetting, settingTarget: SettingsTarget) => IAction[]`.
+pub type DisposableActionFactory = Rc<dyn Fn(&ISetting, &SettingsTarget) -> Vec<ActionRef>>;
+
+// ---- auxiliares do template -----------------------------------------------------------------------------------------------------
+
+/// A caixa de `.monaco-tl-contents` dentro da linha: o `x` e a largura do que fica depois do `padding`.
+fn contents_box(row_width: f64) -> (f64, f64) {
+    let content = row_width.min(ROW_MAX_WIDTH);
+    ((row_width - content) / 2.0 + ROW_PADDING_X, (content - 2.0 * ROW_PADDING_X).max(0.0))
+}
+
+/// A largura do texto de um `.setting-item-contents` numa linha da largura dada.
+fn item_text_width(row_width: f64) -> f64 {
+    (contents_box(row_width).1 - 2.0 * ITEM_PADDING_X).max(0.0)
+}
+
+/// O quanto um nó ocupa na horizontal, pelo conteúdo dele (texto, codicon ou o fim do último filho).
+fn node_extent(tree: &Tree, node: NodeId) -> f64 {
+    match &tree.style(node).content {
+        Content::Text { text, style, .. } => measure_text(text, style),
+        Content::Codicon { size, .. } => f64::from(*size),
+        _ => tree.children(node).iter().map(|child| tree.bounds(*child).x1).fold(0.0, f64::max),
+    }
+}
+
+/// Põe os filhos visíveis de `container` em fila, da esquerda para a direita, e devolve a largura. O fluxo em linha do DOM
+/// (`display: inline`) dos indicadores, que o `je-ui` não tem.
+fn flow_inline(tree: &mut Tree, container: NodeId, line_height: f64) -> f64 {
+    let mut x = 0.0;
+    for child in tree.children(container).to_vec() {
+        if !tree.style(child).visible {
+            continue;
+        }
+        let width = node_extent(tree, child);
+        tree.set_bounds(child, Rect::new(x, 0.0, x + width, line_height));
+        x += width;
+    }
+    x
+}
+
+/// Põe `text` como conteúdo de uma linha do nó (a fonte da UI no peso dado) e devolve a largura; texto vazio tira o conteúdo.
+fn set_text(tree: &mut Tree, node: NodeId, text: &str, weight: u16, color: Rgba) -> f64 {
+    if text.is_empty() {
+        tree.style_mut(node).content = Content::None;
+        return 0.0;
+    }
+    let style = ui_font(UI_FONT_SIZE, weight);
+    let width = measure_text(text, &style);
+    tree.style_mut(node).content = Content::Text { text: text.to_owned(), style, color, line_height: WORKBENCH_LINE_HEIGHT };
+    width
+}
+
+fn is_natively_focusable(role: Role) -> bool {
+    matches!(role, Role::Button | Role::Link | Role::TextInput | Role::ComboBox | Role::ListBox | Role::Checkbox | Role::Radio | Role::Switch)
+}
+
+/// `removeChildrenFromTabOrder`.
+fn remove_children_from_tab_order(tree: &mut Tree, node: NodeId) {
+    for descendant in tree.subtree(node) {
+        let tab_index = tree.attribute(descendant, "tabindex").map(str::to_owned);
+        let focusable = tab_index.as_deref() == Some("0") || (tab_index.as_deref() != Some("-1") && is_natively_focusable(tree.role(descendant)));
+        if focusable {
+            tree.set_attribute(descendant, ELEMENT_FOCUSABLE_ATTR, "true");
+            tree.set_attribute(descendant, "tabindex", "-1");
+        }
+    }
+}
+
+/// `addChildrenToTabOrder`.
+fn add_children_to_tab_order(tree: &mut Tree, node: NodeId) {
+    for descendant in tree.subtree(node) {
+        if tree.attribute(descendant, ELEMENT_FOCUSABLE_ATTR) == Some("true") {
+            tree.remove_attribute(descendant, ELEMENT_FOCUSABLE_ATTR);
+            tree.set_attribute(descendant, "tabindex", "0");
+        }
+    }
+}
+
+/// `fixSettingLinks`: `` `#editor.fontSize#` `` e `'#editor.fontSize#'` viram um link para a configuração (ou só o nome entre
+/// aspas, sem `linkify`).
+pub fn fix_setting_links(text: &str, linkify: bool) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let quote = chars[index];
+        if (quote == '`' || quote == '\'') && chars.get(index + 1) == Some(&'#') {
+            let start = index + 2;
+            let mut end = start;
+            while end < chars.len() && chars[end] != '#' && chars[end] != quote && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            if end > start && chars.get(end) == Some(&'#') && chars.get(end + 1) == Some(&quote) {
+                let setting_key: String = chars[start..end].iter().collect();
+                let target_display_format = setting_key_to_display_format(&setting_key, "", false);
+                let target_name = format!("{}: {}", target_display_format.category, target_display_format.label);
+                if linkify {
+                    result.push_str(&format!("[{target_name}](#{setting_key} \"{setting_key}\")"));
+                } else {
+                    result.push_str(&format!("\"{target_name}\""));
+                }
+                index = end + 2;
+                continue;
+            }
+        }
+        result.push(quote);
+        index += 1;
+    }
+    result
+}
+
+/// `getLanguageTagSettingPlainKey(key)` como texto.
+fn plain_language_key(key: &str) -> String {
+    get_language_tag_setting_plain_key(key).to_string_lossy()
+}
+
+/// `renderValidations` do `SettingComplexRenderer` (linhas 1275 a 1284), a parte de [`Dynamic`] do tipo.
+pub(crate) fn invalid_type_error(element: &SettingsTreeSettingElement) -> Option<String> {
+    if !element.is_configured() {
+        return None;
+    }
+    let type_ = match &element.setting.r#type {
+        None => Dynamic::Undefined,
+        Some(SettingSchemaType::Single(name)) => Dynamic::string(name),
+        Some(SettingSchemaType::List(names)) => Dynamic::array(names.iter().map(|name| Dynamic::string(name))),
+    };
+    get_invalid_type_error(&element.value(), &type_)
+}
+
+// ---- getObjectDisplayValue (linhas 124 a 256) ---------------------------------------------------------------------------------
+
+/// `'' + value`: a conversão de texto do JavaScript.
+pub fn js_text(value: &Dynamic) -> String {
+    match value {
+        Dynamic::Undefined => "undefined".to_owned(),
+        Dynamic::Null => "null".to_owned(),
+        Dynamic::Bool(value) => value.to_string(),
+        Dynamic::Number(value) => number_to_js_string(*value),
+        Dynamic::String(text) => text.to_string_lossy(),
+        Dynamic::Array(items) => items.to_vec().iter().map(|item| if item.is_nullish() { String::new() } else { js_text(item) }).collect::<Vec<_>>().join(","),
+        _ => "[object Object]".to_owned(),
+    }
+}
+
+/// O texto de um valor que pode estar ausente (`description?: string`).
+fn optional_text(value: &Dynamic) -> Option<String> {
+    if value.is_nullish() { None } else { Some(js_text(value)) }
+}
+
+fn array_items(value: &Dynamic) -> Vec<Dynamic> {
+    match value {
+        Dynamic::Array(items) => items.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_text(value: &Dynamic, expected: &str) -> bool {
+    matches!(value, Dynamic::String(text) if text.to_string_lossy() == expected)
+}
+
+/// `typeof value === 'object' ? value ?? {} : {}` como as entradas de `Object.entries`.
+fn object_entries(value: &Dynamic) -> Vec<(JsString, Dynamic)> {
+    match value {
+        Dynamic::Object(_) | Dynamic::Array(_) => value.own_entries(),
+        _ => Vec::new(),
+    }
+}
+
+/// `{ ...defaults, ...overrides }`: a chave repetida mantém o lugar da primeira e o valor da última.
+fn merge_entries(defaults: &[(JsString, Dynamic)], overrides: &[(JsString, Dynamic)]) -> Vec<(JsString, Dynamic)> {
+    let mut merged: Vec<(JsString, Dynamic)> = defaults.to_vec();
+    for (key, value) in overrides {
+        match merged.iter_mut().find(|(existing, _)| existing == key) {
+            Some(entry) => entry.1 = value.clone(),
+            None => merged.push((key.clone(), value.clone())),
+        }
+    }
+    merged
+}
+
+fn lookup(entries: &[(JsString, Dynamic)], key: &JsString) -> Dynamic {
+    entries.iter().find(|(candidate, _)| candidate == key).map_or(Dynamic::Undefined, |(_, value)| value.clone())
+}
+
+/// `getEnumOptionsFromSchema`.
+pub fn get_enum_options_from_schema(schema: &Dynamic) -> Vec<ObjectEnumOption> {
+    let any_of = schema.get_str("anyOf");
+    if any_of.is_truthy() {
+        return array_items(&any_of).iter().flat_map(get_enum_options_from_schema).collect();
+    }
+    let descriptions = array_items(&schema.get_str("enumDescriptions"));
+    array_items(&schema.get_str("enum"))
+        .iter()
+        .enumerate()
+        .map(|(index, value)| ObjectEnumOption { value: js_text(value), description: descriptions.get(index).and_then(optional_text) })
+        .collect()
+}
+
+/// `ObjectValue['type']`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectValueType {
+    Boolean,
+    Enum,
+    String,
+}
+
+/// `getObjectValueType`.
+pub fn get_object_value_type(schema: &Dynamic) -> ObjectValueType {
+    let any_of = schema.get_str("anyOf");
+    if any_of.is_truthy() {
+        let sub_types: Vec<ObjectValueType> = array_items(&any_of).iter().map(get_object_value_type).collect();
+        return if sub_types.contains(&ObjectValueType::Enum) { ObjectValueType::Enum } else { ObjectValueType::String };
+    }
+
+    let type_ = schema.get_str("type");
+    let enum_values = schema.get_str("enum");
+    if is_text(&type_, "boolean") {
+        ObjectValueType::Boolean
+    } else if is_text(&type_, "string") && !enum_values.is_nullish() && !array_items(&enum_values).is_empty() {
+        ObjectValueType::Enum
+    } else {
+        ObjectValueType::String
+    }
+}
+
+/// `getObjectEntryValueDisplayValue`.
+fn get_object_entry_value_display_value(type_: ObjectValueType, data: &Dynamic, options: Vec<ObjectEnumOption>) -> ObjectValue {
+    match type_ {
+        ObjectValueType::Boolean => ObjectValue::Boolean(data.is_truthy()),
+        ObjectValueType::Enum => ObjectValue::Enum(ObjectEnumData { data: js_text(data), options }),
+        ObjectValueType::String => ObjectValue::String(js_text(data)),
+    }
+}
+
+/// O nome da origem de um valor padrão (`typeof source === 'string' ? source : source?.displayName`).
+fn default_source_display_name(source: &ConfigurationDefaultSource) -> Option<String> {
+    match source {
+        ConfigurationDefaultSource::Text(text) => Some(text.clone()),
+        ConfigurationDefaultSource::Extension(extension) => extension.display_name.clone(),
+    }
+}
+
+/// A origem de um valor padrão que o item mostra: o nome de quem o deu quando `data_value` ainda é o padrão (`defaultValue ===
+/// data[key]`) de uma configuração de objeto com mapa de origens. `source_key` é a chave do mapa.
+fn default_value_source_name(element: &SettingsTreeSettingElement, default_value: &Dynamic, data_value: &Dynamic, source_key: &str) -> Option<String> {
+    if default_value.strict_equals(data_value)
+        && element.setting.r#type.as_ref().is_some_and(|type_| type_.is("object"))
+        && let Some(ConfigurationDefaultValueSource::Map(map)) = element.default_value_source()
+    {
+        let name = map.borrow().get(&JsString::from(source_key)).and_then(default_source_display_name);
+        return name;
+    }
+    None
+}
+
+/// A `RegExp` de um padrão do esquema, ou o `SyntaxError` do `new RegExp` do original.
+fn compile_pattern(pattern: &str) -> RegExp {
+    RegExp::from_str(pattern, "").unwrap_or_else(|error| errors::throw(Error::named("SyntaxError", format!("Invalid regular expression: /{pattern}/: {}", error.message()))))
+}
+
+fn reg_exp_test(regex: &RegExp, text: &str) -> bool {
+    regex.exec(&text.encode_utf16().collect::<Vec<u16>>(), 0).is_some()
+}
+
+/// `getObjectDisplayValue`.
+pub fn get_object_display_value(element: &SettingsTreeSettingElement) -> Vec<IObjectDataItem> {
+    let element_default_value = object_entries(&element.default_value());
+    let element_scope_value = object_entries(&element.scope_value());
+
+    let data: Vec<(JsString, Dynamic)> = if element.is_configured() {
+        merge_entries(&element_default_value, &element_scope_value)
+    } else if element.has_policy_value() || element.is_agents_window_read_only() {
+        element.scope_value().own_entries()
+    } else {
+        element_default_value.clone()
+    };
+
+    let setting = &element.setting;
+    let object_properties = setting.object_properties.clone().filter(|value| !value.is_nullish());
+    let object_pattern_properties = setting.object_pattern_properties.clone().unwrap_or(Dynamic::Undefined);
+    let object_additional_properties = setting.object_additional_properties.clone().unwrap_or(Dynamic::Undefined);
+
+    let patterns_and_schemas: Vec<(RegExp, Dynamic)> = object_entries(&object_pattern_properties).into_iter().map(|(pattern, schema)| (compile_pattern(&pattern.to_string_lossy()), schema)).collect();
+
+    let well_defined_key_enum_options: Vec<ObjectEnumOption> = object_properties
+        .as_ref()
+        .map(|properties| {
+            object_entries(properties)
+                .into_iter()
+                .map(|(key, schema)| ObjectEnumOption { value: key.to_string_lossy(), description: optional_text(&schema.get_str("description")) })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let additional_schema = match &object_additional_properties {
+        Dynamic::Bool(_) | Dynamic::Undefined | Dynamic::Null => None,
+        other => Some(other.clone()),
+    };
+
+    data.iter()
+        .map(|(key, data_value)| {
+            let key_text = key.to_string_lossy();
+            let default_value = lookup(&element_default_value, key);
+
+            // Get source if it's a default value
+            let source = default_value_source_name(element, &default_value, data_value, &format!("{}.{}", setting.key, key_text));
+
+            if let Some(properties) = &object_properties
+                && properties.has_property(key)
+            {
+                let property_schema = properties.get(key);
+                let value_enum_options = get_enum_options_from_schema(&property_schema);
+                return IObjectDataItem {
+                    key: ObjectKey::Enum(ObjectEnumData { data: key_text, options: well_defined_key_enum_options.clone() }),
+                    value: get_object_entry_value_display_value(get_object_value_type(&property_schema), data_value, value_enum_options),
+                    key_description: optional_text(&property_schema.get_str("description")),
+                    removable: default_value.is_nullish(),
+                    resetable: !default_value.is_nullish(),
+                    source,
+                };
+            }
+
+            // The row is removable if it doesn't have a default value assigned or the setting supports removing the default value.
+            // If a default value is assigned and the user modified the default, it can be reset back to the default.
+            let removable = default_value.is_undefined() || object_setting_supports_remove_default_value(&setting.key);
+            let resetable = default_value.is_truthy() && !default_value.strict_equals(data_value);
+            let schema = patterns_and_schemas.iter().find(|(pattern, _)| reg_exp_test(pattern, &key_text)).map(|(_, schema)| schema);
+            if let Some(schema) = schema {
+                let value_enum_options = get_enum_options_from_schema(schema);
+                return IObjectDataItem {
+                    key: ObjectKey::String(key_text),
+                    value: get_object_entry_value_display_value(get_object_value_type(schema), data_value, value_enum_options),
+                    key_description: optional_text(&schema.get_str("description")),
+                    removable,
+                    resetable,
+                    source,
+                };
+            }
+
+            let additional_value_enums = get_enum_options_from_schema(&additional_schema.clone().unwrap_or_else(|| Dynamic::object(Vec::<(&str, Dynamic)>::new())));
+            let additional_type = match &additional_schema {
+                Some(schema @ (Dynamic::Object(_) | Dynamic::Array(_))) => get_object_value_type(schema),
+                _ => ObjectValueType::String,
+            };
+            IObjectDataItem {
+                key: ObjectKey::String(key_text),
+                value: get_object_entry_value_display_value(additional_type, data_value, additional_value_enums),
+                key_description: match &additional_schema {
+                    Some(schema @ (Dynamic::Object(_) | Dynamic::Array(_))) => optional_text(&schema.get_str("description")),
+                    _ => None,
+                },
+                removable,
+                resetable,
+                source,
+            }
+        })
+        .collect()
+}
+
+// ---- AbstractSettingRenderer (linhas 856 a 1137) ------------------------------------------------------------------------------
+
+/// `AbstractSettingRenderer`.
+pub struct AbstractSettingRenderer {
+    base: Rc<Disposable>,
+    weak_self: Weak<AbstractSettingRenderer>,
+    pub(crate) services: SettingRendererServices,
+    setting_actions: Vec<ActionRef>,
+    disposable_action_factory: DisposableActionFactory,
+    ignored_settings: RefCell<Vec<String>>,
+    on_did_click_override_element: Rc<Emitter<ISettingOverrideClickEvent>>,
+    pub(crate) on_did_change_setting: Rc<Emitter<ISettingChangeEvent>>,
+    pub(crate) on_did_open_settings: Rc<Emitter<String>>,
+    on_did_click_setting_link: Rc<Emitter<ISettingLinkClickEvent>>,
+    pub(crate) on_did_focus_setting: Rc<Emitter<Rc<SettingsTreeSettingElement>>>,
+    on_did_change_ignored_settings: Rc<Emitter<()>>,
+    pub(crate) on_did_change_setting_height: Rc<Emitter<HeightChangeParams>>,
+    pub(crate) on_apply_filter: Rc<Emitter<String>>,
+}
+
+impl AbstractSettingRenderer {
+    pub const CONTROL_CLASS: &'static str = "setting-control-focus-target";
+    pub const CONTENTS_CLASS: &'static str = "setting-item-contents";
+    pub const SETTING_KEY_ATTR: &'static str = "data-key";
+    pub const SETTING_ID_ATTR: &'static str = "data-id";
+    pub const ELEMENT_FOCUSABLE_ATTR: &'static str = ELEMENT_FOCUSABLE_ATTR;
+
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        let base = Disposable::new();
+        let ignored_settings = Self::read_ignored_settings(&*services.configuration_service);
+
+        let this = Rc::new_cyclic(|weak| Self {
+            weak_self: weak.clone(),
+            services: services.clone(),
+            setting_actions,
+            disposable_action_factory,
+            ignored_settings: RefCell::new(ignored_settings),
+            on_did_click_override_element: registered_emitter::<ISettingOverrideClickEvent>(&base),
+            on_did_change_setting: registered_emitter::<ISettingChangeEvent>(&base),
+            on_did_open_settings: registered_emitter::<String>(&base),
+            on_did_click_setting_link: registered_emitter::<ISettingLinkClickEvent>(&base),
+            on_did_focus_setting: registered_emitter::<Rc<SettingsTreeSettingElement>>(&base),
+            on_did_change_ignored_settings: registered_emitter::<()>(&base),
+            on_did_change_setting_height: registered_emitter::<HeightChangeParams>(&base),
+            on_apply_filter: registered_emitter::<String>(&base),
+            base: base.clone(),
+        });
+
+        let weak = Rc::downgrade(&this);
+        base.register(services.configuration_service.on_did_change_configuration().listen(move |_| {
+            if let Some(this) = weak.upgrade() {
+                *this.ignored_settings.borrow_mut() = Self::read_ignored_settings(&*this.services.configuration_service);
+                this.on_did_change_ignored_settings.fire(());
+            }
+        }));
+        this
+    }
+
+    /// `getIgnoredSettings(getDefaultIgnoredSettings(), this._configService)`.
+    pub(crate) fn read_ignored_settings(configuration_service: &dyn IWorkbenchConfigurationService) -> Vec<String> {
+        let defaults = get_default_ignored_settings(false);
+        get_ignored_settings(&defaults, configuration_service, None).iter().map(JsString::to_string_lossy).collect()
+    }
+
+    pub fn on_did_click_override_element(&self) -> BaseEvent<ISettingOverrideClickEvent> {
+        self.on_did_click_override_element.event()
+    }
+
+    pub fn on_did_change_setting(&self) -> BaseEvent<ISettingChangeEvent> {
+        self.on_did_change_setting.event()
+    }
+
+    pub fn on_did_open_settings(&self) -> BaseEvent<String> {
+        self.on_did_open_settings.event()
+    }
+
+    pub fn on_did_click_setting_link(&self) -> BaseEvent<ISettingLinkClickEvent> {
+        self.on_did_click_setting_link.event()
+    }
+
+    pub fn on_did_focus_setting(&self) -> BaseEvent<Rc<SettingsTreeSettingElement>> {
+        self.on_did_focus_setting.event()
+    }
+
+    pub fn on_did_change_ignored_settings(&self) -> BaseEvent<()> {
+        self.on_did_change_ignored_settings.event()
+    }
+
+    pub fn on_did_change_setting_height(&self) -> BaseEvent<HeightChangeParams> {
+        self.on_did_change_setting_height.event()
+    }
+
+    pub fn on_apply_filter(&self) -> BaseEvent<String> {
+        self.on_apply_filter.event()
+    }
+
+    /// `this._register(new Emitter<T>())` das subclasses: o emissor é descartado com o renderizador.
+    pub(crate) fn register_emitter<T: 'static>(&self) -> Rc<Emitter<T>> {
+        registered_emitter(&self.base)
+    }
+
+    /// `hoverService.setupDelayedHover(target, { content })`.
+    fn setup_text_hover(&self, target: NodeId, content: String) -> je_base::lifecycle::DisposableRef {
+        self.services.widgets.hover_service.setup_delayed_hover(target, Rc::new(move || IHoverOptions::new(HoverContent::Text(content.clone()), HoverTarget::Node(target))), None)
+    }
+
+    /// Os estilos do texto dos indicadores (`font-style: italic` do `.setting-indicators-container`).
+    fn indicators_styles(&self) -> HighlightedLabelStyles {
+        HighlightedLabelStyles {
+            foreground: self.services.styles.foreground,
+            highlight_foreground: None,
+            highlight_background: None,
+            highlight_weight: 400,
+            font_size: UI_FONT_SIZE,
+            font_weight: 400,
+            line_height: Some(WORKBENCH_LINE_HEIGHT),
+            italic: true,
+            strikethrough: false,
+            inherit_foreground: false,
+        }
+    }
+
+    /// `renderCommonTemplate(tree, _container, typeClass)`. `row_element` é o `_container`.
+    pub fn render_common_template(&self, row_element: NodeId, type_class: &str) -> ISettingItemTemplate {
+        let ui = self.services.ui();
+        let to_dispose = DisposableStore::new();
+        let styles = &self.services.styles;
+
+        // O título e o contêiner de indicadores (criado dentro do `SettingsTreeIndicatorsLabel`, depois do rótulo) vêm antes
+        // da descrição, como no original; o indicador de modificação, o valor e o resto seguem a ordem do DOM.
+        let (container, title_element, category_element, label_container_element) = {
+            let mut tree = ui.tree_mut();
+            tree.add_class(row_element, "setting-item");
+            tree.add_class(row_element, &format!("setting-item-{type_class}"));
+
+            let container = create_el(&mut tree, row_element, Role::Generic, "setting-item-contents settings-row-inner-container");
+            let title_element = create_el(&mut tree, container, Role::Generic, "setting-item-title");
+            let label_category_container = create_el(&mut tree, title_element, Role::Generic, "setting-item-cat-label-container");
+            let category_element = create_el(&mut tree, label_category_container, Role::Generic, "setting-item-category");
+            let label_container_element = create_el(&mut tree, label_category_container, Role::Generic, "setting-item-label");
+            (container, title_element, category_element, label_container_element)
+        };
+
+        let label_styles = HighlightedLabelStyles {
+            foreground: styles.header_foreground,
+            highlight_foreground: None,
+            highlight_background: None,
+            highlight_weight: 600,
+            font_size: UI_FONT_SIZE,
+            font_weight: 600,
+            line_height: Some(WORKBENCH_LINE_HEIGHT),
+            italic: false,
+            strikethrough: false,
+            inherit_foreground: false,
+        };
+        let label_element = to_dispose.add_rc(Rc::new(SimpleIconLabel::new(ui, label_container_element, label_styles)));
+        let indicators_label = to_dispose.add_rc(Rc::new(SettingsTreeIndicatorsLabel::new(
+            ui,
+            self.indicators_styles(),
+            title_element,
+            Some(self.services.configuration_service.clone()),
+            self.services.widgets.hover_service.clone(),
+            Some(self.services.user_data_sync_enablement_service.clone()),
+            Some(self.services.language_service.clone()),
+            Some(self.services.command_service.clone()),
+        )));
+
+        let (description_element, modified_indicator_element, value_element, control_element, deprecation_warning_element, toolbar_container) = {
+            let mut tree = ui.tree_mut();
+            let description_element = create_el(&mut tree, container, Role::Generic, "setting-item-description");
+            let modified_indicator_element = create_el(&mut tree, container, Role::Generic, "setting-item-modified-indicator");
+            let value_element = create_el(&mut tree, container, Role::Generic, "setting-item-value");
+            let control_element = create_el(&mut tree, value_element, Role::Generic, "setting-item-control");
+            let deprecation_warning_element = create_el(&mut tree, container, Role::Generic, "setting-item-deprecation-message");
+            // `.setting-item-deprecation-message { display: none }`
+            tree.style_mut(deprecation_warning_element).visible = false;
+            let toolbar_container = create_el(&mut tree, container, Role::Generic, "setting-toolbar-container");
+            (description_element, modified_indicator_element, value_element, control_element, deprecation_warning_element, toolbar_container)
+        };
+
+        to_dispose.add(self.setup_text_hover(modified_indicator_element, localize("modified", "The setting has been configured in the current scope.", &[])));
+
+        let toolbar = to_dispose.add_rc(self.render_setting_toolbar(toolbar_container));
+
+        let template = ISettingItemTemplate {
+            to_dispose: to_dispose.clone(),
+            element_disposables: to_dispose.add_rc(DisposableStore::new()),
+            on_change: Rc::new(RefCell::new(None)),
+            context: Rc::new(RefCell::new(None)),
+            row_element,
+            container_element: container,
+            title_element,
+            category_element,
+            label_container_element,
+            label_element,
+            description_element,
+            modified_indicator_element,
+            value_element,
+            control_element,
+            deprecation_warning_element,
+            toolbar_container,
+            indicators_label,
+            toolbar,
+            type_class: type_class.to_owned(),
+            description_view: RefCell::new(None),
+            deprecation_view: RefCell::new(None),
+            height: Cell::new(0.0),
+            content_bottom: Cell::new(0.0),
+            flow_validation_message: Cell::new(None),
+            tail_height: Cell::new(0.0),
+        };
+
+        // Prevent clicks from being handled by list
+        to_dispose.add(ui.listen(control_element, EventKind::PointerDown, false, |e| e.stop_propagation()));
+
+        for (kind, over) in [(EventKind::PointerEnter, true), (EventKind::PointerLeave, false)] {
+            let ui_for_class = ui.clone();
+            to_dispose.add(ui.listen(title_element, kind, false, move |_| {
+                ui_for_class.tree_mut().toggle_class(container, "mouseover", over);
+            }));
+        }
+
+        // `.monaco-list-row:not(.focused) .settings-row-inner-container:hover { background-color: settings.rowHoverBackground }`
+        if let Some(hover_background) = styles.row_hover_background {
+            for (kind, over) in [(EventKind::PointerEnter, true), (EventKind::PointerLeave, false)] {
+                let ui_for_hover = ui.clone();
+                to_dispose.add(ui.listen(container, kind, false, move |_| {
+                    let mut tree = ui_for_hover.tree_mut();
+                    let row_is_focused = std::iter::successors(tree.parent(container), |node| tree.parent(*node)).any(|node| tree.has_class(node, "focused"));
+                    tree.style_mut(container).background = (over && !row_is_focused).then_some(hover_background);
+                }));
+            }
+        }
+
+        template
+    }
+
+    /// `addSettingElementFocusHandler(template)`.
+    pub fn add_setting_element_focus_handler(&self, template: &ISettingItemTemplate) {
+        let ui = self.services.ui();
+        let container = template.container_element;
+        let focus_tracker = FocusTracker::new(ui, container);
+        template.to_dispose.add_rc(focus_tracker.clone());
+
+        let ui_for_blur = ui.clone();
+        template.to_dispose.add(focus_tracker.on_did_blur().listen(move |_| {
+            let mut tree = ui_for_blur.tree_mut();
+            if tree.has_class(container, "focused") {
+                tree.remove_class(container, "focused");
+            }
+        }));
+
+        let (ui_for_focus, context, emitter) = (ui.clone(), template.context.clone(), self.on_did_focus_setting.clone());
+        template.to_dispose.add(focus_tracker.on_did_focus().listen(move |_| {
+            ui_for_focus.tree_mut().add_class(container, "focused");
+            let current = context.borrow().clone();
+            if let Some(current) = current {
+                emitter.fire(current);
+            }
+        }));
+    }
+
+    /// `renderSettingToolbar(container)`.
+    fn render_setting_toolbar(&self, container: NodeId) -> Rc<ToolBar> {
+        let toggle_menu_title = self.services.keybinding_service.append_keybinding(
+            &localize("settingsContextMenuTitle", "More Actions... ", &[]),
+            Some(SETTINGS_EDITOR_COMMAND_SHOW_CONTEXT_MENU),
+            None,
+            false,
+        );
+        ToolBar::new(
+            self.services.ui(),
+            container,
+            self.services.context_menu_provider.clone(),
+            IToolBarOptions {
+                toggle_menu_title: Some(toggle_menu_title),
+                render_dropdown_as_child_element: !IS_IOS,
+                more_icon: Some(ThemeIcon::from_id("gear")),
+                styles: Some(self.services.widgets.styles.action_bar.clone()),
+                ..IToolBarOptions::default()
+            },
+        )
+    }
+
+    /// `renderSettingElement(node, index, template)`. `render_value` é o `this.renderValue(element, template, onChange)`.
+    pub fn render_setting_element(&self, element: &Rc<SettingsTreeSettingElement>, template: &ISettingItemTemplate, render_value: &dyn Fn(Rc<dyn Fn(Dynamic)>)) {
+        let ui = self.services.ui();
+        let styles = &self.services.styles;
+
+        // The element must inspect itself to get information for
+        // the modified indicator and the overridden Settings indicators.
+        element.inspect_self();
+
+        *template.context.borrow_mut() = Some(element.clone());
+        template.toolbar.set_context(Some(Dynamic::from(ObjectRef::with_host(element.clone()))));
+        let actions = (self.disposable_action_factory)(&element.setting, &element.settings_target);
+        for action in &actions {
+            if action.as_base_action().is_some() {
+                let action = action.clone();
+                template.element_disposables.add(to_disposable(move || {
+                    if let Some(base) = action.as_base_action() {
+                        base.dispose();
+                    }
+                }));
+            }
+        }
+        let all_actions: Vec<ActionRef> = self.setting_actions.iter().chain(actions.iter()).cloned().collect();
+        template.toolbar.set_actions(&[], &all_actions);
+
+        let setting = &element.setting;
+        let is_configured = element.is_configured();
+
+        {
+            let mut tree = ui.tree_mut();
+            tree.toggle_class(template.container_element, "is-configured", is_configured);
+            tree.set_attribute(template.container_element, Self::SETTING_KEY_ATTR, setting.key.clone());
+            tree.set_attribute(template.container_element, Self::SETTING_ID_ATTR, element.id());
+        }
+
+        let title_tooltip = format!("{}{}", setting.key, if is_configured { " - Modified" } else { "" });
+        let display_category = element.display_category();
+        {
+            let mut tree = ui.tree_mut();
+            let text = if display_category.is_empty() { String::new() } else { format!("{display_category}: ") };
+            set_text(&mut tree, template.category_element, &text, 600, styles.header_foreground);
+            tree.style_mut(template.category_element).opacity = 0.9;
+        }
+        template.element_disposables.add(self.setup_text_hover(template.category_element, title_tooltip.clone()));
+
+        template.label_element.set_text(&element.display_label());
+        template.label_element.set_title(&title_tooltip);
+
+        // `descriptionElement.innerText = ''`
+        {
+            let mut tree = ui.tree_mut();
+            clear_node(&mut tree, template.description_element);
+        }
+        let description_view = if setting.description_is_markdown.unwrap_or(false) {
+            self.render_setting_markdown(element, template.container_element, element.description(), &template.element_disposables)
+        } else {
+            template.element_disposables.add_rc(MarkdownView::from_plain_text(ui, element.description(), &styles.markdown))
+        };
+        ui.tree_mut().append_child(template.description_element, description_view.root());
+        *template.description_view.borrow_mut() = Some(description_view);
+
+        template.indicators_label.update_scope_overrides(&**element, &self.on_did_click_override_element, &self.on_apply_filter);
+        {
+            let (indicators, element, click, filter) = (template.indicators_label.clone(), element.clone(), self.on_did_click_override_element.clone(), self.on_apply_filter.clone());
+            template.element_disposables.add(self.services.configuration_service.on_did_change_configuration().listen(move |e| {
+                if e.affects_configuration(APPLY_ALL_PROFILES_SETTING, None) {
+                    indicators.update_scope_overrides(&*element, &click, &filter);
+                }
+            }));
+        }
+
+        let on_change: Rc<dyn Fn(Dynamic)> = {
+            let (emitter, element, context) = (self.on_did_change_setting.clone(), element.clone(), template.context.clone());
+            Rc::new(move |value| {
+                let value_type = context.borrow().as_ref().map_or_else(|| element.value_type(), |current| current.value_type());
+                emitter.fire(ISettingChangeEvent {
+                    key: element.setting.key.clone(),
+                    value,
+                    r#type: SettingChangeType::Single(value_type),
+                    manual_reset: false,
+                    scope: element.setting.scope,
+                });
+            })
+        };
+
+        self.render_deprecation(element, template);
+
+        *template.on_change.borrow_mut() = Some(on_change.clone());
+        render_value(on_change);
+
+        template.indicators_label.update_workspace_trust(&**element);
+        template.indicators_label.update_sync_ignored(&**element, &self.ignored_settings.borrow());
+        template.indicators_label.update_default_override_indicator(&**element);
+        template.indicators_label.update_preview_indicator(&**element);
+        template.indicators_label.update_advanced_indicator(&**element);
+        {
+            let (weak, indicators, element) = (self.weak_self.clone(), template.indicators_label.clone(), element.clone());
+            template.element_disposables.add(self.on_did_change_ignored_settings.event().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    indicators.update_sync_ignored(&*element, &this.ignored_settings.borrow());
+                }
+            }));
+        }
+
+        self.update_setting_tabbable(element, template);
+        {
+            let (weak, element_for_listener, container) = (self.weak_self.clone(), element.clone(), template.container_element);
+            template.element_disposables.add(element.on_did_change_tabbable().listen(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    Self::apply_tabbable(this.services.ui(), &element_for_listener, container);
+                }
+            }));
+        }
+    }
+
+    /// A parte da depreciação de `renderSettingElement`: o texto (em Markdown ou não), o ícone e as classes.
+    fn render_deprecation(&self, element: &Rc<SettingsTreeSettingElement>, template: &ISettingItemTemplate) {
+        let ui = self.services.ui();
+        let styles = &self.services.styles;
+        let setting = &element.setting;
+        let deprecation_text = setting.deprecation_message.clone().unwrap_or_default();
+
+        // `deprecationWarningElement.innerText = ''` nos dois ramos
+        {
+            let mut tree = ui.tree_mut();
+            clear_node(&mut tree, template.deprecation_warning_element);
+        }
+        let view = if !deprecation_text.is_empty() && setting.deprecation_message_is_markdown.unwrap_or(false) {
+            Some(self.render_setting_markdown(element, template.container_element, &deprecation_text, &template.element_disposables))
+        } else if !deprecation_text.is_empty() {
+            Some(template.element_disposables.add_rc(MarkdownView::from_plain_text(ui, &deprecation_text, &styles.markdown)))
+        } else {
+            None
+        };
+
+        let is_informational_deprecation = setting.deprecation_message_severity.as_deref() == Some("info");
+        {
+            let mut tree = ui.tree_mut();
+            // `prepend(deprecationIcon)`: o ícone vem antes do texto.
+            let icon = tree.create(template.deprecation_warning_element, Role::Image);
+            tree.set_class_name(icon, if is_informational_deprecation { "codicon codicon-info" } else { "codicon codicon-error" });
+            tree.style_mut(icon).content = Content::Codicon {
+                id: (if is_informational_deprecation { "info" } else { "error" }).to_owned(),
+                size: DEPRECATION_ICON_SIZE as f32,
+                color: if is_informational_deprecation { styles.info_foreground } else { styles.error_foreground },
+            };
+            tree.set_label(
+                icon,
+                if is_informational_deprecation { localize("setting.deprecationMessageSeverity.info", "Info", &[]) } else { localize("setting.deprecationMessageSeverity.warning", "Warning", &[]) },
+            );
+            if let Some(view) = &view {
+                tree.append_child(template.deprecation_warning_element, view.root());
+            }
+            tree.toggle_class(template.container_element, "is-deprecated", !deprecation_text.is_empty());
+            tree.toggle_class(template.container_element, "is-deprecated-info", !deprecation_text.is_empty() && is_informational_deprecation);
+            // `.setting-item-deprecation-message { display: none }`, `display: flex` com `.is-deprecated`.
+            tree.style_mut(template.deprecation_warning_element).visible = !deprecation_text.is_empty();
+        }
+        *template.deprecation_view.borrow_mut() = view;
+    }
+
+    /// `updateSettingTabbable(element, template)`.
+    fn update_setting_tabbable(&self, element: &Rc<SettingsTreeSettingElement>, template: &ISettingItemTemplate) {
+        Self::apply_tabbable(self.services.ui(), element, template.container_element);
+    }
+
+    fn apply_tabbable(ui: &Ui, element: &SettingsTreeSettingElement, container: NodeId) {
+        let mut tree = ui.tree_mut();
+        if element.tabbable() {
+            add_children_to_tab_order(&mut tree, container);
+        } else {
+            remove_children_from_tab_order(&mut tree, container);
+        }
+    }
+
+    /// `renderSettingMarkdown(element, container, text, disposables)`.
+    fn render_setting_markdown(&self, element: &Rc<SettingsTreeSettingElement>, container: NodeId, text: &str, disposables: &DisposableStore) -> Rc<MarkdownView> {
+        let ui = self.services.ui();
+        // Rewrite `#editor.fontSize#` to link format
+        let markdown = IMarkdownString { value: JsString::from(fix_setting_links(text, true)), is_trusted: Some(IsTrusted::Bool(true)), ..IMarkdownString::default() };
+
+        let action_handler = {
+            let (weak, element) = (self.weak_self.clone(), element.clone());
+            Rc::new(move |content: &JsString, _markdown: &IMarkdownString| {
+                let Some(this) = weak.upgrade() else { return };
+                let content = content.to_string_lossy();
+                if let Some(target_key) = content.strip_prefix('#') {
+                    this.on_did_click_setting_link.fire(ISettingLinkClickEvent { source: element.clone(), target_key: target_key.to_owned() });
+                } else {
+                    let options = OpenOptions { allow_commands: Some(AllowCommands::Bool(true)), ..OpenOptions::default() };
+                    let _ = this.services.opener_service.open(&OpenResource::Text(JsString::from(content)), Some(&options)).catch(|error| {
+                        on_unexpected_error(&error);
+                        false
+                    });
+                }
+            })
+        };
+        let async_render_callback = {
+            let (ui, weak, element) = (ui.clone(), self.weak_self.clone(), element.clone());
+            Rc::new(move || {
+                let height = ui.tree().bounds(container).height();
+                if height > 0.0 && let Some(this) = weak.upgrade() {
+                    this.on_did_change_setting_height.fire(HeightChangeParams { element: element.clone(), height });
+                }
+            })
+        };
+        let options = MarkdownRenderOptions { action_handler: Some(action_handler), async_render_callback: Some(async_render_callback), ..MarkdownRenderOptions::default() };
+        let rendered = render_markdown(&markdown, &options, &self.services.markdown_environment.borrowed()).unwrap_or_else(|error| errors::throw(Error::new(error.to_string())));
+        clean_rendered_markdown(&mut rendered.element.borrow_mut());
+        let view = MarkdownView::from_rendered(ui, rendered, self.services.markdown_environment.clone(), &self.services.styles.markdown);
+        disposables.add_rc(view)
+    }
+
+    /// `disposeElement(element, index, template)`.
+    pub fn dispose_element(&self, template: &ISettingItemTemplate) {
+        template.element_disposables.clear();
+    }
+
+    /// `disposeTemplate(template)`.
+    pub fn dispose_template(&self, template: &ISettingItemTemplate) {
+        template.to_dispose.dispose();
+    }
+
+    /// O layout do template: empilha título, descrição, valor e mensagem de depreciação (ver o `//!`), posiciona a barra de
+    /// ferramentas e o indicador de modificação, e devolve a altura da linha. `control_size` é o tamanho do controle (o
+    /// `.setting-item-control`) que o renderizador do valor já calculou.
+    pub fn layout_setting_item(&self, template: &ISettingItemTemplate, control_size: (f64, f64)) -> f64 {
+        let ui = self.services.ui();
+        let styles = &self.services.styles;
+        let line_height = styles.markdown.line_height;
+        let row_width = ui.tree().bounds(template.row_element).width();
+        let (left, inner_width) = contents_box(row_width);
+        let text_width = (inner_width - 2.0 * ITEM_PADDING_X).max(0.0);
+
+        // As vistas de Markdown medem a si mesmas (elas mexem na árvore): antes de abrir o empréstimo abaixo.
+        let is_bool = template.type_class == "bool";
+        // No `bool` a descrição fica ao lado da caixa de marcação (ver o `//!`).
+        let description_x = if is_bool { BOOL_CHECKBOX_SIZE + BOOL_CHECKBOX_MARGIN_RIGHT } else { 0.0 };
+        let description_width = (text_width - description_x).max(0.0);
+        let description_height = template.description_view.borrow().as_ref().map_or(0.0, |view| view.layout(description_width));
+        let (is_deprecated, is_deprecated_info) = {
+            let tree = ui.tree();
+            (tree.has_class(template.container_element, "is-deprecated"), tree.has_class(template.container_element, "is-deprecated-info"))
+        };
+        let deprecation_text_width = (text_width - DEPRECATION_ICON_SIZE - DEPRECATION_ICON_MARGIN).max(0.0);
+        let deprecation_text_height = if is_deprecated { template.deprecation_view.borrow().as_ref().map_or(0.0, |view| view.layout(deprecation_text_width)) } else { 0.0 };
+
+        let bottom_padding = if matches!(template.type_class.as_str(), "bool" | "list") { ITEM_PADDING_BOTTOM_TALL } else { ITEM_PADDING_BOTTOM };
+        let mut tree = ui.tree_mut();
+        let mut y = ITEM_PADDING_TOP;
+
+        // título: a categoria e o rótulo flutuam à esquerda, os indicadores seguem em linha
+        let category_width = match &tree.style(template.category_element).content {
+            Content::Text { text, style, .. } => measure_text(text, style),
+            _ => 0.0,
+        };
+        let label_width = node_extent(&tree, template.label_container_element);
+        tree.set_bounds(template.category_element, Rect::new(0.0, 0.0, category_width, line_height));
+        tree.set_bounds(template.label_container_element, Rect::new(category_width, 0.0, category_width + label_width, line_height));
+        let label_end = category_width + label_width + LABEL_MARGIN_RIGHT;
+        let mut title_width = label_end;
+        if let Some(indicators) = tree.children_with_class(template.title_element, "setting-indicators-container").first().copied() {
+            let width = if tree.style(indicators).visible { flow_inline(&mut tree, indicators, line_height) } else { 0.0 };
+            tree.set_bounds(indicators, Rect::new(label_end, 0.0, label_end + width, line_height));
+            title_width += width;
+        }
+        let title_height = line_height + TITLE_PADDING_BOTTOM;
+        tree.set_bounds(template.title_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + title_width.min(text_width), y + title_height));
+        y += title_height + DESCRIPTION_MARGIN_TOP;
+
+        if is_bool {
+            // `.setting-item-value-description`: o controle (um float) e a descrição lado a lado, sem o `margin-top` do valor
+            tree.set_bounds(template.value_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + description_height));
+            tree.set_bounds(template.description_element, Rect::new(description_x, 0.0, description_x + description_width, description_height));
+            tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, BOOL_CHECKBOX_SIZE, BOOL_CHECKBOX_SIZE));
+            y += description_height;
+        } else {
+            // descrição
+            tree.set_bounds(template.description_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + description_height));
+            y += description_height;
+
+            // a mensagem de validação em fluxo (`position: static; margin-top: 1rem` em `.setting-item-list`)
+            if let Some(message) = template.flow_validation_message.get()
+                && tree.style(message).visible
+            {
+                y += VALIDATION_MARGIN_TOP;
+                let height = line_height + 2.0 * (VALIDATION_PADDING + VALIDATION_BORDER);
+                tree.set_bounds(message, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + height));
+                style_validation_message(&mut tree, message, styles);
+                y += height;
+            }
+
+            // valor
+            y += VALUE_MARGIN_TOP;
+            tree.set_bounds(template.value_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + control_size.1));
+            tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, control_size.0, control_size.1));
+            y += control_size.1;
+        }
+
+        // depreciação
+        if is_deprecated {
+            y += if is_deprecated_info { DEPRECATION_INFO_MARGIN_TOP } else { DEPRECATION_MARGIN_TOP };
+            let height = deprecation_text_height.max(DEPRECATION_ICON_SIZE);
+            tree.set_bounds(template.deprecation_warning_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + height));
+            if let Some(icon) = tree.children(template.deprecation_warning_element).first().copied() {
+                tree.set_bounds(icon, Rect::new(0.0, 0.0, DEPRECATION_ICON_SIZE, DEPRECATION_ICON_SIZE));
+            }
+            if let Some(view) = template.deprecation_view.borrow().as_ref() {
+                let root = tree.bounds(view.root());
+                let x = DEPRECATION_ICON_SIZE + DEPRECATION_ICON_MARGIN;
+                tree.set_bounds(view.root(), Rect::new(x, 0.0, x + root.width(), root.height()));
+            }
+            y += height;
+        }
+
+        y += template.tail_height.get();
+        let content_bottom = y;
+        y += bottom_padding;
+
+        // a barra de ferramentas e o indicador de modificação, absolutos
+        tree.set_bounds(template.toolbar_container, Rect::new(TOOLBAR_LEFT, TOOLBAR_TOP, TOOLBAR_LEFT + TOOLBAR_SIZE, TOOLBAR_TOP + TOOLBAR_SIZE));
+        let configured = tree.has_class(template.container_element, "is-configured");
+        tree.style_mut(template.modified_indicator_element).visible = configured;
+        // `bottom: 18px` (a borda de baixo do conteúdo), ou `bottom: 23px` em `bool` e `list`
+        let modified_bottom = if bottom_padding == ITEM_PADDING_BOTTOM_TALL { y - MODIFIED_BOTTOM_TALL } else { content_bottom };
+        tree.set_bounds(template.modified_indicator_element, Rect::new(MODIFIED_LEFT, MODIFIED_TOP, MODIFIED_LEFT + MODIFIED_WIDTH, modified_bottom.max(MODIFIED_TOP)));
+        if let Some(color) = styles.modified_item_indicator {
+            let indicator = tree.style_mut(template.modified_indicator_element);
+            indicator.border = Some(Border { width: MODIFIED_BORDER, color });
+            indicator.border_widths = Some([0.0, 0.0, 0.0, MODIFIED_BORDER]);
+        }
+
+        tree.set_bounds(template.container_element, Rect::new(left, 0.0, left + inner_width, y));
+        drop(tree);
+        template.toolbar.action_bar().layout();
+
+        template.height.set(y);
+        template.content_bottom.set(content_bottom);
+        y
+    }
+
+    /// `.setting-item-validation-message` absoluta, logo abaixo do conteúdo (sem mudar a altura da linha), com a largura do texto
+    /// mais o `padding: 5px` e a borda, ou a `width` fixa do CSS (`box-sizing: border-box`) de `width`. Chamada depois de
+    /// [`Self::layout_setting_item`].
+    pub fn place_validation_message(&self, template: &ISettingItemTemplate, element: NodeId, width: Option<f64>) {
+        let ui = self.services.ui();
+        let mut tree = ui.tree_mut();
+        if !tree.style(element).visible {
+            return;
+        }
+        let line_height = self.services.styles.markdown.line_height;
+        let inset = VALIDATION_PADDING + VALIDATION_BORDER;
+        let width = width.unwrap_or_else(|| node_extent(&tree, element) + 2.0 * inset);
+        let top = template.content_bottom.get() - VALIDATION_BORDER;
+        tree.set_bounds(element, Rect::new(ITEM_PADDING_X, top, ITEM_PADDING_X + width, top + line_height + 2.0 * inset));
+        style_validation_message(&mut tree, element, &self.services.styles);
+    }
+}
+
+impl IDisposable for AbstractSettingRenderer {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "AbstractSettingRenderer"
+    }
+}
+
+// ---- SettingGroupRenderer (linhas 1139 a 1167) ----------------------------------------------------------------------------------
+
+/// `SettingGroupRenderer`.
+pub struct SettingGroupRenderer {
+    ui: Ui,
+    styles: SettingRendererStyles,
+}
+
+impl SettingGroupRenderer {
+    pub fn new(ui: Ui, styles: SettingRendererStyles) -> Self {
+        Self { ui, styles }
+    }
+
+    /// `.settings-group-level-N { font-size }`: 26, 22 e 18 px nos três primeiros níveis, o padrão nos outros.
+    fn font_size(level: usize) -> f32 {
+        match level {
+            1 => 26.0,
+            2 => 22.0,
+            3 => 18.0,
+            _ => UI_FONT_SIZE,
+        }
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingGroupRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_ELEMENT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        self.ui.tree_mut().add_class(container, "group-title");
+        Rc::new(IGroupTitleTemplate { to_dispose: DisposableStore::new(), context: RefCell::new(None), parent: container }) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, details: Option<&TreeElementRenderDetails>) {
+        let Some(template) = template_data.downcast_ref::<IGroupTitleTemplate>() else { return };
+        let Some(SettingsTreeGroupChild::Group(group)) = node.element.as_ref() else { return };
+        let mut tree = self.ui.tree_mut();
+
+        // `templateData.parent.innerText = ''`
+        clear_node(&mut tree, template.parent);
+        let label_element = create_el(&mut tree, template.parent, Role::Generic, "settings-group-title-label settings-row-inner-container");
+        tree.add_class(label_element, &format!("settings-group-level-{}", group.level()));
+        if group.is_first_group() {
+            tree.add_class(label_element, "settings-group-first");
+        }
+
+        let container = tree.bounds(template.parent);
+        let height = details.and_then(|details| details.height).unwrap_or_else(|| container.height());
+        let (left, width) = contents_box(container.width());
+        tree.set_bounds(label_element, Rect::new(left, 0.0, left + width, height));
+
+        // `textContent = label`, com `padding: 10px 10px 10px 15px` e `text-overflow: ellipsis`.
+        let text_node = tree.create(label_element, Role::Heading);
+        let style = ui_font(Self::font_size(group.level()), 600);
+        let text_width = (width - GROUP_PADDING_LEFT - GROUP_PADDING).max(0.0);
+        let label = ellipsize(&group.label(), &style, text_width);
+        tree.set_label(text_node, group.label());
+        tree.set_bounds(text_node, Rect::new(GROUP_PADDING_LEFT, GROUP_PADDING, GROUP_PADDING_LEFT + text_width, GROUP_PADDING + WORKBENCH_LINE_HEIGHT));
+        tree.style_mut(text_node).content = Content::Text { text: label, style, color: self.styles.header_foreground, line_height: WORKBENCH_LINE_HEIGHT };
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<IGroupTitleTemplate>() {
+            template.to_dispose.dispose();
+        }
+    }
+}
+
+// ---- SettingNewExtensionsRenderer (linhas 1169 a 1207) -------------------------------------------------------------------------
+
+/// `SettingNewExtensionsRenderer`.
+pub struct SettingNewExtensionsRenderer {
+    ui: Ui,
+    command_service: Rc<dyn ICommandService>,
+    button_styles: ButtonStyles,
+}
+
+impl SettingNewExtensionsRenderer {
+    pub fn new(ui: Ui, command_service: Rc<dyn ICommandService>, button_styles: ButtonStyles) -> Self {
+        Self { ui, command_service, button_styles }
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingNewExtensionsRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_NEW_EXTENSIONS_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let to_dispose = DisposableStore::new();
+        self.ui.tree_mut().add_class(container, "setting-item-new-extensions");
+
+        let button = to_dispose.add_rc(Button::new(&self.ui, container, ButtonOptions { styles: self.button_styles.clone(), title: ButtonTitle::Auto, ..ButtonOptions::default() }));
+        let context: Rc<RefCell<Option<Rc<SettingsTreeNewExtensionsElement>>>> = Rc::new(RefCell::new(None));
+        let (command_service, shared_context) = (self.command_service.clone(), context.clone());
+        to_dispose.add(button.on_did_click().listen(move |_| {
+            let current = shared_context.borrow().clone();
+            if let Some(current) = current {
+                let extension_ids = Dynamic::array(current.extension_ids.iter().map(|id| Dynamic::string(id)));
+                let _ = command_service.execute_command("workbench.extensions.action.showExtensionsWithIds", vec![extension_ids]);
+            }
+        }));
+        button.set_label(ButtonLabel::Text(localize("newExtensionsButtonLabel", "Show matching extensions", &[])));
+        self.ui.tree_mut().add_class(button.element(), "settings-new-extensions-button");
+
+        Rc::new(ISettingNewExtensionsTemplate { to_dispose, button, context }) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, details: Option<&TreeElementRenderDetails>) {
+        let Some(template) = template_data.downcast_ref::<ISettingNewExtensionsTemplate>() else { return };
+        if let Some(SettingsTreeGroupChild::NewExtensions(element)) = node.element.as_ref() {
+            *template.context.borrow_mut() = Some(element.clone());
+        }
+
+        // `.setting-item-new-extensions { display: flex }` e `.settings-new-extensions-button { margin: auto; margin-bottom: 15px; width: initial }`
+        let container = {
+            let tree = self.ui.tree();
+            let parent = tree.parent(template.button.element()).unwrap_or_else(|| tree.root());
+            tree.bounds(parent)
+        };
+        let height = details.and_then(|details| details.height).unwrap_or_else(|| container.height());
+        template.button.set_height(None);
+        template.button.set_width(Some(template.button.min_content_width()));
+        let (width, button_height) = template.button.size();
+        template.button.set_position(((container.width() - width) / 2.0).max(0.0), ((height - NEW_EXTENSIONS_MARGIN_BOTTOM - button_height) / 2.0).max(0.0));
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingNewExtensionsTemplate>() {
+            template.to_dispose.dispose();
+        }
+    }
+}
+
+// ---- SettingComplexRenderer (linhas 1209 a 1285) ---------------------------------------------------------------------------------
+
+/// `SettingComplexRenderer`.
+pub struct SettingComplexRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingComplexRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingComplexRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `SettingComplexRenderer.EDIT_IN_JSON_LABEL`.
+    fn edit_in_json_label() -> String {
+        localize("editInSettingsJson", "Edit in settings.json", &[])
+    }
+
+    /// O botão `a.edit-in-settings-button`, dentro de `parent`, com o papel de botão e a mão como cursor. `extra_classes` (com
+    /// espaço no fim) vem antes das classes do botão.
+    fn create_edit_button(&self, parent: NodeId, extra_classes: &str) -> NodeId {
+        let mut tree = self.services.ui().tree_mut();
+        let button = create_el(&mut tree, parent, Role::Button, &format!("{extra_classes}edit-in-settings-button {}", AbstractSettingRenderer::CONTROL_CLASS));
+        tree.style_mut(button).cursor = Some(Cursor::Pointer);
+        tree.style_mut(button).opacity = 0.9;
+        button
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingComplexItemTemplate) {
+        let ui = self.services.ui();
+        let plain_key = plain_language_key(&data_element.setting.key);
+        let edit_language_setting_label = localize("editLanguageSettingLabel", "Edit settings for {0}", &[&plain_key]);
+        let is_language_tag_setting = data_element.setting.is_language_tag_setting.unwrap_or(false);
+        let button_text = if is_language_tag_setting { edit_language_setting_label.clone() } else { Self::edit_in_json_label() };
+        set_text(&mut ui.tree_mut(), template.button, &button_text, 400, self.services.styles.markdown.link_foreground);
+
+        let on_click_or_keydown = {
+            let (apply_filter, open_settings, key) = (self.on_apply_filter.clone(), self.on_did_open_settings.clone(), data_element.setting.key.clone());
+            let plain_key = plain_key.clone();
+            Rc::new(move |e: &mut je_ui::Event| {
+                if is_language_tag_setting {
+                    apply_filter.fire(format!("@{LANGUAGE_SETTING_TAG}{}", plain_key.replace(' ', "")));
+                } else {
+                    open_settings.fire(key.clone());
+                }
+                e.prevent_default();
+                e.stop_propagation();
+            })
+        };
+        let on_click = on_click_or_keydown.clone();
+        template.element_disposables.add(ui.listen(template.button, EventKind::Click, false, move |e| on_click(e)));
+        template.element_disposables.add(ui.listen(template.button, EventKind::KeyDown, false, move |e| {
+            let Some(key) = StandardKeyboardEvent::from_event(e) else { return };
+            if key.equals(KeyCode::Space.bits()) || key.equals(KeyCode::Enter.bits()) {
+                on_click_or_keydown(e);
+            }
+        }));
+
+        self.render_validations(data_element, template);
+
+        ui.tree_mut().set_label(
+            template.button,
+            if is_language_tag_setting { edit_language_setting_label } else { format!("{}: {}", Self::edit_in_json_label(), data_element.setting.key) },
+        );
+    }
+
+    /// `renderValidations(dataElement, template)`.
+    fn render_validations(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingComplexItemTemplate) {
+        let ui = self.services.ui();
+        let mut tree = ui.tree_mut();
+        match invalid_type_error(data_element) {
+            Some(error_message) => {
+                tree.add_class(template.container_element, "invalid-input");
+                // `validationErrorMessageElement.innerText = errMsg`
+                set_text(&mut tree, template.validation_error_message_element, &error_message, 400, self.services.styles.validation_error_foreground);
+                tree.style_mut(template.validation_error_message_element).visible = true;
+            }
+            None => {
+                tree.remove_class(template.container_element, "invalid-input");
+                tree.style_mut(template.validation_error_message_element).visible = false;
+            }
+        }
+    }
+
+    /// O layout da linha complexa: o botão de editar é o controle (`.setting-item-control`), e a mensagem de validação fica
+    /// abaixo do conteúdo. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingComplexItemTemplate) -> f64 {
+        let ui = self.services.ui();
+        let line_height = self.services.styles.markdown.line_height;
+        let button_width = node_extent(&ui.tree(), template.button);
+        ui.tree_mut().set_bounds(template.button, Rect::new(0.0, 0.0, button_width, line_height));
+        let height = self.layout_setting_item(&template.common, (button_width, line_height));
+        self.place_validation_message(&template.common, template.validation_error_message_element, None);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingComplexRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_COMPLEX_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "complex");
+
+        let button = self.create_edit_button(common.control_element, "");
+        let validation_error_message_element = create_validation_message(self.services.ui(), common.container_element, None);
+
+        let template = ISettingComplexItemTemplate { common, button, validation_error_message_element };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingComplexItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|_on_change| self.render_value(element, template));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingComplexItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingComplexItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingComplexObjectRenderer (linhas 1287 a 1326) ---------------------------------------------------------------------------
+
+/// `SettingComplexObjectRenderer`.
+pub struct SettingComplexObjectRenderer {
+    complex: Rc<SettingComplexRenderer>,
+}
+
+impl Deref for SettingComplexObjectRenderer {
+    type Target = SettingComplexRenderer;
+
+    fn deref(&self) -> &SettingComplexRenderer {
+        &self.complex
+    }
+}
+
+impl SettingComplexObjectRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { complex: SettingComplexRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingComplexObjectItemTemplate) {
+        let items = get_object_display_value(data_element);
+        template.object_setting_widget.set_value(
+            items,
+            Some(ObjectSetValueOptions {
+                setting_key: data_element.setting.key.clone(),
+                show_add_button: false,
+                is_read_only: Some(true),
+                key_suggester: None,
+                value_suggester: None,
+                property_names: None,
+            }),
+        );
+        let hide = data_element.has_policy_value() || data_element.is_agents_window_read_only();
+        {
+            let mut tree = self.services.ui().tree_mut();
+            tree.toggle_class(template.button_container, "hide", hide);
+            tree.style_mut(template.button_container).visible = !hide;
+        }
+        self.complex.render_value(data_element, &template.complex);
+    }
+
+    /// O layout da linha: a lista de objeto na largura do texto, depois o botão de editar (`margin-top: 9px`).
+    pub fn layout(&self, template: &ISettingComplexObjectItemTemplate) -> f64 {
+        let ui = self.services.ui();
+        let (text_width, list_height) = layout_widget_control(ui, &template.common, template.object_setting_widget.dom_node(), || template.object_setting_widget.layout());
+
+        let button_visible = ui.tree().style(template.button_container).visible;
+        let line_height = self.services.styles.markdown.line_height;
+        let button_width = node_extent(&ui.tree(), template.button);
+        {
+            let mut tree = ui.tree_mut();
+            tree.set_bounds(template.button, Rect::new(0.0, 0.0, button_width, line_height));
+            let top = list_height + COMPLEX_BUTTON_MARGIN_TOP;
+            tree.set_bounds(template.button_container, Rect::new(0.0, top, button_width, top + line_height));
+        }
+        let control_height = list_height + if button_visible { COMPLEX_BUTTON_MARGIN_TOP + line_height } else { 0.0 };
+        let height = self.layout_setting_item(&template.common, (text_width, control_height));
+        self.place_validation_message(&template.common, template.validation_error_message_element, None);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingComplexObjectRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_COMPLEX_OBJECT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "list");
+
+        let object_setting_widget = common.to_dispose.add_rc(ObjectSettingDropdownWidget::new(self.services.widgets.clone(), common.control_element));
+        let ui = self.services.ui();
+        ui.tree_mut().add_class(object_setting_widget.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+
+        let (button_container, button) = {
+            let button_container = create_el(&mut ui.tree_mut(), common.control_element, Role::Generic, "complex-object-edit-in-settings-button-container");
+            (button_container, self.create_edit_button(button_container, "complex-object "))
+        };
+        let validation_error_message_element = create_validation_message(ui, common.container_element, None);
+
+        let template = ISettingComplexObjectItemTemplate {
+            complex: ISettingComplexItemTemplate { common, button, validation_error_message_element },
+            object_setting_widget,
+            button_container,
+        };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingComplexObjectItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|_on_change| self.render_value(element, template));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingComplexObjectItemTemplate>() {
+            self.complex.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingComplexObjectItemTemplate>() {
+            self.complex.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- auxiliares de valor (linhas 83 a 122 e 258 a 465) -----------------------------------------------------------------------
+
+/// `Record<string, unknown>` como as entradas de `Object.entries`, na ordem de inserção.
+type JsRecord = Vec<(JsString, Dynamic)>;
+
+/// `record[key] = value`: a chave repetida mantém o lugar.
+fn record_set(record: &mut JsRecord, key: &str, value: Dynamic) {
+    let key = JsString::from(key);
+    match record.iter_mut().find(|(existing, _)| *existing == key) {
+        Some(entry) => entry.1 = value,
+        None => record.push((key, value)),
+    }
+}
+
+/// `delete record[key]`.
+fn record_remove(record: &mut JsRecord, key: &str) {
+    let key = JsString::from(key);
+    record.retain(|(existing, _)| *existing != key);
+}
+
+/// `record[key]`.
+fn record_get(record: &JsRecord, key: &str) -> Dynamic {
+    lookup(record, &JsString::from(key))
+}
+
+/// `key in record`.
+fn record_has(record: &JsRecord, key: &str) -> bool {
+    let key = JsString::from(key);
+    record.iter().any(|(existing, _)| *existing == key)
+}
+
+/// `Object.keys(newValue).length === 0 ? undefined : newValue`.
+fn record_or_undefined(record: JsRecord) -> Dynamic {
+    if record.is_empty() { Dynamic::Undefined } else { Dynamic::object(record) }
+}
+
+/// `value.data` de um valor de objeto, como valor dinâmico.
+fn object_value_data(value: &ObjectValue) -> Dynamic {
+    match value {
+        ObjectValue::Boolean(data) => Dynamic::Bool(*data),
+        ObjectValue::String(data) => Dynamic::string(data),
+        ObjectValue::Enum(enum_data) => Dynamic::string(&enum_data.data),
+    }
+}
+
+/// `value.data = data` (ver o `//!`): o valor com o dado trocado, na variante que ele já tem.
+fn with_object_value_data(value: &ObjectValue, data: &Dynamic) -> ObjectValue {
+    match value {
+        ObjectValue::Boolean(_) => ObjectValue::Boolean(data.is_truthy()),
+        ObjectValue::String(_) => ObjectValue::String(js_text(data)),
+        ObjectValue::Enum(enum_data) => ObjectValue::Enum(ObjectEnumData { data: js_text(data), options: enum_data.options.clone() }),
+    }
+}
+
+/// `getIncludeExcludeDisplayValue`.
+fn get_include_exclude_display_value(element: &SettingsTreeSettingElement) -> Vec<IIncludeExcludeDataItem> {
+    let element_default_value = object_entries(&element.default_value());
+
+    let data = if element.is_configured() { merge_entries(&element_default_value, &object_entries(&element.scope_value())) } else { element_default_value.clone() };
+
+    data.iter()
+        .filter(|entry| entry.1.is_truthy())
+        .map(|(key, value)| {
+            let key_text = key.to_string_lossy();
+            let default_value = lookup(&element_default_value, key);
+
+            // Get source if it's a default value
+            let source = default_value_source_name(element, &default_value, value, &format!("{}.{}", element.setting.key, key_text));
+
+            let sibling = if matches!(value, Dynamic::Bool(_)) { None } else { optional_text(&value.get_str("when")) };
+            IIncludeExcludeDataItem { value: ObjectKey::String(key_text), element_type: Some(element.value_type()), sibling, source }
+        })
+        .collect()
+}
+
+/// `areAllPropertiesDefined`.
+fn are_all_properties_defined(properties: &[JsString], items_to_display: &[IObjectDataItem]) -> bool {
+    properties.iter().all(|property| items_to_display.iter().any(|item| item.key.data() == property.to_string_lossy()))
+}
+
+/// `getBoolObjectDisplayValue`.
+fn get_bool_object_display_value(element: &SettingsTreeSettingElement) -> Vec<IBoolObjectDataItem> {
+    let element_default_value = object_entries(&element.default_value());
+    let element_scope_value = object_entries(&element.scope_value());
+
+    let data = if element.is_configured() { merge_entries(&element_default_value, &element_scope_value) } else { element_default_value.clone() };
+
+    let object_properties = element.setting.object_properties.clone().unwrap_or(Dynamic::Undefined);
+    object_entries(&object_properties)
+        .into_iter()
+        .map(|(key, schema)| {
+            let key_text = key.to_string_lossy();
+            let default_value = lookup(&element_default_value, &key);
+            let data_value = lookup(&data, &key);
+
+            // Get source if it's a default value
+            let source = default_value_source_name(element, &default_value, &data_value, &key_text);
+
+            IBoolObjectDataItem { key: key_text, value: data_value.is_truthy(), key_description: optional_text(&schema.get_str("description")), source, resetable: true }
+        })
+        .collect()
+}
+
+/// A sugestão de `{ type: 'enum', data: enumOptions[0].value, options: enumOptions }`, ou nenhuma sem opções.
+fn suggest_enum(enum_options: Vec<ObjectEnumOption>) -> Option<ObjectEnumData> {
+    let data = enum_options.first()?.value.clone();
+    Some(ObjectEnumData { data, options: enum_options })
+}
+
+/// `createArraySuggester`.
+fn create_array_suggester(element: &SettingsTreeSettingElement) -> ObjectKeySuggester {
+    let setting = element.setting.clone();
+    Rc::new(move |keys: &[String], idx: Option<usize>| {
+        let mut enum_options: Vec<ObjectEnumOption> = Vec::new();
+
+        if let Some(values) = &setting.r#enum {
+            for (i, key) in values.iter().enumerate() {
+                // include the currently selected value, even if uniqueItems is true
+                if !setting.unique_items.is_truthy() || idx.is_some_and(|idx| keys.get(idx) == Some(key)) || !keys.contains(key) {
+                    let description = setting.enum_descriptions.as_ref().and_then(|descriptions| descriptions.get(i).cloned());
+                    enum_options.push(ObjectEnumOption { value: key.clone(), description });
+                }
+            }
+        }
+
+        suggest_enum(enum_options)
+    })
+}
+
+/// `createObjectKeySuggester`.
+fn create_object_key_suggester(element: &SettingsTreeSettingElement) -> ObjectKeySuggester {
+    let object_properties = element.setting.object_properties.clone();
+    let all_static_keys: Vec<JsString> = object_properties.as_ref().map(Dynamic::own_keys).unwrap_or_default();
+
+    Rc::new(move |keys: &[String], _idx: Option<usize>| {
+        let mut enum_options: Vec<ObjectEnumOption> = Vec::new();
+
+        for static_key in &all_static_keys {
+            let static_key_text = static_key.to_string_lossy();
+            if !keys.contains(&static_key_text) {
+                let description = object_properties.as_ref().and_then(|properties| optional_text(&properties.get(static_key).get_str("description")));
+                enum_options.push(ObjectEnumOption { value: static_key_text, description });
+            }
+        }
+
+        suggest_enum(enum_options)
+    })
+}
+
+/// `isDefined`: nem `undefined` nem `null`.
+fn is_defined(value: &Option<Dynamic>) -> bool {
+    value.as_ref().is_some_and(|value| !value.is_nullish())
+}
+
+/// `createObjectValueSuggester`.
+fn create_object_value_suggester(element: &SettingsTreeSettingElement) -> ObjectValueSuggester {
+    let setting = &element.setting;
+    let object_properties = setting.object_properties.clone().filter(|value| !value.is_nullish());
+    let object_additional_properties = setting.object_additional_properties.clone();
+
+    let patterns_and_schemas: Vec<(RegExp, Dynamic)> = object_entries(&setting.object_pattern_properties.clone().unwrap_or(Dynamic::Undefined))
+        .into_iter()
+        .map(|(pattern, schema)| (compile_pattern(&pattern.to_string_lossy()), schema))
+        .collect();
+
+    Rc::new(move |key: &str| {
+        let key_js = JsString::from(key);
+        let mut suggested_schema: Option<Dynamic> = None;
+
+        if let Some(properties) = &object_properties
+            && properties.has_property(&key_js)
+        {
+            suggested_schema = Some(properties.get(&key_js)).filter(|schema| !schema.is_nullish());
+        }
+
+        let pattern_schema = suggested_schema.clone().or_else(|| patterns_and_schemas.iter().find(|(pattern, _)| reg_exp_test(pattern, key)).map(|(_, schema)| schema.clone()));
+
+        if is_defined(&pattern_schema) {
+            suggested_schema = pattern_schema;
+        } else if let Some(additional @ (Dynamic::Object(_) | Dynamic::Array(_))) = &object_additional_properties {
+            suggested_schema = Some(additional.clone());
+        }
+
+        let schema = suggested_schema.filter(|schema| !schema.is_nullish())?;
+        let default_value = schema.get_str("default");
+        Some(match get_object_value_type(&schema) {
+            ObjectValueType::Boolean => ObjectValue::Boolean(if default_value.is_nullish() { true } else { default_value.is_truthy() }),
+            ObjectValueType::Enum => {
+                let options = get_enum_options_from_schema(&schema);
+                let data = if default_value.is_nullish() {
+                    options.first().map(|option| option.value.clone()).unwrap_or_else(|| errors::throw(Error::named("TypeError", "Cannot read properties of undefined (reading 'value')".to_owned())))
+                } else {
+                    js_text(&default_value)
+                };
+                ObjectValue::Enum(ObjectEnumData { data, options })
+            }
+            ObjectValueType::String => ObjectValue::String(if default_value.is_nullish() { String::new() } else { js_text(&default_value) }),
+        })
+    })
+}
+
+/// `isNonNullableNumericType`.
+fn is_non_nullable_numeric_type(type_: &Dynamic) -> bool {
+    is_text(type_, "number") || is_text(type_, "integer")
+}
+
+/// `parseNumericObjectValues`.
+fn parse_numeric_object_values(data_element: &SettingsTreeSettingElement, v: &Dynamic) -> Dynamic {
+    let setting = &data_element.setting;
+    let pattern_properties = setting.object_pattern_properties.clone().filter(Truthy::is_truthy);
+    let properties = setting.object_properties.clone().filter(Truthy::is_truthy);
+    let additional_properties = setting.object_additional_properties.clone().filter(Truthy::is_truthy);
+
+    let mut new_record: JsRecord = Vec::new();
+    for (key, value) in object_entries(v) {
+        let key_text = key.to_string_lossy();
+        // Set to true/false once we're sure of the answer
+        let mut key_matches_numeric_property: Option<bool> = None;
+
+        // Match the current record key against the properties of the object
+        if let Some(properties) = &properties
+            && let Some((_, schema)) = object_entries(properties).into_iter().find(|(property_key, _)| *property_key == key)
+        {
+            key_matches_numeric_property = Some(is_non_nullable_numeric_type(&schema.get_str("type")));
+        }
+        if key_matches_numeric_property.is_none()
+            && let Some(pattern_properties) = &pattern_properties
+            && let Some((_, schema)) = object_entries(pattern_properties).into_iter().find(|(pattern_key, _)| reg_exp_test(&compile_pattern(&pattern_key.to_string_lossy()), &key_text))
+        {
+            key_matches_numeric_property = Some(is_non_nullable_numeric_type(&schema.get_str("type")));
+        }
+        if key_matches_numeric_property.is_none()
+            && let Some(additional_properties) = &additional_properties
+            && !matches!(additional_properties, Dynamic::Bool(_))
+            && is_non_nullable_numeric_type(&additional_properties.get_str("type"))
+        {
+            key_matches_numeric_property = Some(true);
+        }
+        let new_value = if key_matches_numeric_property == Some(true) { Dynamic::Number(to_number(&value)) } else { value };
+        record_set(&mut new_record, &key_text, new_value);
+    }
+    Dynamic::object(new_record)
+}
+
+/// `getListDisplayValue`.
+fn get_list_display_value(element: &SettingsTreeSettingElement) -> Vec<IListDataItem> {
+    let value = element.value();
+    let Dynamic::Array(items) = &value else { return Vec::new() };
+    let setting = &element.setting;
+
+    if setting.array_item_type.as_deref() == Some("enum") {
+        let enum_options: Vec<ObjectEnumOption> = setting
+            .r#enum
+            .as_ref()
+            .map(|values| {
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, value)| ObjectEnumOption { value: value.clone(), description: setting.enum_descriptions.as_ref().and_then(|descriptions| descriptions.get(i).cloned()) })
+                    .collect()
+            })
+            .unwrap_or_default();
+        items.to_vec().iter().map(|key| IListDataItem { value: ObjectKey::Enum(ObjectEnumData { data: js_text(key), options: enum_options.clone() }), sibling: None }).collect()
+    } else {
+        items.to_vec().iter().map(|key| IListDataItem { value: ObjectKey::String(js_text(key)), sibling: None }).collect()
+    }
+}
+
+/// `getShowAddButtonList`.
+fn get_show_add_button_list(data_element: &SettingsTreeSettingElement, list_display_value: &[IListDataItem]) -> bool {
+    let setting = &data_element.setting;
+    match &setting.r#enum {
+        Some(values) if setting.unique_items.is_truthy() => values.len() > list_display_value.len(),
+        _ => true,
+    }
+}
+
+// ---- mensagens de validação e layout dos widgets --------------------------------------------------------------------------------
+
+/// O elemento da mensagem de validação (`$('.setting-item-validation-message')`), escondido. Sem `before` fica no fim do
+/// contêiner; os renderizadores de lista o põem antes do indicador de modificação (`descriptionElement.after(...)`).
+fn create_validation_message(ui: &Ui, container: NodeId, before: Option<NodeId>) -> NodeId {
+    let mut tree = ui.tree_mut();
+    let element = create_el(&mut tree, container, Role::Generic, "setting-item-validation-message");
+    tree.style_mut(element).visible = false;
+    if before.is_some() {
+        tree.insert_before(container, element, before);
+    }
+    element
+}
+
+/// A mensagem de validação em fluxo dos templates de lista: depois da descrição, registrada em
+/// [`ISettingItemTemplate::flow_validation_message`].
+fn create_flow_validation_message(ui: &Ui, common: &ISettingItemTemplate) -> NodeId {
+    let element = create_validation_message(ui, common.container_element, Some(common.modified_indicator_element));
+    common.flow_validation_message.set(Some(element));
+    element
+}
+
+/// Fundo, borda e camada de `.setting-item-validation-message`.
+fn style_validation_message(tree: &mut Tree, element: NodeId, styles: &SettingRendererStyles) {
+    let style = tree.style_mut(element);
+    style.background = styles.validation_error_background;
+    style.border = styles.validation_error_border.map(|color| Border { width: VALIDATION_BORDER, color });
+    style.z_index = 1;
+}
+
+/// A largura do texto e a altura de um widget de lista dentro do `.setting-item-control`: o controle e o nó do widget ficam na
+/// largura do texto, e `layout_widget` mede o widget já nessa largura.
+fn layout_widget_control(ui: &Ui, template: &ISettingItemTemplate, dom_node: NodeId, layout_widget: impl FnOnce() -> f64) -> (f64, f64) {
+    let row_width = ui.tree().bounds(template.row_element).width();
+    let text_width = item_text_width(row_width);
+    {
+        let mut tree = ui.tree_mut();
+        tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, text_width, 0.0));
+        let bounds = tree.bounds(dom_node);
+        tree.set_bounds(dom_node, Rect::new(0.0, 0.0, text_width, bounds.height()));
+    }
+    (text_width, layout_widget())
+}
+
+/// O layout de uma linha cujo único controle é um widget de lista: devolve a altura da linha.
+fn layout_widget_item(renderer: &AbstractSettingRenderer, template: &ISettingItemTemplate, dom_node: NodeId, layout_widget: impl FnOnce() -> f64) -> f64 {
+    let size = layout_widget_control(renderer.services.ui(), template, dom_node, layout_widget);
+    renderer.layout_setting_item(template, size)
+}
+
+/// `renderArrayValidations`: os nós e o que o aviso de erro precisa, para ser chamado de dentro do `onChange` do template.
+#[derive(Clone)]
+struct ArrayValidator {
+    ui: Ui,
+    container: NodeId,
+    message_element: NodeId,
+    foreground: Rgba,
+    accessibility_host: Rc<dyn IAccessibilityHost>,
+}
+
+impl ArrayValidator {
+    /// Valida e mostra a mensagem de erro de arrays e objetos. Devolve verdadeiro se o valor é inválido.
+    fn render(&self, data_element: &SettingsTreeSettingElement, value: &Dynamic, called_on_startup: bool) -> bool {
+        let error = data_element.setting.validator.as_ref().map(|validator| validator(value).filter(|message| !message.is_empty()));
+        let setting_key = data_element.setting.key.clone();
+
+        let mut invalid = false;
+        let mut announcement = None;
+        {
+            let mut tree = self.ui.tree_mut();
+            tree.add_class(self.container, "invalid-input");
+            match error {
+                Some(Some(err_msg)) => {
+                    set_text(&mut tree, self.message_element, &err_msg, 400, self.foreground);
+                    let validation_error = localize("validationError", "Validation Error.", &[]);
+                    tree.set_label(self.container, [setting_key.as_str(), validation_error.as_str(), err_msg.as_str()].join(" "));
+                    if !called_on_startup {
+                        announcement = Some(format!("{validation_error} {err_msg}"));
+                    }
+                    invalid = true;
+                }
+                Some(None) => {
+                    tree.set_label(self.container, setting_key);
+                    tree.remove_class(self.container, "invalid-input");
+                }
+                None => {}
+            }
+            // `.setting-item-validation-message { display: none }`, `display: block` com `.invalid-input`
+            let visible = tree.has_class(self.container, "invalid-input");
+            tree.style_mut(self.message_element).visible = visible;
+        }
+        if let Some(announcement) = announcement {
+            self.accessibility_host.status(&announcement);
+        }
+        invalid
+    }
+}
+
+impl AbstractSettingRenderer {
+    /// O [`ArrayValidator`] de um template (o `renderArrayValidations(dataElement, template, ...)` do original).
+    fn array_validator(&self, common: &ISettingItemTemplate, message_element: NodeId) -> ArrayValidator {
+        ArrayValidator {
+            ui: self.services.ui().clone(),
+            container: common.container_element,
+            message_element,
+            foreground: self.services.styles.validation_error_foreground,
+            accessibility_host: self.services.accessibility_host.clone(),
+        }
+    }
+}
+
+/// O `{ ...template, x }` dos templates de lista: o `Deref` para o [`ISettingItemTemplate`] comum.
+macro_rules! deref_to_common {
+    ($template:ident) => {
+        impl Deref for $template {
+            type Target = ISettingItemTemplate;
+
+            fn deref(&self) -> &ISettingItemTemplate {
+                &self.common
+            }
+        }
+    };
+}
+
+// ---- SettingArrayRenderer (linhas 1328 a 1441) ---------------------------------------------------------------------------------
+
+/// `ISettingListItemTemplate`.
+pub struct ISettingListItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub list_widget: Rc<ListSettingWidget<IListDataItem>>,
+    pub validation_error_message_element: NodeId,
+}
+
+deref_to_common!(ISettingListItemTemplate);
+
+/// `SettingArrayRenderer`.
+pub struct SettingArrayRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingArrayRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingArrayRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `computeNewList(template, e)`, sobre o elemento do contexto do template.
+    fn compute_new_list(element: &SettingsTreeSettingElement, e: &SettingListEvent<IListDataItem>) -> Option<Vec<Dynamic>> {
+        let (scope_value, value) = (element.scope_value(), element.value());
+        let mut new_value: Vec<Dynamic> = match (&scope_value, &value) {
+            (Dynamic::Array(items), _) | (_, Dynamic::Array(items)) => items.to_vec(),
+            _ => Vec::new(),
+        };
+
+        match e {
+            SettingListEvent::Move { source_index, target_index, .. } => {
+                // A drag and drop occurred
+                let spliced_elem = if *source_index < new_value.len() { new_value.remove(*source_index) } else { Dynamic::Undefined };
+                let index = (*target_index).min(new_value.len());
+                new_value.insert(index, spliced_elem);
+            }
+            SettingListEvent::Remove { target_index, .. } | SettingListEvent::Reset { target_index, .. } => {
+                if *target_index < new_value.len() {
+                    new_value.remove(*target_index);
+                }
+            }
+            SettingListEvent::Change { new_item, target_index, .. } => {
+                let item_value_data = Dynamic::string(new_item.value.data());
+
+                // Update value
+                if *target_index < new_value.len() {
+                    new_value[*target_index] = item_value_data;
+                } else {
+                    new_value.resize(*target_index, Dynamic::Undefined);
+                    new_value.push(item_value_data);
+                }
+            }
+            SettingListEvent::Add { new_item, .. } => new_value.push(Dynamic::string(new_item.value.data())),
+        }
+
+        let default_value = element.default_value();
+        if !matches!(element.settings_target, SettingsTarget::Workspace | SettingsTarget::Resource(_))
+            && let Dynamic::Array(defaults) = &default_value
+            && defaults.len() == new_value.len()
+            && js_text(&default_value) == js_text(&Dynamic::array(new_value.clone()))
+        {
+            return None;
+        }
+        Some(new_value)
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingListItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let value = get_list_display_value(data_element);
+        let key_suggester = data_element.setting.r#enum.is_some().then(|| create_array_suggester(data_element));
+        template.list_widget.set_value(
+            value.clone(),
+            Some(ListSetValueOptions {
+                show_add_button: Some(get_show_add_button_list(data_element, &value)),
+                key_suggester,
+                is_read_only: Some(data_element.has_policy_value() || data_element.is_agents_window_read_only()),
+            }),
+        );
+        *template.context.borrow_mut() = Some(data_element.clone());
+
+        let list_widget = template.list_widget.clone();
+        template.element_disposables.add(to_disposable(move || list_widget.cancel_edit()));
+
+        let validator = self.array_validator(&template.common, template.validation_error_message_element);
+        let callback_validator = validator.clone();
+        let (element, numeric) = (data_element.clone(), data_element.setting.array_item_type.as_ref().is_some_and(|item_type| is_non_nullable_numeric_type(&Dynamic::string(item_type))));
+        let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |v: Dynamic| {
+            if v.is_truthy() && !callback_validator.render(&element, &v, false) {
+                let arr_to_save = if numeric { Dynamic::array(array_items(&v).iter().map(|item| Dynamic::Number(to_number(item)))) } else { v };
+                on_change(arr_to_save);
+            } else {
+                // Save the setting unparsed and containing the errors.
+                // renderArrayValidations will render relevant error messages.
+                on_change(v);
+            }
+        });
+        *template.on_change.borrow_mut() = Some(callback);
+
+        validator.render(data_element, &Dynamic::array(value.iter().map(|item| Dynamic::string(item.value.data()))), true);
+    }
+
+    /// O layout da linha: a lista na largura do texto. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingListItemTemplate) -> f64 {
+        layout_widget_item(&self.base, &template.common, template.list_widget.dom_node(), || template.list_widget.layout())
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingArrayRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_ARRAY_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "list");
+        let validation_error_message_element = create_flow_validation_message(self.services.ui(), &common);
+
+        let list_widget: Rc<ListSettingWidget<IListDataItem>> = ListSettingWidget::new(self.services.widgets.clone(), common.control_element, ListSettingWidgetOptions::list());
+        self.services.ui().tree_mut().add_class(list_widget.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+        common.to_dispose.add_rc(list_widget.clone());
+
+        let template = ISettingListItemTemplate { common, list_widget, validation_error_message_element };
+
+        self.add_setting_element_focus_handler(&template.common);
+
+        let (context, on_change) = (template.context.clone(), template.on_change.clone());
+        template.common.to_dispose.add(template.list_widget.on_did_change_list().listen(move |e| {
+            let current = context.borrow().clone();
+            if let Some(element) = current {
+                let new_list = Self::compute_new_list(&element, e);
+                call_on_change(&on_change, new_list.map_or(Dynamic::Undefined, |items| Dynamic::array(items)));
+            }
+        }));
+
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingListItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| self.render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingListItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingListItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- AbstractSettingObjectRenderer (linhas 1443 a 1471) ------------------------------------------------------------------------
+
+/// `ObjectSettingCheckboxWidget | ObjectSettingDropdownWidget`, o que `renderTemplateWithWidget` recebe.
+#[derive(Clone)]
+pub enum ObjectWidget {
+    Checkbox(Rc<ObjectSettingCheckboxWidget>),
+    Dropdown(Rc<ObjectSettingDropdownWidget>),
+}
+
+impl ObjectWidget {
+    fn dom_node(&self) -> NodeId {
+        match self {
+            Self::Checkbox(widget) => widget.dom_node(),
+            Self::Dropdown(widget) => widget.dom_node(),
+        }
+    }
+
+    fn layout(&self) -> f64 {
+        match self {
+            Self::Checkbox(widget) => widget.layout(),
+            Self::Dropdown(widget) => widget.layout(),
+        }
+    }
+
+    /// `common.toDispose.add(widget)`.
+    fn add_to(&self, store: &DisposableStore) {
+        match self {
+            Self::Checkbox(widget) => {
+                store.add_rc(widget.clone());
+            }
+            Self::Dropdown(widget) => {
+                store.add_rc(widget.clone());
+            }
+        }
+    }
+}
+
+/// `ISettingObjectItemTemplate`: `objectDropdownWidget?` e `objectCheckboxWidget?` são o [`ObjectWidget`] (ver o `//!`).
+pub struct ISettingObjectItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub widget: ObjectWidget,
+    pub validation_error_message_element: NodeId,
+}
+
+deref_to_common!(ISettingObjectItemTemplate);
+
+/// `AbstractSettingObjectRenderer`.
+pub struct AbstractSettingObjectRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for AbstractSettingObjectRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl AbstractSettingObjectRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderTemplateWithWidget(common, widget)`.
+    fn render_template_with_widget(&self, common: ISettingItemTemplate, widget: ObjectWidget) -> ISettingObjectItemTemplate {
+        let ui = self.services.ui();
+        ui.tree_mut().add_class(widget.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+        widget.add_to(&common.to_dispose);
+
+        let validation_error_message_element = create_flow_validation_message(ui, &common);
+
+        let template = ISettingObjectItemTemplate { common, widget, validation_error_message_element };
+
+        self.add_setting_element_focus_handler(&template.common);
+        template
+    }
+
+    /// `renderElement(element, index, templateData)`: o `renderSettingElement` com o `renderValue` da subclasse, e o layout.
+    fn render_element(
+        &self,
+        node: &Rc<SettingsTreeNode>,
+        template_data: &TemplateData,
+        render_value: &dyn Fn(&Rc<SettingsTreeSettingElement>, &ISettingObjectItemTemplate, Rc<dyn Fn(Dynamic)>),
+    ) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingObjectItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    /// O layout da linha: o widget na largura do texto. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingObjectItemTemplate) -> f64 {
+        layout_widget_item(&self.base, &template.common, template.widget.dom_node(), || template.widget.layout())
+    }
+
+    fn dispose_element(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingObjectItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingObjectItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingObjectRenderer (linhas 1473 a 1594) --------------------------------------------------------------------------------
+
+/// `SettingObjectRenderer`.
+pub struct SettingObjectRenderer {
+    object: Rc<AbstractSettingObjectRenderer>,
+}
+
+impl Deref for SettingObjectRenderer {
+    type Target = AbstractSettingObjectRenderer;
+
+    fn deref(&self) -> &AbstractSettingObjectRenderer {
+        &self.object
+    }
+}
+
+impl SettingObjectRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { object: AbstractSettingObjectRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `onDidChangeObject(template, e)`, sobre o elemento do contexto do template.
+    fn on_did_change_object(element: &SettingsTreeSettingElement, widget: &ObjectSettingDropdownWidget, on_change: &OnChangeSlot, e: &SettingListEvent<IObjectDataItem>) {
+        let setting_supports_remove_default = object_setting_supports_remove_default_value(&element.setting.key);
+        let default_value = object_entries(&element.default_value());
+        let scope_value = object_entries(&element.scope_value());
+
+        // Initialize with scoped values as removed default values are not rendered
+        let mut new_value: JsRecord = scope_value.clone();
+        let mut new_items: Vec<IObjectDataItem> = Vec::new();
+
+        // `e.type === 'change' || e.type === 'move'`
+        let changed = match e {
+            SettingListEvent::Change { original_item, new_item, target_index } | SettingListEvent::Move { original_item, new_item, target_index, .. } => {
+                Some((original_item, new_item, *target_index))
+            }
+            _ => None,
+        };
+
+        for (idx, view_item) in widget.items().into_iter().enumerate() {
+            let item = view_item.item;
+            match changed {
+                // Item was updated
+                Some((original_item, new_item, target_index)) if target_index == idx => {
+                    // If the key of the default value is changed, remove the default value
+                    if original_item.key.data() != new_item.key.data() && setting_supports_remove_default && record_has(&default_value, original_item.key.data()) {
+                        record_set(&mut new_value, original_item.key.data(), Dynamic::Null);
+                    } else {
+                        record_remove(&mut new_value, original_item.key.data());
+                    }
+                    record_set(&mut new_value, new_item.key.data(), object_value_data(&new_item.value));
+                    new_items.push(new_item.clone());
+                }
+                // All remaining items, but skip the one that we just updated
+                _ if changed.is_none_or(|(_, new_item, _)| new_item.key.data() != item.key.data()) => {
+                    record_set(&mut new_value, item.key.data(), object_value_data(&item.value));
+                    new_items.push(item);
+                }
+                _ => {}
+            }
+        }
+
+        match e {
+            // Item was deleted
+            SettingListEvent::Remove { original_item, .. } | SettingListEvent::Reset { original_item, .. } => {
+                let object_key = original_item.key.data();
+                let removing_default_value = matches!(e, SettingListEvent::Remove { .. })
+                    && setting_supports_remove_default
+                    && record_get(&default_value, object_key).strict_equals(&object_value_data(&original_item.value));
+                if removing_default_value {
+                    record_set(&mut new_value, object_key, Dynamic::Null);
+                } else {
+                    record_remove(&mut new_value, object_key);
+                }
+
+                let item_to_delete = new_items.iter().position(|item| item.key.data() == object_key);
+                let default_item_value = record_get(&default_value, object_key);
+
+                // Item does not have a default or default is bing removed
+                if removing_default_value || (default_item_value.is_nullish() && item_to_delete.is_some()) {
+                    // `splice(-1, 1)` apaga o último item (ver o `//!`)
+                    if let Some(index) = item_to_delete.or(new_items.len().checked_sub(1)) {
+                        new_items.remove(index);
+                    }
+                } else if let Some(index) = item_to_delete {
+                    new_items[index].value = with_object_value_data(&new_items[index].value, &default_item_value);
+                }
+            }
+            // New item was added
+            SettingListEvent::Add { new_item, .. } => {
+                record_set(&mut new_value, new_item.key.data(), object_value_data(&new_item.value));
+                new_items.push(new_item.clone());
+            }
+            _ => {}
+        }
+
+        for (key, value) in new_value.clone() {
+            let key_text = key.to_string_lossy();
+            // value from the scope has changed back to the default
+            if !record_get(&scope_value, &key_text).strict_equals(&value) && record_get(&default_value, &key_text).strict_equals(&value) && !(setting_supports_remove_default && value.is_null()) {
+                record_remove(&mut new_value, &key_text);
+            }
+        }
+
+        let new_object = record_or_undefined(new_value);
+        widget.set_value(new_items, None);
+        call_on_change(on_change, new_object);
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingObjectItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let ObjectWidget::Dropdown(widget) = &template.widget else { return };
+        let items = get_object_display_value(data_element);
+        let setting = &data_element.setting;
+
+        let show_add_button = if matches!(&setting.object_additional_properties, Some(Dynamic::Bool(false))) {
+            let static_keys = setting.object_properties.as_ref().map(Dynamic::own_keys).unwrap_or_default();
+            !are_all_properties_defined(&static_keys, &items) || is_defined(&setting.object_pattern_properties)
+        } else {
+            true
+        };
+
+        widget.set_value(
+            items,
+            Some(ObjectSetValueOptions {
+                setting_key: setting.key.clone(),
+                show_add_button,
+                is_read_only: None,
+                key_suggester: Some(create_object_key_suggester(data_element)),
+                value_suggester: Some(create_object_value_suggester(data_element)),
+                property_names: setting.property_names.clone(),
+            }),
+        );
+
+        *template.context.borrow_mut() = Some(data_element.clone());
+
+        let widget_to_cancel = widget.clone();
+        template.element_disposables.add(to_disposable(move || widget_to_cancel.cancel_edit()));
+
+        let validator = self.array_validator(&template.common, template.validation_error_message_element);
+        let callback_validator = validator.clone();
+        let element = data_element.clone();
+        let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |v: Dynamic| {
+            if v.is_truthy() && !callback_validator.render(&element, &v, false) {
+                let parsed_record = parse_numeric_object_values(&element, &v);
+                on_change(parsed_record);
+            } else {
+                // Save the setting unparsed and containing the errors.
+                // renderArrayValidations will render relevant error messages.
+                on_change(v);
+            }
+        });
+        *template.on_change.borrow_mut() = Some(callback);
+
+        validator.render(data_element, &data_element.value(), true);
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingObjectRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_OBJECT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "list");
+        let widget = ObjectSettingDropdownWidget::new(self.services.widgets.clone(), common.control_element);
+        let template = self.render_template_with_widget(common, ObjectWidget::Dropdown(widget.clone()));
+
+        let (context, on_change, weak_widget) = (template.context.clone(), template.on_change.clone(), Rc::downgrade(&widget));
+        template.common.to_dispose.add(widget.on_did_change_list().listen(move |e| {
+            let (Some(widget), Some(element)) = (weak_widget.upgrade(), context.borrow().clone()) else { return };
+            Self::on_did_change_object(&element, &widget, &on_change, e);
+        }));
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.object.render_element(node, template_data, &|element, template, on_change| self.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.object.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.object.dispose_template(template_data);
+    }
+}
+
+// ---- SettingBoolObjectRenderer (linhas 1596 a 1672) ----------------------------------------------------------------------------
+
+/// `SettingBoolObjectRenderer`.
+pub struct SettingBoolObjectRenderer {
+    object: Rc<AbstractSettingObjectRenderer>,
+}
+
+impl Deref for SettingBoolObjectRenderer {
+    type Target = AbstractSettingObjectRenderer;
+
+    fn deref(&self) -> &AbstractSettingObjectRenderer {
+        &self.object
+    }
+}
+
+/// O nome do `type` de um evento da lista (para o aviso do `console.warn`).
+fn list_event_type<T>(e: &SettingListEvent<T>) -> &'static str {
+    match e {
+        SettingListEvent::Change { .. } => "change",
+        SettingListEvent::Add { .. } => "add",
+        SettingListEvent::Move { .. } => "move",
+        SettingListEvent::Remove { .. } => "remove",
+        SettingListEvent::Reset { .. } => "reset",
+    }
+}
+
+impl SettingBoolObjectRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { object: AbstractSettingObjectRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `onDidChangeObject(template, e)`, sobre o elemento do contexto do template.
+    fn on_did_change_object(
+        element: &Rc<SettingsTreeSettingElement>,
+        widget: &ObjectSettingCheckboxWidget,
+        on_change: &OnChangeSlot,
+        on_did_focus_setting: &Emitter<Rc<SettingsTreeSettingElement>>,
+        e: &SettingListEvent<IBoolObjectDataItem>,
+    ) {
+        let default_value = object_entries(&element.default_value());
+        let scope_value = object_entries(&element.scope_value());
+
+        // Initialize with scoped values as removed default values are not rendered
+        let mut new_value: JsRecord = scope_value.clone();
+        let mut new_items: Vec<IBoolObjectDataItem> = Vec::new();
+
+        let SettingListEvent::Change { new_item, target_index, .. } = e else {
+            eprintln!("Unexpected event type {} for bool object setting {}", list_event_type(e), element.setting.key);
+            return;
+        };
+
+        for (idx, view_item) in widget.items().into_iter().enumerate() {
+            let item = view_item.item;
+            // Item was updated
+            if *target_index == idx {
+                record_set(&mut new_value, &new_item.key, Dynamic::Bool(new_item.value));
+                new_items.push(new_item.clone());
+            }
+            // All remaining items, but skip the one that we just updated
+            else if new_item.key != item.key {
+                record_set(&mut new_value, &item.key, Dynamic::Bool(item.value));
+                new_items.push(item);
+            }
+        }
+
+        for (key, value) in new_value.clone() {
+            let key_text = key.to_string_lossy();
+            // value from the scope has changed back to the default
+            if !record_get(&scope_value, &key_text).strict_equals(&value) && record_get(&default_value, &key_text).strict_equals(&value) {
+                record_remove(&mut new_value, &key_text);
+            }
+        }
+
+        let new_object = record_or_undefined(new_value);
+        widget.set_value(new_items, None);
+        call_on_change(on_change, new_object);
+
+        // Focus this setting explicitly, in case we were previously
+        // focused on another setting and clicked a checkbox/value container
+        // for this setting.
+        on_did_focus_setting.fire(element.clone());
+    }
+
+    /// `renderValue(dataElement, template, onChange)`. O `template.onChange = v => onChange(v)` do original repassa o valor sem
+    /// mudá-lo: o `onChange` que `renderSettingElement` já guardou no template é o mesmo.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingObjectItemTemplate, _on_change: Rc<dyn Fn(Dynamic)>) {
+        let ObjectWidget::Checkbox(widget) = &template.widget else { return };
+        let items = get_bool_object_display_value(data_element);
+
+        widget.set_value(items, Some(BoolObjectSetValueOptions { setting_key: data_element.setting.key.clone() }));
+
+        *template.context.borrow_mut() = Some(data_element.clone());
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingBoolObjectRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_BOOL_OBJECT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "list");
+        let widget = ObjectSettingCheckboxWidget::new(self.services.widgets.clone(), common.control_element);
+        let template = self.render_template_with_widget(common, ObjectWidget::Checkbox(widget.clone()));
+
+        let (context, on_change, focus, weak_widget) = (template.context.clone(), template.on_change.clone(), self.on_did_focus_setting.clone(), Rc::downgrade(&widget));
+        template.common.to_dispose.add(widget.on_did_change_list().listen(move |e| {
+            let (Some(widget), Some(element)) = (weak_widget.upgrade(), context.borrow().clone()) else { return };
+            Self::on_did_change_object(&element, &widget, &on_change, &focus, e);
+        }));
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.object.render_element(node, template_data, &|element, template, on_change| self.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.object.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.object.dispose_template(template_data);
+    }
+}
+
+// ---- SettingIncludeExcludeRenderer (linhas 1674 a 1770) ------------------------------------------------------------------------
+
+/// `ISettingIncludeExcludeItemTemplate`.
+pub struct ISettingIncludeExcludeItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub include_exclude_widget: Rc<ListSettingWidget<IIncludeExcludeDataItem>>,
+}
+
+deref_to_common!(ISettingIncludeExcludeItemTemplate);
+
+/// `SettingIncludeExcludeRenderer`: `is_exclude` é o `isExclude()` das duas subclasses.
+pub struct SettingIncludeExcludeRenderer {
+    base: Rc<AbstractSettingRenderer>,
+    is_exclude: bool,
+}
+
+impl Deref for SettingIncludeExcludeRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+/// `sortKeys`: as chaves em ordem de `localeCompare`.
+fn sort_keys(mut entries: JsRecord) -> JsRecord {
+    entries.sort_by(|a, b| locale_compare(&a.0.to_string_lossy(), &b.0.to_string_lossy()));
+    entries
+}
+
+impl SettingIncludeExcludeRenderer {
+    fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory, is_exclude: bool) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory), is_exclude })
+    }
+
+    /// `onDidChangeIncludeExclude(template, e)`, sobre o elemento do contexto do template.
+    fn on_did_change_include_exclude(element: &SettingsTreeSettingElement, on_did_change_setting: &Emitter<ISettingChangeEvent>, e: &SettingListEvent<IIncludeExcludeDataItem>) {
+        let mut new_value: JsRecord = object_entries(&element.scope_value());
+        let default_value = element.default_value();
+
+        let (original_item, new_item) = match e {
+            SettingListEvent::Change { original_item, new_item, .. } | SettingListEvent::Move { original_item, new_item, .. } => (Some(original_item), Some(new_item)),
+            SettingListEvent::Add { new_item, .. } => (None, Some(new_item)),
+            SettingListEvent::Remove { original_item, .. } | SettingListEvent::Reset { original_item, .. } => (Some(original_item), None),
+        };
+
+        // first delete the existing entry, if present
+        if let Some(original_item) = original_item {
+            let key = original_item.value.data();
+            if default_value.has_property(&JsString::from(key)) {
+                // delete a default by overriding it
+                record_set(&mut new_value, key, Dynamic::Bool(false));
+            } else {
+                record_remove(&mut new_value, key);
+            }
+        }
+
+        // then add the new or updated entry, if present
+        if let Some(new_item) = new_item {
+            let key = new_item.value.data();
+            let sibling = new_item.sibling.as_deref().filter(|sibling| !sibling.is_empty());
+            if default_value.has_property(&JsString::from(key)) && sibling.is_none() {
+                // add a default by deleting its override
+                record_remove(&mut new_value, key);
+            } else {
+                record_set(&mut new_value, key, sibling.map_or(Dynamic::Bool(true), |sibling| Dynamic::object([("when", Dynamic::string(sibling))])));
+            }
+        }
+
+        on_did_change_setting.fire(ISettingChangeEvent {
+            key: element.setting.key.clone(),
+            value: record_or_undefined(if new_value.is_empty() { new_value } else { sort_keys(new_value) }),
+            r#type: SettingChangeType::Single(element.value_type()),
+            manual_reset: false,
+            scope: element.setting.scope,
+        });
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingIncludeExcludeItemTemplate) {
+        let value = get_include_exclude_display_value(data_element);
+        template
+            .include_exclude_widget
+            .set_value(value, Some(ListSetValueOptions { is_read_only: Some(data_element.has_policy_value() || data_element.is_agents_window_read_only()), ..ListSetValueOptions::default() }));
+        *template.context.borrow_mut() = Some(data_element.clone());
+        let widget = template.include_exclude_widget.clone();
+        template.element_disposables.add(to_disposable(move || widget.cancel_edit()));
+    }
+
+    /// O layout da linha: a lista na largura do texto. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingIncludeExcludeItemTemplate) -> f64 {
+        layout_widget_item(&self.base, &template.common, template.include_exclude_widget.dom_node(), || template.include_exclude_widget.layout())
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingIncludeExcludeRenderer {
+    fn template_id(&self) -> String {
+        (if self.is_exclude { SETTINGS_EXCLUDE_TEMPLATE_ID } else { SETTINGS_INCLUDE_TEMPLATE_ID }).to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let common = self.render_common_template(container, "list");
+
+        let include_exclude_widget = if self.is_exclude {
+            ExcludeSettingWidget::new(self.services.widgets.clone(), common.control_element)
+        } else {
+            IncludeSettingWidget::new(self.services.widgets.clone(), common.control_element)
+        };
+        self.services.ui().tree_mut().add_class(include_exclude_widget.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+        common.to_dispose.add_rc(include_exclude_widget.clone());
+
+        let template = ISettingIncludeExcludeItemTemplate { common, include_exclude_widget };
+
+        self.add_setting_element_focus_handler(&template.common);
+
+        let (context, emitter) = (template.context.clone(), self.on_did_change_setting.clone());
+        template.common.to_dispose.add(template.include_exclude_widget.on_did_change_list().listen(move |e| {
+            let current = context.borrow().clone();
+            if let Some(element) = current {
+                Self::on_did_change_include_exclude(&element, &emitter, e);
+            }
+        }));
+
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingIncludeExcludeItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|_on_change| self.render_value(element, template));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingIncludeExcludeItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingIncludeExcludeItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+/// `SettingExcludeRenderer`: o [`SettingIncludeExcludeRenderer`] com `isExclude()` verdadeiro.
+pub struct SettingExcludeRenderer;
+
+impl SettingExcludeRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<SettingIncludeExcludeRenderer> {
+        SettingIncludeExcludeRenderer::new(services, setting_actions, disposable_action_factory, true)
+    }
+}
+
+/// `SettingIncludeRenderer`: o [`SettingIncludeExcludeRenderer`] com `isExclude()` falso.
+pub struct SettingIncludeRenderer;
+
+impl SettingIncludeRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<SettingIncludeExcludeRenderer> {
+        SettingIncludeExcludeRenderer::new(services, setting_actions, disposable_action_factory, false)
+    }
+}
+
+// ---- campo de texto e de número: template, validação e layout (linhas 1781 a 1810, 1999 a 2022 e 2365 a 2384) -----------------
+
+/// `ISettingTextItemTemplate` (e `ISettingNumberItemTemplate`, que é o mesmo tipo).
+pub struct ISettingTextItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub input_box: Rc<InputBox>,
+    pub validation_error_message_element: NodeId,
+    /// O campo faz o papel do `<input type=number>` (ver o `//!`).
+    pub numeric: bool,
+}
+
+deref_to_common!(ISettingTextItemTemplate);
+
+/// Se `text` é um número de ponto flutuante válido do HTML: `-` opcional, dígitos com parte fracionária opcional (o ponto exige
+/// dígitos depois dele) ou só a parte fracionária, e expoente opcional (`e` ou `E`, sinal opcional, dígitos).
+fn is_valid_html_float(text: &str) -> bool {
+    let digits = |rest: &str| rest.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = text.strip_prefix('-').unwrap_or(text);
+    let integer_length = digits(rest);
+    let mut rest = &rest[integer_length..];
+    if let Some(fraction) = rest.strip_prefix('.') {
+        let fraction_length = digits(fraction);
+        if fraction_length == 0 {
+            return false;
+        }
+        rest = &fraction[fraction_length..];
+    } else if integer_length == 0 {
+        return false;
+    }
+    if let Some(exponent) = rest.strip_prefix(['e', 'E']) {
+        let exponent = exponent.strip_prefix(['-', '+']).unwrap_or(exponent);
+        let exponent_length = digits(exponent);
+        if exponent_length == 0 {
+            return false;
+        }
+        rest = &exponent[exponent_length..];
+    }
+    rest.is_empty()
+}
+
+/// O `value` de um `<input type=number>` cujo texto é `text`: o próprio texto se é um número válido, senão a string vazia.
+pub fn number_input_value(text: &str) -> String {
+    if is_valid_html_float(text) { text.to_owned() } else { String::new() }
+}
+
+/// O `inputBox.value` como o original o lê: o texto do campo, ou o `value` do `<input type=number>` no campo de número.
+fn input_text(raw: &str, numeric: bool) -> String {
+    if numeric { number_input_value(raw) } else { raw.to_owned() }
+}
+
+/// `input.value = value` com o valor do elemento: `null` é a string vazia (`LegacyNullToEmptyString`), o resto é `'' + value`.
+fn input_value_text(value: &Dynamic) -> String {
+    if matches!(value, Dynamic::Null) { String::new() } else { js_text(value) }
+}
+
+/// `renderValidations(dataElement, template, calledOnStartup)` (linhas 2365 a 2384): os nós e o que o aviso precisa, para ser
+/// chamado de dentro do `onChange` do template.
+#[derive(Clone)]
+struct TextValidator {
+    ui: Ui,
+    container: NodeId,
+    message_element: NodeId,
+    foreground: Rgba,
+    accessibility_host: Rc<dyn IAccessibilityHost>,
+    /// `Weak`, porque o ouvinte do campo lê o `onChange` do template (ver o `//!`).
+    input_box: Weak<InputBox>,
+    numeric: bool,
+}
+
+impl TextValidator {
+    /// Validate and render any error message. Returns true if the value is invalid.
+    fn render(&self, data_element: &SettingsTreeSettingElement, called_on_startup: bool) -> bool {
+        let Some(input_box) = self.input_box.upgrade() else { return false };
+        let validator = data_element.setting.validator.as_ref();
+        let error = validator.and_then(|validate| validate(&Dynamic::string(&input_text(&input_box.value(), self.numeric))).filter(|message| !message.is_empty()));
+        let input_wrapper = self.ui.tree().parent(input_box.input_element());
+
+        let announcement = {
+            let mut tree = self.ui.tree_mut();
+            match &error {
+                Some(err_msg) => {
+                    tree.add_class(self.container, "invalid-input");
+                    set_text(&mut tree, self.message_element, err_msg, 400, self.foreground);
+                    // `.setting-item-validation-message { display: none }`, `display: block` com `.invalid-input`
+                    tree.style_mut(self.message_element).visible = true;
+                    let validation_error = localize("validationError", "Validation Error.", &[]);
+                    if let Some(wrapper) = input_wrapper {
+                        tree.set_label(wrapper, format!("{validation_error} {err_msg}"));
+                    }
+                    (!called_on_startup).then(|| format!("{validation_error} {err_msg}"))
+                }
+                None => {
+                    if validator.is_some()
+                        && let Some(wrapper) = input_wrapper
+                    {
+                        tree.clear_label(wrapper);
+                    }
+                    tree.remove_class(self.container, "invalid-input");
+                    tree.style_mut(self.message_element).visible = false;
+                    None
+                }
+            }
+        };
+        if let Some(announcement) = announcement {
+            self.accessibility_host.status(&announcement);
+        }
+        error.is_some()
+    }
+}
+
+/// O `renderTemplate` de texto e de número: o template comum, a mensagem de validação e o campo (que fala com o `onChange` do
+/// template). Os dois renderizadores diferem só nas opções do campo e na classe de tipo.
+fn render_text_item_template(renderer: &AbstractSettingRenderer, container: NodeId, type_class: &str, input_styles: InputBoxStyles, numeric: bool) -> ISettingTextItemTemplate {
+    let ui = renderer.services.ui();
+    let common = renderer.render_common_template(container, type_class);
+    let validation_error_message_element = create_validation_message(ui, common.container_element, None);
+
+    let input_box = InputBox::new(ui, common.control_element, Some(renderer.services.widgets.context_view_provider.clone()), InputBoxOptions::new(input_styles));
+    common.to_dispose.add_rc(input_box.clone());
+    let on_change = common.on_change.clone();
+    common.to_dispose.add(input_box.on_did_change().listen(move |value| call_on_change(&on_change, Dynamic::string(&input_text(value, numeric)))));
+    {
+        let mut tree = ui.tree_mut();
+        tree.add_class(input_box.input_element(), AbstractSettingRenderer::CONTROL_CLASS);
+        tree.set_attribute(input_box.input_element(), "tabindex", "0");
+    }
+
+    let template = ISettingTextItemTemplate { common, input_box, validation_error_message_element, numeric };
+    renderer.add_setting_element_focus_handler(&template.common);
+    template
+}
+
+/// A parte de `renderValue` que o texto e o número têm igual: o valor, o estado e o rótulo do campo, e o `onChange` do template,
+/// que só repassa o valor ao `onChange` do chamador se a validação passa.
+fn render_text_item_value(
+    renderer: &AbstractSettingRenderer,
+    data_element: &Rc<SettingsTreeSettingElement>,
+    template: &ISettingTextItemTemplate,
+    value_text: &str,
+    on_change: Rc<dyn Fn(Dynamic)>,
+) {
+    *template.on_change.borrow_mut() = None;
+    template.input_box.set_value(value_text);
+    template.input_box.set_aria_label(&data_element.setting.key);
+    template.input_box.set_enabled(!data_element.has_policy_value() && !data_element.is_agents_window_read_only());
+
+    let validator = TextValidator {
+        ui: renderer.services.ui().clone(),
+        container: template.container_element,
+        message_element: template.validation_error_message_element,
+        foreground: renderer.services.styles.validation_error_foreground,
+        accessibility_host: renderer.services.accessibility_host.clone(),
+        input_box: Rc::downgrade(&template.input_box),
+        numeric: template.numeric,
+    };
+    let (callback_validator, element) = (validator.clone(), data_element.clone());
+    let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+        if !callback_validator.render(&element, false) {
+            on_change(value);
+        }
+    });
+    *template.on_change.borrow_mut() = Some(callback);
+
+    validator.render(data_element, true);
+}
+
+/// O `renderElement` de texto e de número: o `renderSettingElement` com o `renderValue` do renderizador, e o layout.
+fn render_text_item_element(
+    renderer: &AbstractSettingRenderer,
+    node: &Rc<SettingsTreeNode>,
+    template_data: &TemplateData,
+    render_value: &dyn Fn(&Rc<SettingsTreeSettingElement>, &ISettingTextItemTemplate, Rc<dyn Fn(Dynamic)>),
+    layout: &dyn Fn(&ISettingTextItemTemplate) -> f64,
+) {
+    let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingTextItemTemplate>(), setting_of(node)) else { return };
+    renderer.render_setting_element(element, &template.common, &|on_change| render_value(element, template, on_change));
+    layout(template);
+}
+
+/// O layout de uma linha de texto ou de número: a caixa na largura do controle, e a mensagem de validação absoluta com a largura
+/// `message_width`. Devolve a altura da linha.
+fn layout_text_item(renderer: &AbstractSettingRenderer, template: &ISettingTextItemTemplate, control_width: f64, message_width: f64) -> f64 {
+    let ui = renderer.services.ui();
+    {
+        let mut tree = ui.tree_mut();
+        tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, control_width, 0.0));
+        let element = template.input_box.element();
+        let bounds = tree.bounds(element);
+        tree.set_bounds(element, Rect::new(0.0, 0.0, control_width, bounds.height()));
+    }
+    template.input_box.layout();
+    let height = renderer.layout_setting_item(&template.common, (control_width, template.input_box.height()));
+    renderer.place_validation_message(&template.common, template.validation_error_message_element, Some(message_width));
+    height
+}
+
+// ---- AbstractSettingTextRenderer, SettingTextRenderer e SettingMultilineTextRenderer (linhas 1778 a 1878) ------------------------
+
+/// `AbstractSettingTextRenderer`.
+pub struct AbstractSettingTextRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for AbstractSettingTextRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl AbstractSettingTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderTemplate(_container, useMultiline)` (sem o `useMultiline`, ver o `//!`).
+    pub fn render_template(&self, container: NodeId) -> ISettingTextItemTemplate {
+        render_text_item_template(&self.base, container, "text", self.services.widgets.styles.input_box.clone(), false)
+    }
+
+    /// `renderElement(element, index, templateData)`: o `renderSettingElement` com o `renderValue` da subclasse, e o layout.
+    fn render_element(
+        &self,
+        node: &Rc<SettingsTreeNode>,
+        template_data: &TemplateData,
+        render_value: &dyn Fn(&Rc<SettingsTreeSettingElement>, &ISettingTextItemTemplate, Rc<dyn Fn(Dynamic)>),
+    ) {
+        render_text_item_element(&self.base, node, template_data, render_value, &|template| self.layout(template));
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    pub fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        render_text_item_value(&self.base, data_element, template, &input_value_text(&data_element.value()), on_change);
+    }
+
+    /// O layout da linha: o campo no `width: 420px` do controle (que encolhe com a linha). Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingTextItemTemplate) -> f64 {
+        let row_width = self.services.ui().tree().bounds(template.row_element).width();
+        layout_text_item(&self.base, template, item_text_width(row_width).min(TEXT_CONTROL_WIDTH), TEXT_CONTROL_WIDTH)
+    }
+
+    fn dispose_element(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+/// `SettingTextRenderer`.
+pub struct SettingTextRenderer {
+    text: Rc<AbstractSettingTextRenderer>,
+}
+
+impl Deref for SettingTextRenderer {
+    type Target = AbstractSettingTextRenderer;
+
+    fn deref(&self) -> &AbstractSettingTextRenderer {
+        &self.text
+    }
+}
+
+impl SettingTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { text: AbstractSettingTextRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingTextRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_TEXT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let template = self.text.render_template(container);
+
+        // TODO@9at8: listWidget filters out all key events from input boxes, so we need to come up with a better way
+        // Disable ArrowUp and ArrowDown behaviour in favor of list navigation
+        template.to_dispose.add(self.services.ui().listen(template.input_box.input_element(), EventKind::KeyDown, false, |e| {
+            let Some(key) = StandardKeyboardEvent::from_event(e) else { return };
+            if key.equals(KeyCode::UpArrow.bits()) || key.equals(KeyCode::DownArrow.bits()) {
+                e.prevent_default();
+            }
+        }));
+
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.render_element(node, template_data, &|element, template, on_change| self.text.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.text.dispose_template(template_data);
+    }
+}
+
+/// `SettingMultilineTextRenderer`.
+pub struct SettingMultilineTextRenderer {
+    text: Rc<AbstractSettingTextRenderer>,
+}
+
+impl Deref for SettingMultilineTextRenderer {
+    type Target = AbstractSettingTextRenderer;
+
+    fn deref(&self) -> &AbstractSettingTextRenderer {
+        &self.text
+    }
+}
+
+impl SettingMultilineTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { text: AbstractSettingTextRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`: o do abstrato com o valor do elemento atualizado antes de cada mudança, e o
+    /// aviso de mudança de altura do campo.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let element = data_element.clone();
+        let on_change_override: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+            // Ensure the model is up to date since a different value will be rendered as different height when probing the height.
+            element.set_value(value.clone());
+            on_change(value);
+        });
+        self.text.render_value(data_element, template, on_change_override);
+
+        let (ui, container, emitter, element) = (self.services.ui().clone(), template.container_element, self.on_did_change_setting_height.clone(), data_element.clone());
+        template.element_disposables.add(template.input_box.on_did_height_change().listen(move |_| {
+            let height = ui.tree().bounds(container).height();
+            // Don't fire event if height is reported as 0,
+            // which sometimes happens when clicking onto a new setting.
+            if height > 0.0 {
+                emitter.fire(HeightChangeParams { element: element.clone(), height });
+            }
+        }));
+        template.input_box.layout();
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingMultilineTextRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_MULTILINE_TEXT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        Rc::new(self.text.render_template(container)) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.render_element(node, template_data, &|element, template, on_change| self.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.text.dispose_template(template_data);
+    }
+}
+
+// ---- SettingEnumRenderer (linhas 1880 a 1988) ---------------------------------------------------------------------------------
+
+/// `ISettingEnumItemTemplate`.
+pub struct ISettingEnumItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub select_box: Rc<SelectBox>,
+    /// `selectElement`: o nó do `<select>` do [`SelectBox`].
+    pub select_element: NodeId,
+    pub enum_description_element: NodeId,
+}
+
+deref_to_common!(ISettingEnumItemTemplate);
+
+/// `SettingEnumRenderer`.
+pub struct SettingEnumRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingEnumRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingEnumRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingEnumItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let setting = &data_element.setting;
+
+        // Make shallow copies here so that we don't modify the actual dataElement later
+        let mut enum_item_labels: Vec<String> = setting.enum_item_labels.clone().unwrap_or_default();
+        let mut enum_descriptions: Vec<String> = setting.enum_descriptions.clone().unwrap_or_default();
+        let mut setting_enum: Vec<Dynamic> = setting.r#enum.iter().flatten().map(|value| Dynamic::string(value)).collect();
+        let enum_descriptions_are_markdown = setting.enum_descriptions_are_markdown.unwrap_or(false);
+        let default_value = data_element.default_value();
+
+        let mut created_default = false;
+        if !setting_enum.iter().any(|value| value.strict_equals(&default_value)) {
+            // Add a new potentially blank default setting
+            setting_enum.insert(0, default_value.clone());
+            enum_descriptions.insert(0, String::new());
+            enum_item_labels.insert(0, String::new());
+            created_default = true;
+        }
+
+        // Use String constructor in case of null or undefined values
+        let stringified_default_value = escape_invisible_chars(&js_text(&default_value));
+        let display_options: Vec<ISelectOptionItem> = setting_enum
+            .iter()
+            .map(|value| escape_invisible_chars(&js_text(value)))
+            .enumerate()
+            .map(|(index, data)| {
+                let label = enum_item_labels.get(index).filter(|label| !label.is_empty());
+                let description = enum_descriptions
+                    .get(index)
+                    .filter(|description| !description.is_empty())
+                    .map(|description| if enum_descriptions_are_markdown { fix_setting_links(description, false) } else { description.clone() });
+                let is_default = data == stringified_default_value || (created_default && index == 0);
+                ISelectOptionItem {
+                    text: label.cloned().unwrap_or_else(|| data.clone()),
+                    detail: label.map(|_| data.clone()),
+                    description,
+                    description_is_markdown: enum_descriptions_are_markdown,
+                    decorator_right: is_default.then(|| localize("settings.Default", "default", &[])),
+                    ..ISelectOptionItem::default()
+                }
+            })
+            .collect();
+
+        template.select_box.set_options(display_options, None);
+        template.select_box.set_aria_label(&setting.key);
+        template.select_box.set_enabled(!data_element.has_policy_value() && !data_element.is_agents_window_read_only());
+
+        let value = data_element.value();
+        let idx = setting_enum.iter().position(|candidate| candidate.strict_equals(&value)).unwrap_or(0);
+
+        *template.on_change.borrow_mut() = None;
+        template.select_box.select(idx);
+        let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |index: Dynamic| {
+            let idx = match index {
+                Dynamic::Number(index) => index as usize,
+                _ => 0,
+            };
+            if created_default && idx == 0 {
+                on_change(default_value.clone());
+            } else {
+                on_change(setting_enum.get(idx).cloned().unwrap_or(Dynamic::Undefined));
+            }
+        });
+        *template.on_change.borrow_mut() = Some(callback);
+
+        clear_node(&mut self.services.ui().tree_mut(), template.enum_description_element);
+    }
+
+    /// O layout da linha: o `<select>` com `width: 320px`, e o bloco `.setting-item-enumDescription` vazio depois da descrição.
+    /// Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingEnumItemTemplate) -> f64 {
+        let ui = self.services.ui();
+        let row_width = ui.tree().bounds(template.row_element).width();
+        let text_width = item_text_width(row_width);
+        ui.tree_mut().set_bounds(template.control_element, Rect::new(0.0, 0.0, ENUM_SELECT_WIDTH, 0.0));
+        template.select_box.layout();
+        let height = self.layout_setting_item(&template.common, (ENUM_SELECT_WIDTH, template.select_box.natural_size().1));
+
+        let mut tree = ui.tree_mut();
+        let description = tree.bounds(template.description_element);
+        tree.set_bounds(template.enum_description_element, Rect::new(ITEM_PADDING_X, description.y1, ITEM_PADDING_X + text_width, description.y1));
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingEnumRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_ENUM_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "enum");
+
+        let select_box = SelectBox::new(
+            ui,
+            Vec::new(),
+            0,
+            self.services.widgets.context_view_provider.clone(),
+            self.services.widgets.styles.select_box.clone(),
+            Some(ISelectBoxOptions { use_custom_drawn: true, ..ISelectBoxOptions::default() }),
+        );
+        common.to_dispose.add_rc(select_box.clone());
+        select_box.render(common.control_element);
+        let select_element = select_box.select_element();
+        {
+            let mut tree = ui.tree_mut();
+            tree.add_class(select_element, AbstractSettingRenderer::CONTROL_CLASS);
+            tree.set_attribute(select_element, "tabindex", "0");
+        }
+
+        let on_change = common.on_change.clone();
+        common.to_dispose.add(select_box.on_did_select().listen(move |e| call_on_change(&on_change, Dynamic::Number(e.index as f64))));
+
+        // `containerElement.insertBefore($('.setting-item-enumDescription'), descriptionElement.nextSibling)`
+        let enum_description_element = {
+            let mut tree = ui.tree_mut();
+            let element = create_detached_el(&mut tree, Role::Generic, "setting-item-enumDescription");
+            let siblings = tree.children(common.container_element).to_vec();
+            let next_sibling = siblings.iter().position(|node| *node == common.description_element).and_then(|index| siblings.get(index + 1)).copied();
+            tree.insert_before(common.container_element, element, next_sibling);
+            element
+        };
+
+        let template = ISettingEnumItemTemplate { common, select_box, select_element, enum_description_element };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingEnumItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| self.render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingEnumItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingEnumItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingNumberRenderer (linhas 1990 a 2049) -------------------------------------------------------------------------------
+
+/// `SettingNumberRenderer`.
+pub struct SettingNumberRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingNumberRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingNumberRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`. O `inputBox.step` não existe (ver o `//!`).
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let value_type = data_element.value_type();
+        let is_integer = matches!(value_type, SettingValueType::Integer | SettingValueType::NullableInteger);
+        let is_nullable = matches!(value_type, SettingValueType::NullableInteger | SettingValueType::NullableNumber);
+
+        // `numParseFn` e `nullNumParseFn`
+        let parse = move |text: &str| if is_integer { parse_int(text) } else { parse_float(&text.encode_utf16().collect::<Vec<u16>>()) };
+        let null_parse: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+            let text = js_text(&value);
+            on_change(if is_nullable && text.is_empty() { Dynamic::Null } else { Dynamic::Number(parse(&text)) });
+        });
+
+        let value_text = match data_element.value() {
+            Dynamic::Number(number) => number_to_js_string(number),
+            _ => String::new(),
+        };
+        render_text_item_value(&self.base, data_element, template, &value_text, null_parse);
+    }
+
+    /// O layout da linha: o campo no `min-width: 200px` do controle. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingTextItemTemplate) -> f64 {
+        layout_text_item(&self.base, template, NUMBER_CONTROL_WIDTH, NUMBER_CONTROL_WIDTH)
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingNumberRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_NUMBER_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        Rc::new(render_text_item_template(&self.base, container, "number", self.services.styles.number_input_box.clone(), true)) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        render_text_item_element(&self.base, node, template_data, &|element, template, on_change| self.render_value(element, template, on_change), &|template| self.layout(template));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingBoolRenderer (linhas 2051 a 2146) ---------------------------------------------------------------------------------
+
+/// `ISettingBoolItemTemplate`.
+pub struct ISettingBoolItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub checkbox: Rc<Checkbox>,
+}
+
+deref_to_common!(ISettingBoolItemTemplate);
+
+/// `SettingBoolRenderer`.
+pub struct SettingBoolRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingBoolRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingBoolRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingBoolItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let ui = self.services.ui();
+        *template.on_change.borrow_mut() = None;
+        template.checkbox.set_checked(data_element.value().is_truthy());
+        if data_element.has_policy_value() || data_element.is_agents_window_read_only() {
+            template.checkbox.disable();
+            let mut tree = ui.tree_mut();
+            tree.add_class(template.description_element, "disabled");
+            // `.setting-item-bool .setting-item-description.disabled { cursor: initial }`
+            tree.style_mut(template.description_element).cursor = None;
+        } else {
+            template.checkbox.enable();
+            {
+                let mut tree = ui.tree_mut();
+                tree.remove_class(template.description_element, "disabled");
+                // `.setting-item-bool .setting-item-description { cursor: pointer }`
+                tree.style_mut(template.description_element).cursor = Some(Cursor::Pointer);
+            }
+
+            // Need to listen for mouse clicks on description and toggle checkbox - use target ID for safety
+            // Also have to ignore embedded links - use closest('a') to handle clicks on child elements of links (e.g. SVG icons inside <a> tags)
+            let (checkbox, slot, ui_for_target) = (Rc::downgrade(&template.checkbox), template.on_change.clone(), ui.clone());
+            template.element_disposables.add(ui.listen(template.description_element, EventKind::PointerDown, false, move |e| {
+                let Some(checkbox) = checkbox.upgrade() else { return };
+                let in_link = {
+                    let tree = ui_for_target.tree();
+                    std::iter::successors(Some(e.target), |node| tree.parent(*node)).any(|node| matches!(tree.role(node), Role::Link))
+                };
+
+                // Toggle target checkbox
+                if !in_link {
+                    checkbox.set_checked(!checkbox.checked());
+                    call_on_change(&slot, Dynamic::Bool(checkbox.checked()));
+                }
+                e.stop(false);
+            }));
+        }
+        template.checkbox.set_title(&data_element.setting.key);
+        *template.on_change.borrow_mut() = Some(on_change);
+    }
+
+    /// O layout da linha: a caixa de marcação à esquerda e a descrição ao lado. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingBoolItemTemplate) -> f64 {
+        let height = self.layout_setting_item(&template.common, (0.0, 0.0));
+        template.checkbox.set_position(0.0, 0.0);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingBoolRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_BOOL_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "bool");
+
+        // O DOM do original: `.setting-item-value-description` (o controle `.setting-item-bool-control` e a descrição) antes do
+        // indicador de modificação (ver o `//!`).
+        {
+            let mut tree = ui.tree_mut();
+            tree.set_class_name(common.value_element, "setting-item-value-description");
+            tree.set_class_name(common.control_element, "setting-item-bool-control");
+            tree.append_child(common.value_element, common.description_element);
+            tree.insert_before(common.container_element, common.value_element, Some(common.modified_indicator_element));
+        }
+
+        let checkbox = Checkbox::new(ui, "", true, self.services.widgets.styles.checkbox.clone());
+        {
+            let mut tree = ui.tree_mut();
+            tree.add_class(checkbox.dom_node(), "setting-value-checkbox");
+            tree.append_child(common.control_element, checkbox.dom_node());
+            tree.add_class(checkbox.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+        }
+        common.to_dispose.add_rc(checkbox.clone());
+        let (on_change, weak_checkbox) = (common.on_change.clone(), Rc::downgrade(&checkbox));
+        common.to_dispose.add(checkbox.on_change().listen(move |_| {
+            if let Some(checkbox) = weak_checkbox.upgrade() {
+                call_on_change(&on_change, Dynamic::Bool(checkbox.checked()));
+            }
+        }));
+
+        let template = ISettingBoolItemTemplate { common, checkbox };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingBoolItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| self.render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingBoolItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingBoolItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingsExtensionToggleRenderer (linhas 2148 a 2207) ---------------------------------------------------------------------
+
+/// `ISettingExtensionToggleItemTemplate`.
+pub struct ISettingExtensionToggleItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub action_button: Rc<Button>,
+    pub dismiss_button: Rc<Button>,
+}
+
+deref_to_common!(ISettingExtensionToggleItemTemplate);
+
+/// `SettingsExtensionToggleRenderer`.
+pub struct SettingsExtensionToggleRenderer {
+    base: Rc<AbstractSettingRenderer>,
+    on_did_dismiss_extension_setting: Rc<Emitter<String>>,
+}
+
+impl Deref for SettingsExtensionToggleRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingsExtensionToggleRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        let base = AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory);
+        let on_did_dismiss_extension_setting = base.register_emitter::<String>();
+        Rc::new(Self { base, on_did_dismiss_extension_setting })
+    }
+
+    pub fn on_did_dismiss_extension_setting(&self) -> BaseEvent<String> {
+        self.on_did_dismiss_extension_setting.event()
+    }
+
+    /// `renderValue(dataElement, template, onChange)`: o `onChange` é `undefined` neste tipo e não é lido.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingExtensionToggleItemTemplate) {
+        template.element_disposables.clear();
+
+        let Some(extension_id) = data_element.setting.display_extension_id.clone() else { return };
+        {
+            let (telemetry_service, command_service, extension_id) = (self.services.telemetry_service.clone(), self.services.command_service.clone(), extension_id.clone());
+            template.element_disposables.add(template.action_button.on_did_click().listen(move |_| {
+                telemetry_service.public_log2("ManageExtensionClick", Some(Dynamic::object([("extensionId", Dynamic::string(&extension_id))])));
+                let _ = command_service.execute_command("extension.open", vec![Dynamic::string(&extension_id)]);
+            }));
+        }
+        {
+            let (telemetry_service, emitter) = (self.services.telemetry_service.clone(), self.on_did_dismiss_extension_setting.clone());
+            template.element_disposables.add(template.dismiss_button.on_did_click().listen(move |_| {
+                telemetry_service.public_log2("DismissExtensionClick", Some(Dynamic::object([("extensionId", Dynamic::string(&extension_id))])));
+                emitter.fire(extension_id.clone());
+            }));
+        }
+    }
+
+    /// O layout da linha: os dois botões `inline-block` (`width: fit-content`, o segundo com `margin-left: 8px`) numa linha
+    /// depois do último filho em fluxo. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingExtensionToggleItemTemplate) -> f64 {
+        for button in [&template.action_button, &template.dismiss_button] {
+            button.set_height(None);
+            button.set_width(Some(button.min_content_width()));
+        }
+        let (action_width, action_height) = template.action_button.size();
+        let (_, dismiss_height) = template.dismiss_button.size();
+        let line_height = action_height.max(dismiss_height);
+
+        template.tail_height.set(line_height);
+        let height = self.layout_setting_item(&template.common, (0.0, 0.0));
+        let top = template.content_bottom.get() - line_height;
+        template.action_button.set_position(ITEM_PADDING_X, top);
+        template.dismiss_button.set_position(ITEM_PADDING_X + action_width + EXTENSION_DISMISS_MARGIN_LEFT, top);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingsExtensionToggleRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_EXTENSION_TOGGLE_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "extension-toggle");
+        let styles = self.services.widgets.styles.button.clone();
+
+        let action_button = Button::new(ui, common.container_element, ButtonOptions { styles: styles.clone(), title: ButtonTitle::None, ..ButtonOptions::default() });
+        ui.tree_mut().add_class(action_button.element(), "setting-item-extension-toggle-button");
+        action_button.set_label(ButtonLabel::Text(localize("showExtension", "Show Extension", &[])));
+        common.to_dispose.add_rc(action_button.clone());
+
+        let dismiss_button = Button::new(ui, common.container_element, ButtonOptions { styles, title: ButtonTitle::None, secondary: true, ..ButtonOptions::default() });
+        ui.tree_mut().add_class(dismiss_button.element(), "setting-item-extension-dismiss-button");
+        dismiss_button.set_label(ButtonLabel::Text(localize("dismiss", "Dismiss", &[])));
+        common.to_dispose.add_rc(dismiss_button.clone());
+
+        let template = ISettingExtensionToggleItemTemplate { common, action_button, dismiss_button };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|_on_change| self.render_value(element, template));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingTreeRenderers (linhas 2209 a 2363) ----------------------------------------------------------------------------------
+
+/// Os serviços do construtor do `SettingTreeRenderers` (`IInstantiationService`, `IContextMenuService`, `IContextViewService` e
+/// `IUserDataSyncEnablementService`) e os que as ações de cópia criam por injeção (`IClipboardService`, `IProductService`). O
+/// `IInstantiationService.createInstance` é a chamada direta ao construtor, e o `IContextMenuService` é o `context_menu_provider` do
+/// [`SettingRendererServices`], o mesmo que o `ToolBar` recebe. O `IUserDataSyncEnablementService` também está no
+/// [`SettingRendererServices`].
+#[derive(Clone)]
+pub struct SettingTreeRenderersServices {
+    pub renderer: SettingRendererServices,
+    pub context_view_service: Rc<dyn IContextViewService>,
+    pub clipboard_service: Rc<dyn IClipboardService>,
+    pub product_service: Rc<dyn IProductService>,
+}
+
+/// Os eventos dos renderizadores de configuração, para o `Event.any(...settingRenderers.map(r => r.onX))` do original.
+#[derive(Default)]
+struct RendererEvents {
+    click_override_element: Vec<BaseEvent<ISettingOverrideClickEvent>>,
+    change_setting: Vec<BaseEvent<ISettingChangeEvent>>,
+    open_settings: Vec<BaseEvent<String>>,
+    click_setting_link: Vec<BaseEvent<ISettingLinkClickEvent>>,
+    focus_setting: Vec<BaseEvent<Rc<SettingsTreeSettingElement>>>,
+    change_setting_height: Vec<BaseEvent<HeightChangeParams>>,
+    apply_filter: Vec<BaseEvent<String>>,
+}
+
+impl RendererEvents {
+    fn collect(&mut self, renderer: &AbstractSettingRenderer) {
+        self.click_override_element.push(renderer.on_did_click_override_element());
+        self.change_setting.push(renderer.on_did_change_setting());
+        self.open_settings.push(renderer.on_did_open_settings());
+        self.click_setting_link.push(renderer.on_did_click_setting_link());
+        self.focus_setting.push(renderer.on_did_focus_setting());
+        self.change_setting_height.push(renderer.on_did_change_setting_height());
+        self.apply_filter.push(renderer.on_apply_filter());
+    }
+}
+
+/// O elemento de configuração que uma ação recebe como contexto (`context instanceof SettingsTreeSettingElement`).
+fn settings_element_of(context: &Dynamic) -> Option<Rc<SettingsTreeSettingElement>> {
+    match context {
+        Dynamic::Object(object) => object.host::<SettingsTreeSettingElement>(),
+        _ => None,
+    }
+}
+
+/// Todos os membros de `SettingValueType`, para achar o que tem o nome do tipo do esquema.
+const SETTING_VALUE_TYPES: [SettingValueType; 18] = [
+    SettingValueType::Null,
+    SettingValueType::Enum,
+    SettingValueType::String,
+    SettingValueType::MultilineString,
+    SettingValueType::Integer,
+    SettingValueType::Number,
+    SettingValueType::Boolean,
+    SettingValueType::Array,
+    SettingValueType::Exclude,
+    SettingValueType::Include,
+    SettingValueType::Complex,
+    SettingValueType::NullableInteger,
+    SettingValueType::NullableNumber,
+    SettingValueType::Object,
+    SettingValueType::BooleanObject,
+    SettingValueType::LanguageTag,
+    SettingValueType::ExtensionToggle,
+    SettingValueType::ComplexObject,
+];
+
+/// `context.setting.type as SettingValueType` (o reset manual passa o tipo do esquema como tipo do valor). O nome que não é de
+/// nenhum membro (ou a ausência de tipo) vira `Complex`, o tipo que o editor trata como o de qualquer valor sem controle próprio.
+fn setting_change_type(setting: &ISetting) -> SettingChangeType {
+    let from_name = |name: &str| SETTING_VALUE_TYPES.iter().copied().find(|value_type| value_type.as_str() == name).unwrap_or(SettingValueType::Complex);
+    match &setting.r#type {
+        Some(SettingSchemaType::Single(name)) => SettingChangeType::Single(from_name(name)),
+        Some(SettingSchemaType::List(names)) => SettingChangeType::Many(names.iter().map(|name| from_name(name)).collect()),
+        None => SettingChangeType::Single(SettingValueType::Complex),
+    }
+}
+
+/// O delegado do menu de contexto de `showContextMenu`: ancorado na barra de ferramentas, com o elemento como contexto das ações.
+struct SettingContextMenuDelegate {
+    anchor: NodeId,
+    actions: Vec<ActionRef>,
+    context: Dynamic,
+}
+
+impl IContextMenuDelegate for SettingContextMenuDelegate {
+    fn get_anchor(&self) -> Anchor {
+        Anchor::Node(self.anchor)
+    }
+
+    fn get_actions(&self) -> Vec<ActionRef> {
+        self.actions.clone()
+    }
+
+    fn get_actions_context(&self, _event: Option<&IContextMenuEvent>) -> Option<Dynamic> {
+        Some(self.context.clone())
+    }
+}
+
+/// `action.dispose()` das ações que são uma `Action` (`isDisposable(action)`).
+fn dispose_actions(actions: &[ActionRef]) {
+    for action in actions {
+        if let Some(base) = action.as_base_action() {
+            base.dispose();
+        }
+    }
+}
+
+/// `SettingTreeRenderers`.
+pub struct SettingTreeRenderers {
+    base: Rc<Disposable>,
+    services: SettingTreeRenderersServices,
+    setting_actions: Vec<ActionRef>,
+    pub on_did_click_override_element: BaseEvent<ISettingOverrideClickEvent>,
+    pub on_did_change_setting: BaseEvent<ISettingChangeEvent>,
+    pub on_did_dismiss_extension_setting: BaseEvent<String>,
+    pub on_did_open_settings: BaseEvent<String>,
+    pub on_did_click_setting_link: BaseEvent<ISettingLinkClickEvent>,
+    pub on_did_focus_setting: BaseEvent<Rc<SettingsTreeSettingElement>>,
+    pub on_did_change_setting_height: BaseEvent<HeightChangeParams>,
+    pub on_apply_filter: BaseEvent<String>,
+    pub all_renderers: Vec<Rc<dyn ITreeRenderer<SettingsObjectTreeModel>>>,
+}
+
+impl SettingTreeRenderers {
+    pub fn new(services: SettingTreeRenderersServices) -> Rc<Self> {
+        let base = Disposable::new();
+        let own_change_setting = registered_emitter::<ISettingChangeEvent>(&base);
+
+        let setting_actions = Self::create_setting_actions(&services, &own_change_setting);
+        {
+            let actions = setting_actions.clone();
+            base.register(plain_disposable(move || dispose_actions(&actions)));
+        }
+
+        let action_factory: DisposableActionFactory = {
+            let (configuration_service, user_data_sync_enablement_service) =
+                (services.renderer.configuration_service.clone(), services.renderer.user_data_sync_enablement_service.clone());
+            Rc::new(move |setting: &ISetting, setting_target: &SettingsTarget| {
+                Self::get_actions_for_setting(&configuration_service, &*user_data_sync_enablement_service, setting, setting_target)
+            })
+        };
+        let empty_action_factory: DisposableActionFactory = Rc::new(|_: &ISetting, _: &SettingsTarget| Vec::new());
+
+        let mut events = RendererEvents::default();
+        let mut renderers: Vec<Rc<dyn ITreeRenderer<SettingsObjectTreeModel>>> = Vec::new();
+        // Os renderizadores são descartados depois das ações, como no `dispose` do original.
+        let mut disposers: Vec<DisposableRef> = Vec::new();
+        macro_rules! add_setting_renderer {
+            ($renderer:expr) => {{
+                let renderer = $renderer;
+                events.collect(&renderer);
+                renderers.push(renderer.clone());
+                disposers.push(plain_disposable(move || renderer.dispose()));
+            }};
+        }
+
+        let renderer_services = services.renderer.clone();
+        add_setting_renderer!(SettingBoolRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingNumberRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingArrayRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingComplexRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingComplexObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingTextRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingMultilineTextRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingExcludeRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingIncludeRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingEnumRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingBoolObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+
+        let extension_renderer = SettingsExtensionToggleRenderer::new(renderer_services.clone(), Vec::new(), empty_action_factory);
+        add_setting_renderer!(extension_renderer.clone());
+
+        // Os dois últimos não são `AbstractSettingRenderer` e não têm o que descartar.
+        renderers.push(Rc::new(SettingGroupRenderer::new(services.renderer.widgets.ui.clone(), services.renderer.styles.clone())));
+        renderers.push(Rc::new(SettingNewExtensionsRenderer::new(
+            services.renderer.widgets.ui.clone(),
+            services.renderer.command_service.clone(),
+            services.renderer.widgets.styles.button.clone(),
+        )));
+
+        for disposer in disposers {
+            base.register(disposer);
+        }
+
+        let mut change_setting = events.change_setting;
+        change_setting.push(own_change_setting.event());
+
+        Rc::new(Self {
+            base,
+            services,
+            setting_actions,
+            on_did_click_override_element: any_event(events.click_override_element),
+            on_did_change_setting: any_event(change_setting),
+            on_did_dismiss_extension_setting: extension_renderer.on_did_dismiss_extension_setting(),
+            on_did_open_settings: any_event(events.open_settings),
+            on_did_click_setting_link: any_event(events.click_setting_link),
+            on_did_focus_setting: any_event(events.focus_setting),
+            on_did_change_setting_height: any_event(events.change_setting_height),
+            on_apply_filter: any_event(events.apply_filter),
+            all_renderers: renderers,
+        })
+    }
+
+    /// As ações do menu de cada configuração: reiniciar, o separador e as três de copiar.
+    fn create_setting_actions(services: &SettingTreeRenderersServices, on_did_change_setting: &Rc<Emitter<ISettingChangeEvent>>) -> Vec<ActionRef> {
+        let emitter = on_did_change_setting.clone();
+        let reset_setting: ActionRef = Action::new(
+            "settings.resetSetting",
+            &localize("resetSettingLabel", "Reset Setting", &[]),
+            "",
+            true,
+            Some(Rc::new(move |context: Dynamic| {
+                if let Some(element) = settings_element_of(&context)
+                    && !element.is_untrusted()
+                {
+                    emitter.fire(ISettingChangeEvent {
+                        key: element.setting.key.clone(),
+                        value: Dynamic::Undefined,
+                        r#type: setting_change_type(&element.setting),
+                        manual_reset: true,
+                        scope: element.setting.scope,
+                    });
+                }
+                MaybePromise::Value(Dynamic::Undefined)
+            })),
+        );
+        let actions: Vec<ActionRef> = vec![
+            reset_setting,
+            Separator::new(),
+            copy_setting_id_action(services.clipboard_service.clone()),
+            copy_setting_as_json_action(services.clipboard_service.clone()),
+            copy_setting_as_url_action(services.clipboard_service.clone(), services.product_service.clone()),
+        ];
+        actions
+    }
+
+    /// `getActionsForSetting(setting, settingTarget)`.
+    fn get_actions_for_setting(
+        configuration_service: &Rc<dyn IWorkbenchConfigurationService>,
+        user_data_sync_enablement_service: &dyn IUserDataSyncEnablementService,
+        setting: &ISetting,
+        setting_target: &SettingsTarget,
+    ) -> Vec<ActionRef> {
+        let mut actions: Vec<ActionRef> = Vec::new();
+        if !setting.scope.is_some_and(|scope| APPLICATION_SCOPES.contains(&scope)) && *setting_target == SettingsTarget::UserLocal {
+            actions.push(apply_setting_to_all_profiles_action(configuration_service.clone(), setting.key.clone()));
+        }
+        if user_data_sync_enablement_service.is_enabled() && !setting.disallow_sync_ignore.unwrap_or(false) {
+            actions.push(sync_setting_action(configuration_service.clone(), setting.key.clone()));
+        }
+        if !actions.is_empty() {
+            actions.insert(0, Separator::new());
+        }
+        actions
+    }
+
+    pub fn cancel_suggesters(&self) {
+        self.services.context_view_service.hide_context_view(None);
+    }
+
+    /// `showContextMenu(element, settingDOMElement)`.
+    pub fn show_context_menu(&self, element: &Rc<SettingsTreeSettingElement>, setting_dom_element: NodeId) {
+        let ui = &self.services.renderer.widgets.ui;
+        let toolbar_element = {
+            let tree = ui.tree();
+            tree.subtree(setting_dom_element).into_iter().find(|node| *node != setting_dom_element && tree.has_class(*node, "monaco-toolbar"))
+        };
+        if let Some(toolbar_element) = toolbar_element {
+            self.services.renderer.context_menu_provider.show_context_menu(Rc::new(SettingContextMenuDelegate {
+                anchor: toolbar_element,
+                actions: self.setting_actions.clone(),
+                context: Dynamic::from(ObjectRef::with_host(element.clone())),
+            }));
+        }
+    }
+
+    /// `getSettingDOMElementForDOMElement(domElement)`: o `.setting-item-contents` do nó ou de um antepassado dele.
+    pub fn get_setting_dom_element_for_dom_element(&self, dom_element: NodeId) -> Option<NodeId> {
+        let tree = self.services.renderer.widgets.ui.tree();
+        std::iter::successors(Some(dom_element), |node| tree.parent(*node)).find(|node| tree.has_class(*node, AbstractSettingRenderer::CONTENTS_CLASS))
+    }
+
+    /// `getDOMElementsForSettingKey(treeContainer, key)`.
+    pub fn get_dom_elements_for_setting_key(&self, tree_container: NodeId, key: &str) -> Vec<NodeId> {
+        let tree = self.services.renderer.widgets.ui.tree();
+        tree.subtree(tree_container).into_iter().filter(|node| *node != tree_container && tree.attribute(*node, AbstractSettingRenderer::SETTING_KEY_ATTR) == Some(key)).collect()
+    }
+
+    /// `getKeyForDOMElementInSetting(element)`.
+    pub fn get_key_for_dom_element_in_setting(&self, element: NodeId) -> Option<String> {
+        self.get_attribute_for_dom_element_in_setting(element, AbstractSettingRenderer::SETTING_KEY_ATTR)
+    }
+
+    /// `getIdForDOMElementInSetting(element)`.
+    pub fn get_id_for_dom_element_in_setting(&self, element: NodeId) -> Option<String> {
+        self.get_attribute_for_dom_element_in_setting(element, AbstractSettingRenderer::SETTING_ID_ATTR)
+    }
+
+    fn get_attribute_for_dom_element_in_setting(&self, element: NodeId, attribute: &str) -> Option<String> {
+        let setting_element = self.get_setting_dom_element_for_dom_element(element)?;
+        self.services.renderer.widgets.ui.tree().attribute(setting_element, attribute).map(str::to_owned)
+    }
+}
+
+impl IDisposable for SettingTreeRenderers {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "SettingTreeRenderers"
+    }
+}
+
+// ---- ações de copiar, sincronizar e aplicar a todos os perfis (linhas 2752 a 2899) ------------------------------------------
+
+/// `SETTINGS_AUTHORITY` (`workbench/services/preferences/common/preferences.ts`).
+const SETTINGS_AUTHORITY: &str = "settings";
+
+/// Uma `Action` cujo contexto de execução é o elemento da configuração, que escreve algo na área de transferência.
+fn clipboard_action(id: &str, label: String, clipboard_service: Rc<dyn IClipboardService>, text_of: impl Fn(&SettingsTreeSettingElement) -> String + 'static) -> ActionRef {
+    Action::new(
+        id,
+        &label,
+        "",
+        true,
+        Some(Rc::new(move |context: Dynamic| match settings_element_of(&context) {
+            Some(element) => MaybePromise::Promise(clipboard_service.write_text(&text_of(&element)).then(|_| Dynamic::Undefined)),
+            None => MaybePromise::Value(Dynamic::Undefined),
+        })),
+    )
+}
+
+/// `CopySettingIdAction`.
+pub fn copy_setting_id_action(clipboard_service: Rc<dyn IClipboardService>) -> ActionRef {
+    clipboard_action("settings.copySettingId", localize("copySettingIdLabel", "Copy Setting ID", &[]), clipboard_service, |context| context.setting.key.clone())
+}
+
+/// `CopySettingAsJSONAction`.
+pub fn copy_setting_as_json_action(clipboard_service: Rc<dyn IClipboardService>) -> ActionRef {
+    clipboard_action("settings.copySettingAsJSON", localize("copySettingAsJSONLabel", "Copy Setting as JSON", &[]), clipboard_service, |context| {
+        let value = json_stringify_indented(&context.value(), 2).unwrap_or_else(|| "undefined".to_owned());
+        format!("\"{}\": {}", context.setting.key, value)
+    })
+}
+
+/// `CopySettingAsURLAction`.
+pub fn copy_setting_as_url_action(clipboard_service: Rc<dyn IClipboardService>, product_service: Rc<dyn IProductService>) -> ActionRef {
+    clipboard_action("settings.copySettingAsURL", localize("copySettingAsURLLabel", "Copy Setting as URL", &[]), clipboard_service, move |context| {
+        let uri = URI::from(
+            &UriComponents {
+                scheme: Some(JsString::from(product_service.url_protocol())),
+                authority: Some(JsString::from(SETTINGS_AUTHORITY)),
+                path: Some(JsString::from(format!("/{}", context.setting.key))),
+                ..UriComponents::default()
+            },
+            true,
+        );
+        uri.to_string(false).to_string_lossy()
+    })
+}
+
+/// `Array.isArray(value) ? value : []` de um valor de configuração com textos.
+fn string_array(value: &Dynamic) -> Vec<String> {
+    array_items(value).iter().map(js_text).collect()
+}
+
+/// Uma `Action` que acompanha a configuração (o `this._register(Event.filter(configService.onDidChangeConfiguration, ...))` das
+/// ações `SyncSettingAction` e `ApplySettingToAllProfilesAction`, que estendem `Action`). A inscrição é descartada com a ação.
+pub struct ConfigBoundAction {
+    action: Rc<Action>,
+    subscription: RefCell<Option<DisposableRef>>,
+}
+
+impl ConfigBoundAction {
+    /// `update` guarda o `checked` a partir da configuração; `run` é o `run()` da ação, que lê o `checked` dela.
+    fn create(
+        id: &str,
+        label: String,
+        configuration_service: &Rc<dyn IWorkbenchConfigurationService>,
+        watched_key: &'static str,
+        update: Rc<dyn Fn(&Action)>,
+        run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>>,
+    ) -> Rc<Self> {
+        let slot: Rc<RefCell<Weak<Action>>> = Rc::new(RefCell::new(Weak::new()));
+        let callback_slot = slot.clone();
+        let action = Action::new(
+            id,
+            &label,
+            "",
+            true,
+            Some(Rc::new(move |_: Dynamic| {
+                let action = callback_slot.borrow().upgrade();
+                match action {
+                    Some(action) => run(&action),
+                    None => MaybePromise::Value(Dynamic::Undefined),
+                }
+            })),
+        );
+        *slot.borrow_mut() = Rc::downgrade(&action);
+
+        let (listener_slot, listener_update) = (slot, update.clone());
+        let subscription = configuration_service.on_did_change_configuration().listen(move |e| {
+            if e.affects_configuration(watched_key, None) {
+                let action = listener_slot.borrow().upgrade();
+                if let Some(action) = action {
+                    listener_update(&action);
+                }
+            }
+        });
+        update(&action);
+        Rc::new(Self { action, subscription: RefCell::new(Some(subscription)) })
+    }
+}
+
+impl Drop for ConfigBoundAction {
+    fn drop(&mut self) {
+        let subscription = self.subscription.borrow_mut().take();
+        if let Some(subscription) = subscription {
+            subscription.dispose();
+        }
+    }
+}
+
+impl IAction for ConfigBoundAction {
+    fn id(&self) -> String {
+        self.action.id()
+    }
+
+    fn label(&self) -> String {
+        self.action.label()
+    }
+
+    fn set_label(&self, value: String) {
+        self.action.set_label(value);
+    }
+
+    fn tooltip(&self) -> String {
+        self.action.tooltip()
+    }
+
+    fn set_tooltip(&self, value: String) {
+        self.action.set_tooltip(value);
+    }
+
+    fn class(&self) -> Option<String> {
+        self.action.class()
+    }
+
+    fn set_class(&self, value: Option<String>) {
+        self.action.set_class(value);
+    }
+
+    fn enabled(&self) -> bool {
+        self.action.enabled()
+    }
+
+    fn set_enabled(&self, value: bool) {
+        self.action.set_enabled(value);
+    }
+
+    fn checked(&self) -> Option<bool> {
+        self.action.checked()
+    }
+
+    fn set_checked(&self, value: Option<bool>) {
+        self.action.set_checked(value);
+    }
+
+    fn run(&self, args: &[Dynamic]) -> Promise<Dynamic> {
+        self.action.run(args)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_base_action(&self) -> Option<&Action> {
+        Some(&self.action)
+    }
+}
+
+/// `SyncSettingAction`.
+pub fn sync_setting_action(configuration_service: Rc<dyn IWorkbenchConfigurationService>, setting_key: String) -> ActionRef {
+    const IGNORED_SETTINGS: &str = "settingsSync.ignoredSettings";
+
+    let update: Rc<dyn Fn(&Action)> = {
+        let (configuration_service, setting_key) = (configuration_service.clone(), setting_key.clone());
+        Rc::new(move |action: &Action| {
+            let ignored_settings = AbstractSettingRenderer::read_ignored_settings(&*configuration_service);
+            action.set_checked(Some(!ignored_settings.contains(&setting_key)));
+        })
+    };
+    let run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>> = {
+        let (service, setting_key) = (configuration_service.clone(), setting_key);
+        Rc::new(move |action: &Action| {
+            // first remove the current setting completely from ignored settings
+            let mut current_value = string_array(&service.get_value(Some(IGNORED_SETTINGS), None));
+            current_value.retain(|value| *value != setting_key && *value != format!("-{setting_key}"));
+
+            let is_default_ignored = get_default_ignored_settings(false).iter().any(|ignored| ignored.to_string_lossy() == setting_key);
+            let asked_to_sync = !action.checked().unwrap_or(false);
+
+            // If asked to sync, then add only if it is ignored by default
+            if asked_to_sync && is_default_ignored {
+                current_value.push(format!("-{setting_key}"));
+            }
+
+            // If asked not to sync, then add only if it is not ignored by default
+            if !asked_to_sync && !is_default_ignored {
+                current_value.push(setting_key.clone());
+            }
+
+            let value = if current_value.is_empty() { Dynamic::Undefined } else { Dynamic::array(current_value.iter().map(|value| Dynamic::string(value))) };
+            let _ = service.update_value(IGNORED_SETTINGS, value, None, Some(ConfigurationTarget::User));
+
+            MaybePromise::Value(Dynamic::Undefined)
+        })
+    };
+    ConfigBoundAction::create("settings.stopSyncingSetting", localize("stopSyncingSetting", "Sync This Setting", &[]), &configuration_service, IGNORED_SETTINGS, update, run)
+}
+
+/// `ApplySettingToAllProfilesAction`.
+pub fn apply_setting_to_all_profiles_action(configuration_service: Rc<dyn IWorkbenchConfigurationService>, setting_key: String) -> ActionRef {
+    let update: Rc<dyn Fn(&Action)> = {
+        let (configuration_service, setting_key) = (configuration_service.clone(), setting_key.clone());
+        Rc::new(move |action: &Action| {
+            let all_profiles_settings = string_array(&configuration_service.get_value(Some(APPLY_ALL_PROFILES_SETTING), None));
+            action.set_checked(Some(all_profiles_settings.contains(&setting_key)));
+        })
+    };
+    let run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>> = {
+        let (service, setting_key) = (configuration_service.clone(), setting_key);
+        Rc::new(move |action: &Action| {
+            let checked = action.checked().unwrap_or(false);
+            let (service, setting_key) = (service.clone(), setting_key.clone());
+            MaybePromise::Promise(async_fn(async move {
+                // first remove the current setting completely from ignored settings
+                let mut value = string_array(&service.get_value(Some(APPLY_ALL_PROFILES_SETTING), None));
+
+                if checked {
+                    if let Some(index) = value.iter().position(|candidate| *candidate == setting_key) {
+                        value.remove(index);
+                    }
+                } else {
+                    value.push(setting_key.clone());
+                }
+
+                let mut new_value: Vec<String> = Vec::new();
+                for candidate in value {
+                    if !new_value.contains(&candidate) {
+                        new_value.push(candidate);
+                    }
+                }
+                let new_value = if new_value.is_empty() { Dynamic::Undefined } else { Dynamic::array(new_value.iter().map(|value| Dynamic::string(value))) };
+
+                let overrides = ConfigurationOverrides::default();
+                let target = Some(ConfigurationTarget::UserLocal);
+                if checked {
+                    let application_value = service.inspect(&setting_key, &overrides).application().map_or(Dynamic::Undefined, |inspected| inspected.value());
+                    service.update_value(&setting_key, application_value, None, target).await?;
+                    service.update_value(APPLY_ALL_PROFILES_SETTING, new_value, None, target).await?;
+                } else {
+                    service.update_value(APPLY_ALL_PROFILES_SETTING, new_value, None, target).await?;
+                    let user_local_value = service.inspect(&setting_key, &overrides).user_local().map_or(Dynamic::Undefined, |inspected| inspected.value());
+                    service.update_value(&setting_key, user_local_value, None, target).await?;
+                }
+                Ok(Dynamic::Undefined)
+            }))
+        })
+    };
+    ConfigBoundAction::create(
+        "settings.applyToAllProfiles",
+        localize("applyToAllProfiles", "Apply Setting to all Profiles", &[]),
+        &configuration_service,
+        APPLY_ALL_PROFILES_SETTING,
+        update,
+        run,
+    )
+}

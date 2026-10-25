@@ -129,7 +129,10 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
         )
     };
 
-    assert_eq!(result, S_OK);
+    // je-code: o `assert_eq!` original derrubava o processo; o `TerminalProcess` precisa do erro ("Cannot launch conpty").
+    if result != S_OK {
+        return Err(Error::other(format!("Cannot launch conpty: CreatePseudoConsole falhou (HRESULT {result:#x})")));
+    }
 
     let mut success;
 
@@ -300,10 +303,23 @@ fn add_windows_env_key_value_to_block(block: &mut Vec<u16>, key: &OsStr, value: 
     block.push(0);
 }
 
+impl Conpty {
+    /// je-code: o redimensionamento que devolve o erro (o `on_resize` original derrubava o processo num HRESULT ruim).
+    pub fn try_resize(&mut self, window_size: WindowSize) -> Result<()> {
+        let result = unsafe { (self.api.resize)(self.handle, window_size.into()) };
+        if result == S_OK {
+            Ok(())
+        } else {
+            Err(Error::other(format!("ResizePseudoConsole falhou (HRESULT {result:#x})")))
+        }
+    }
+}
+
 impl OnResize for Conpty {
     fn on_resize(&mut self, window_size: WindowSize) {
-        let result = unsafe { (self.api.resize)(self.handle, window_size.into()) };
-        assert_eq!(result, S_OK);
+        if let Err(error) = self.try_resize(window_size) {
+            warn!("{error}");
+        }
     }
 }
 

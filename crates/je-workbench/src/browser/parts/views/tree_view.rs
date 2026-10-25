@@ -2,13 +2,15 @@
 //! `CustomTreeViewDragAndDrop` e do cascateamento de checkboxes, que o `MainThreadTreeViews` e a suíte
 //! `mainThreadTreeViews.test.ts` exercitam.
 //!
-//! Fora do porte (camada de interface, sem equivalente nativo ainda): `TreeViewPane` (o `ViewPane`), `TreeView` (a variante
-//! sem extensão), `TreeRenderer`, `Aligner`, `TreeMenus`, `MultipleSelectionActionRunner`, `CheckboxStateHandler`, o menu de
+//! Fora do porte (camada de interface, sem equivalente nativo ainda): `TreeViewPane` (o `ViewPane`), `TreeRenderer`, `Aligner`,
+//! `TreeMenus`, `MultipleSelectionActionRunner`, `CheckboxStateHandler`, o menu de
 //! contexto, o `onDidOpen` (execução do comando do item), o `resolveCommand`, os `RawContextKey` e as ações
 //! `refresh`/`collapseAll` registradas por `registerActions`, a renderização da mensagem (`showMessage`, `processMessage`),
 //! `show(container)`, `container`, `viewContainer`/`viewLocation` (cores por local) e `showRefreshAction`.
 //!
 //! Divergências:
+//! - **`TreeView`** (a variante sem extensão) é o [`CustomTreeView::new_without_extension`]: a mesma struct com `extension_id`
+//!   ausente, em que `activate` só cria a árvore.
 //! - **A árvore (`WorkbenchAsyncDataTree`)** é o modelo lógico de nós: o [`TreeNodes`] guarda, por `handle`, o item, os
 //!   filhos carregados, o pai, o conjunto de expandidos, a seleção e o foco. `expand`, `reveal`, `setSelection`, `setFocus`,
 //!   `isCollapsed` e o recarregamento (`updateChildren`, que só recarrega a raiz e os nós expandidos) seguem o que a árvore
@@ -768,7 +770,8 @@ pub struct CustomTreeView {
     base: Rc<Disposable>,
     this: Weak<CustomTreeView>,
     id: String,
-    extension_id: String,
+    /// `None` na variante `TreeView` (sem extensão).
+    extension_id: Option<String>,
     services: CustomTreeViewServices,
 
     is_visible: Cell<bool>,
@@ -805,6 +808,10 @@ pub struct CustomTreeView {
     batch: RefCell<Option<Vec<ITreeItem>>>,
     batch_promise: RefCell<Option<Promise<Option<Vec<Vec<ITreeItem>>>>>>,
 
+    /// `subTreeRefreshPromises` do `AsyncDataTree`: as recargas em andamento (identificador, nó, promessa).
+    sub_tree_refreshes: RefCell<Vec<(u64, String, Promise<()>)>>,
+    next_refresh_id: Cell<u64>,
+
     on_did_expand_item: Rc<Emitter<ITreeItem>>,
     on_did_collapse_item: Rc<Emitter<ITreeItem>>,
     on_did_change_selection_and_focus: Rc<Emitter<TreeSelectionAndFocus>>,
@@ -820,6 +827,16 @@ pub struct CustomTreeView {
 impl CustomTreeView {
     /// `new CustomTreeView(id, title, extensionId, ...services)`.
     pub fn new(id: &str, title: &str, extension_id: &str, services: CustomTreeViewServices) -> Rc<Self> {
+        Self::build(id, title, Some(extension_id.to_owned()), services)
+    }
+
+    /// `new TreeView(id, title, ...services)`: a variante sem extensão, que ao ativar só cria a árvore (sem telemetria, sem
+    /// progresso e sem `activateByEvent`). Os serviços de extensão e telemetria do `services` não são usados.
+    pub fn new_without_extension(id: &str, title: &str, services: CustomTreeViewServices) -> Rc<Self> {
+        Self::build(id, title, None, services)
+    }
+
+    fn build(id: &str, title: &str, extension_id: Option<String>, services: CustomTreeViewServices) -> Rc<Self> {
         let base = Disposable::new();
         fn emitter<T: Clone + 'static>(base: &Rc<Disposable>) -> Rc<Emitter<T>> {
             let emitter = Emitter::new();
@@ -833,7 +850,7 @@ impl CustomTreeView {
         Rc::new_cyclic(|this| Self {
             this: this.clone(),
             id: id.to_owned(),
-            extension_id: extension_id.to_owned(),
+            extension_id,
             services,
             is_visible: Cell::new(false),
             is_initialized: Cell::new(false),
@@ -862,6 +879,8 @@ impl CustomTreeView {
             last_active: RefCell::new(root_item()),
             batch: RefCell::new(None),
             batch_promise: RefCell::new(None),
+            sub_tree_refreshes: RefCell::new(Vec::new()),
+            next_refresh_id: Cell::new(0),
             on_did_expand_item: emitter(&base),
             on_did_collapse_item: emitter(&base),
             on_did_change_selection_and_focus: emitter(&base),
@@ -952,10 +971,15 @@ impl CustomTreeView {
         if self.activated.get() {
             return;
         }
+        let Some(extension_id) = &self.extension_id else {
+            self.create_tree();
+            self.activated.set(true);
+            return;
+        };
         self.services.telemetry_service.public_log2(
             "Extension:ViewActivate",
             Some(Dynamic::object([
-                ("extensionId", TelemetryTrustedValue { value: Dynamic::string(&self.extension_id) }.to_dynamic()),
+                ("extensionId", TelemetryTrustedValue { value: Dynamic::string(extension_id) }.to_dynamic()),
                 ("id", Dynamic::string(&self.id)),
             ])),
         );
@@ -1042,7 +1066,46 @@ impl CustomTreeView {
     }
 
     /// `tree.updateChildren(element, true, true)`: recarrega a raiz ou o nó expandido, e os expandidos abaixo dele.
+    ///
+    /// Como o `AsyncDataTree.refreshNode`: uma recarga que cruza (mesmo nó, ancestral ou descendente) com outra em andamento
+    /// espera por ela e só então começa. Sem isso, as recargas simultâneas da raiz entrariam no mesmo lote do `TreeDataSource`.
     fn update_children(self: &Rc<Self>, handle: String) -> Promise<()> {
+        let pending = {
+            let nodes = self.nodes.borrow();
+            let intersects = |ancestor: &str, descendant: &str| {
+                let mut current = descendant;
+                loop {
+                    if current == ancestor {
+                        return true;
+                    }
+                    match nodes.parents.get(current) {
+                        Some(parent) => current = parent,
+                        None => return false,
+                    }
+                }
+            };
+            self.sub_tree_refreshes.borrow().iter().find(|(_, other, _)| intersects(other, &handle) || intersects(&handle, other)).map(|(_, _, promise)| promise.clone())
+        };
+        if let Some(previous) = pending {
+            let this = Rc::clone(self);
+            return previous.then_result_promise(move |result| match result {
+                Ok(()) => this.update_children(handle),
+                Err(error) => Promise::rejected(error),
+            });
+        }
+        let refresh_id = self.next_refresh_id.get();
+        self.next_refresh_id.set(refresh_id + 1);
+        let promise = self.do_update_children(handle.clone());
+        self.sub_tree_refreshes.borrow_mut().push((refresh_id, handle, promise.clone()));
+        let this = Rc::clone(self);
+        let _ = promise.then_result(move |_| {
+            this.sub_tree_refreshes.borrow_mut().retain(|(id, _, _)| *id != refresh_id);
+            Ok(())
+        });
+        promise
+    }
+
+    fn do_update_children(self: &Rc<Self>, handle: String) -> Promise<()> {
         let this = Rc::clone(self);
         async_fn(async move {
             if !this.nodes.borrow().contains(&handle) {

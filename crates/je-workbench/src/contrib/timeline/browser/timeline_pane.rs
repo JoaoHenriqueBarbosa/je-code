@@ -143,7 +143,7 @@ use je_widgets::tree::tree_types::{IObjectTreeElement, ITreeModel, ITreeRenderer
 use crate::api::common::ext_host_values::ApiValue;
 use crate::browser::parts::views::inline_edit_input_box::{InlineEditInputBox, InlineEditInputBoxOptions};
 use crate::browser::parts::views::view_pane::{IViewPaneOptions, ListOverrideStyleColors, ViewPane, ViewPaneDelegate, ViewPaneServices};
-use crate::browser::resource_navigator::IOpenEvent;
+use je_widgets::list::resource_navigator::IOpenEvent;
 use crate::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchObjectTree, WorkbenchTreeServices};
 use crate::common::editor::editor_input::EditorInput;
 use crate::common::editor::{EditorInputOrUntyped, EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor, UntypedEditorInput};

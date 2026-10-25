@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers};
 use je_base::event::{Emitter, Event};
-use je_base::lifecycle::DisposableRef;
+use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::observable::base::{IObservable, Observable};
 use je_base::observable::{const_observable, observable_value};
 use je_base::promise::Promise;
@@ -30,8 +30,8 @@ use je_platform::resources::uri_file;
 use je_workbench::contrib::multi_diff_editor::browser::multi_diff_source_resolver_service::IMultiDiffSourceResolver;
 use je_workbench::contrib::multi_diff_editor::browser::scm_multi_diff_source_resolver::{ScmHistoryItemResolver, ScmMultiDiffSourceResolver};
 use je_workbench::contrib::scm::common::history::ISCMHistoryItemChange;
-use je_workbench::contrib::scm::common::scm::{ISCMHistoryProvider, ISCMProvider, ISCMRepository, ISCMResource, ISCMResourceGroup, ISCMService};
-use je_workbench::services::activity::activity::{IActivity, IActivityService};
+use je_workbench::contrib::scm::common::scm::{ISCMHistoryProvider, ISCMInput, ISCMProvider, ISCMRepository, ISCMResource, ISCMResourceGroup, ISCMService};
+use je_workbench::services::activity::activity::{ActivityChangeTarget, IActivity, IActivityService};
 
 /// `new class extends mock<ISCMResource>() { sourceUri; multiDiffEditorModifiedUri = this.sourceUri }`.
 struct StubResource {
@@ -81,6 +81,10 @@ struct StubProvider {
     history_provider: IObservable<Option<Rc<dyn ISCMHistoryProvider>>>,
 }
 
+impl IDisposable for StubProvider {
+    fn dispose(&self) {}
+}
+
 impl ISCMProvider for StubProvider {
     fn id(&self) -> String {
         "scm0".to_string()
@@ -88,6 +92,14 @@ impl ISCMProvider for StubProvider {
 
     fn provider_id(&self) -> String {
         self.provider_id.clone()
+    }
+
+    fn label(&self) -> String {
+        panic!("o caso não lê o rótulo do provedor");
+    }
+
+    fn name(&self) -> String {
+        panic!("o caso não lê o nome do provedor");
     }
 
     fn root_uri(&self) -> Option<URI> {
@@ -112,6 +124,10 @@ struct StubRepository {
     provider: Rc<dyn ISCMProvider>,
 }
 
+impl IDisposable for StubRepository {
+    fn dispose(&self) {}
+}
+
 impl ISCMRepository for StubRepository {
     fn id(&self) -> String {
         self.provider.id()
@@ -119,6 +135,10 @@ impl ISCMRepository for StubRepository {
 
     fn provider(&self) -> Rc<dyn ISCMProvider> {
         self.provider.clone()
+    }
+
+    fn input(&self) -> Rc<dyn ISCMInput> {
+        panic!("o caso não lê a caixa de entrada do repositório");
     }
 }
 
@@ -137,17 +157,34 @@ impl ISCMService for StubScmService {
         self.repositories.borrow().clone()
     }
 
+    fn on_did_remove_repository(&self) -> Event<Rc<dyn ISCMRepository>> {
+        Event::none()
+    }
+
+    fn register_scm_provider(&self, _provider: Rc<dyn ISCMProvider>) -> Rc<dyn ISCMRepository> {
+        panic!("o caso não registra provedor");
+    }
+
     fn get_repository(&self, id: &str) -> Option<Rc<dyn ISCMRepository>> {
         self.repositories.borrow().iter().find(|r| r.id() == id).cloned()
     }
+
+    fn get_repository_by_resource(&self, _resource: &URI) -> Option<Rc<dyn ISCMRepository>> {
+        panic!("o caso não procura o repositório pelo recurso");
+    }
 }
 
-/// `onDidChangeActivity = Event.None; getViewContainerActivities() { return []; }`.
+/// `onDidChangeActivity = Event.None; getViewContainerActivities() { return []; }`: os outros membros do `mock<IActivityService>()`
+/// lançam se chamados.
 struct StubActivityService;
 
 impl IActivityService for StubActivityService {
-    fn on_did_change_activity(&self) -> Event<()> {
+    fn on_did_change_activity(&self) -> Event<ActivityChangeTarget> {
         Event::none()
+    }
+
+    fn show_view_container_activity(&self, _view_container_id: &str, _badge: IActivity) -> DisposableRef {
+        panic!("showViewContainerActivity is not a function");
     }
 
     fn get_view_container_activities(&self, _view_container_id: &str) -> Vec<IActivity> {
@@ -156,6 +193,18 @@ impl IActivityService for StubActivityService {
 
     fn show_view_activity(&self, _view_id: &str, _badge: IActivity) -> DisposableRef {
         panic!("o caso não mostra atividade");
+    }
+
+    fn show_accounts_activity(&self, _activity: IActivity) -> DisposableRef {
+        panic!("showAccountsActivity is not a function");
+    }
+
+    fn show_global_activity(&self, _activity: IActivity) -> DisposableRef {
+        panic!("showGlobalActivity is not a function");
+    }
+
+    fn get_activity(&self, _id: &str) -> Vec<IActivity> {
+        panic!("getActivity is not a function");
     }
 }
 

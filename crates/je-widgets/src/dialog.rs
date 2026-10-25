@@ -83,7 +83,7 @@ use je_ui::{Border, Content, Event, EventKind, NodeId, PointerEvents, Role, Ui};
 use crate::action_bar::{ActionBar, IActionBarOptions, IActionOptions};
 use crate::action_view_items::{ActionBarStyles, IActionViewItemOptions, default_action_bar_styles};
 use crate::button::{
-    Attributes, Button, ButtonBar, ButtonBarAlignment, ButtonDropdownActions, ButtonLabel, ButtonOptions, ButtonStyles, ButtonWithDescription, ButtonWithDropdown, ButtonWithDropdownOptions, IButton,
+    Button,ButtonBar, ButtonBarAlignment, ButtonDropdownActions, ButtonLabel, ButtonOptions, ButtonStyles, ButtonWithDescription, ButtonWithDropdown, ButtonWithDropdownOptions, IButton,
     IButtonWithDescription, INHERITED_FOREGROUND,
 };
 use crate::button::flex::{FlexItem, resolve_flexible_lengths};
@@ -484,7 +484,6 @@ pub struct Dialog {
     last_inner_focus: Cell<Option<NodeId>>,
     tab_indexes: RefCell<HashMap<NodeId, i32>>,
     link_styles: RefCell<HashMap<NodeId, LinkStyle>>,
-    attributes: Attributes,
     shown: Cell<bool>,
     disposed: Cell<bool>,
 }
@@ -524,7 +523,6 @@ impl Dialog {
             tree.style_mut(element).radius = CORNER_RADIUS_X_LARGE;
             element
         };
-        let attributes = Attributes::default();
 
         // Footer
         let (footer_row, footer_content) = match options.render_footer.clone() {
@@ -707,7 +705,6 @@ impl Dialog {
             last_inner_focus: Cell::new(None),
             tab_indexes,
             link_styles: RefCell::new(HashMap::new()),
-            attributes,
             shown: Cell::new(false),
             disposed: Cell::new(false),
         });
@@ -755,8 +752,9 @@ impl Dialog {
 
     /// Os `setAttribute` do `show()` que valem desde já, e o `role` do nó.
     fn element_attribute_defaults(&self) {
-        self.attributes.set("role", "dialog");
-        self.attributes.set("tabindex", "-1");
+        let mut tree = self.ui.tree_mut();
+        tree.set_attribute(self.element, "role", "dialog");
+        tree.set_attribute(self.element, "tabindex", "-1");
     }
 
     // ----- acessores -----
@@ -816,7 +814,7 @@ impl Dialog {
 
     /// Os `aria-*` e o `role` da caixa.
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.element, name).map(str::to_owned)
     }
 
     /// O `tabIndex` que o diálogo deu a um `<a>` (0), ou `None` se não mexeu nele.
@@ -925,9 +923,12 @@ impl Dialog {
 
         self.apply_styles();
 
-        self.attributes.set("aria-modal", "true");
-        self.attributes.set("aria-labelledby", "monaco-dialog-icon monaco-dialog-message-text");
-        self.attributes.set("aria-describedby", "monaco-dialog-icon monaco-dialog-message-text monaco-dialog-message-detail monaco-dialog-message-body monaco-dialog-footer");
+        {
+            let mut tree = self.ui.tree_mut();
+            tree.set_attribute(self.element, "aria-modal", "true");
+            tree.set_attribute(self.element, "aria-labelledby", "monaco-dialog-icon monaco-dialog-message-text");
+            tree.set_attribute(self.element, "aria-describedby", "monaco-dialog-icon monaco-dialog-message-text monaco-dialog-message-detail monaco-dialog-message-body monaco-dialog-footer");
+        }
         self.shown.set(true);
         self.layout();
         {

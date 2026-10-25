@@ -19,6 +19,7 @@ use std::rc::Rc;
 use je_base::cancellation::CancellationToken;
 use je_base::map::ResourceMap;
 use je_base::promise::Promise;
+use je_base::themables::ThemeIcon;
 
 use crate::language_selector::LanguageSelector;
 use crate::position::Position;
@@ -75,6 +76,41 @@ pub enum SymbolKind {
     Event = 23,
     Operator = 24,
     TypeParameter = 25,
+}
+
+impl SymbolKind {
+    /// `SymbolKinds.toIcon(kind)` (de `languages.ts`): o ícone do tipo de símbolo.
+    pub fn to_icon(self) -> ThemeIcon {
+        let id = match self {
+            SymbolKind::File => "symbol-file",
+            SymbolKind::Module => "symbol-module",
+            SymbolKind::Namespace => "symbol-namespace",
+            SymbolKind::Package => "symbol-package",
+            SymbolKind::Class => "symbol-class",
+            SymbolKind::Method => "symbol-method",
+            SymbolKind::Property => "symbol-property",
+            SymbolKind::Field => "symbol-field",
+            SymbolKind::Constructor => "symbol-constructor",
+            SymbolKind::Enum => "symbol-enum",
+            SymbolKind::Interface => "symbol-interface",
+            SymbolKind::Function => "symbol-function",
+            SymbolKind::Variable => "symbol-variable",
+            SymbolKind::Constant => "symbol-constant",
+            SymbolKind::String => "symbol-string",
+            SymbolKind::Number => "symbol-number",
+            SymbolKind::Boolean => "symbol-boolean",
+            SymbolKind::Array => "symbol-array",
+            SymbolKind::Object => "symbol-object",
+            SymbolKind::Key => "symbol-key",
+            SymbolKind::Null => "symbol-null",
+            SymbolKind::EnumMember => "symbol-enum-member",
+            SymbolKind::Struct => "symbol-struct",
+            SymbolKind::Event => "symbol-event",
+            SymbolKind::Operator => "symbol-operator",
+            SymbolKind::TypeParameter => "symbol-type-parameter",
+        };
+        ThemeIcon::from_id(id)
+    }
 }
 
 /// `SymbolTag`.

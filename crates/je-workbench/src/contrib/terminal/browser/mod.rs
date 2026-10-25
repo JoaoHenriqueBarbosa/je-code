@@ -31,3 +31,7 @@ pub mod terminal_instance_service;
 
 // Porte de `terminalService.ts` (o `TerminalService`, com os recortes declarados no cabeçalho).
 pub mod terminal_service;
+
+// Porte de `terminalGroup.ts` e `terminalGroupService.ts` (os grupos de terminais do painel, sem o contêiner de painéis).
+pub mod terminal_group;
+pub mod terminal_group_service;

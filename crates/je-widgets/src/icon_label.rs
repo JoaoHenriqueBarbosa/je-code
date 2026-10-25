@@ -18,6 +18,9 @@
 //!   [`computed_text_state`] lê as classes e devolve o estado que o navegador devolveria como estilo
 //!   computado (é o que o teste do original consulta).
 //! - O `title` vira um `IManagedHover` do delegado de hover da camada de base ([`crate::hover_api`]).
+//! - **Cor herdada.** Com [`HighlightedLabelStyles::inherit_foreground`] em [`IconLabelStyles::text`], o nome, o sufixo, a
+//!   descrição e o ícone não fixam a cor: herdam a do antepassado (o `.reference-file` do peek, a linha da lista), como o
+//!   CSS. O `.disabled` declara a cor `disabledForeground` e por isso não herda.
 //!
 //! Fica de fora: o `::before` do ícone de arquivo (a classe de tema de ícones que o dono põe em
 //! `extraClasses`: a pintura do ícone de arquivo é do serviço de temas de ícone, TODO(integração)), a imagem
@@ -38,12 +41,12 @@ use je_base::uri::URI;
 use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
-use je_ui::{Content, NodeId, Role, Tree, Ui};
+use je_ui::{Content, Foreground, NodeId, Role, Tree, Ui};
 
 use crate::dom::{clear_node, create_el, is_ancestor};
 use crate::highlighted_label::{HighlightedLabel, HighlightedLabelStyles, IHighlight, default_highlighted_label_styles};
 use crate::hover_api::{HoverPlacement, IHoverDelegate, IManagedHover, ManagedHoverContent, ManagedHoverContentOrFactory, get_base_layer_hover_delegate, get_default_hover_delegate};
-use crate::icon_labels::{InlineStyle, LabelPart, Rendered, build_parts, layout_parts, resize};
+use crate::icon_labels::{InlineStyle, LabelPart, Rendered, build_parts_with, layout_parts, resize};
 use crate::text::measure_text;
 
 /// A largura e a altura do `::before` e do `.monaco-icon-label-iconpath` (`width: 16px; height: 22px`) e o
@@ -184,9 +187,9 @@ impl TextSlot {
         Self { holder, rendered: Vec::new() }
     }
 
-    fn set(&mut self, tree: &mut Tree, text: &str, style: &InlineStyle) {
+    fn set(&mut self, tree: &mut Tree, text: &str, style: &InlineStyle, inherit: bool) {
         clear_node(tree, self.holder);
-        self.rendered = if text.is_empty() { Vec::new() } else { build_parts(tree, self.holder, &[LabelPart::Text(text.to_owned())], style) };
+        self.rendered = if text.is_empty() { Vec::new() } else { build_parts_with(tree, self.holder, &[LabelPart::Text(text.to_owned())], style, inherit) };
     }
 
     /// A largura do texto inteiro, sem corte.
@@ -321,8 +324,17 @@ impl IconLabel {
 
     fn name_styles(&self) -> HighlightedLabelStyles {
         let (styles, state) = (self.styles.get(), self.state.get());
-        let foreground = if self.disabled.get() { styles.disabled_foreground.unwrap_or(styles.text.foreground) } else { styles.text.foreground };
-        HighlightedLabelStyles { foreground, font_weight: if state.bold { 700 } else { styles.text.font_weight }, italic: state.italic, strikethrough: state.strikethrough, ..styles.text }
+        // `.monaco-icon-label-container.disabled` declara a própria cor: o rótulo desabilitado não herda a do antepassado.
+        let disabled_foreground = if self.disabled.get() { styles.disabled_foreground } else { None };
+        let foreground = disabled_foreground.unwrap_or(styles.text.foreground);
+        HighlightedLabelStyles {
+            foreground,
+            font_weight: if state.bold { 700 } else { styles.text.font_weight },
+            italic: state.italic,
+            strikethrough: state.strikethrough,
+            inherit_foreground: styles.text.inherit_foreground && disabled_foreground.is_none(),
+            ..styles.text
+        }
     }
 
     /// O texto da descrição: 0.9em do tamanho do nome.
@@ -409,7 +421,7 @@ impl IconLabel {
                 }
                 DescriptionNode::Plain(text_slot, holder) => {
                     let shown = if has_description && opts.label_escape_new_lines { HighlightedLabel::escape_new_lines(text, &mut []) } else { text.to_owned() };
-                    text_slot.set(&mut self.ui.tree_mut(), &shown, &Self::inline_of(&description_styles));
+                    text_slot.set(&mut self.ui.tree_mut(), &shown, &Self::inline_of(&description_styles), description_styles.inherit_foreground);
                     let holder = *holder;
                     drop(slot);
                     self.setup_hover(holder, Some(&opts.description_title.clone().unwrap_or(IconLabelTitle::Text(String::new()))));
@@ -421,7 +433,7 @@ impl IconLabel {
             self.get_or_create_suffix_node();
             let mut suffix = self.suffix.borrow_mut();
             let (_, slot) = suffix.as_mut().expect("sufixo criado");
-            slot.set(&mut self.ui.tree_mut(), opts.suffix.as_deref().unwrap_or_default(), &Self::inline_of(&name_styles));
+            slot.set(&mut self.ui.tree_mut(), opts.suffix.as_deref().unwrap_or_default(), &Self::inline_of(&name_styles), name_styles.inherit_foreground);
         }
 
         self.relayout();
@@ -446,7 +458,10 @@ impl IconLabel {
                 node
             }
         };
-        let color = self.styles.get().text.foreground;
+        let styles = self.styles.get();
+        let color = styles.text.foreground;
+        let foreground = if styles.text.inherit_foreground { Foreground::Inherit } else { Foreground::Content };
+        tree.style_mut(node).foreground = foreground;
         match icon_path {
             IconPath::ThemeIcon(icon) => {
                 tree.set_class_name(node, &format!("monaco-icon-label-iconpath {}", icon.as_class_name()));
@@ -548,7 +563,7 @@ impl IconLabel {
                         hl.set_styles(*name_styles);
                         hl.set(Some(text), &highlights, "", opts.label_escape_new_lines, support_icons);
                     }
-                    SlotContent::Plain(text_slot) => text_slot.set(&mut self.ui.tree_mut(), text, &Self::inline_of(name_styles)),
+                    SlotContent::Plain(text_slot) => text_slot.set(&mut self.ui.tree_mut(), text, &Self::inline_of(name_styles), name_styles.inherit_foreground),
                 }
             }
             IconLabelText::Multiple(labels) => {
@@ -571,7 +586,7 @@ impl IconLabel {
                         SlotContent::Highlighted(hl)
                     } else {
                         let mut slot = TextSlot::new(anchor);
-                        slot.set(&mut self.ui.tree_mut(), l, &Self::inline_of(name_styles));
+                        slot.set(&mut self.ui.tree_mut(), l, &Self::inline_of(name_styles), name_styles.inherit_foreground);
                         SlotContent::Plain(slot)
                     };
                     let separator_node = (!is_last).then(|| {
@@ -581,7 +596,7 @@ impl IconLabel {
                         let node = create_el(&mut tree, parent, Role::Generic, "label-separator");
                         tree.style_mut(node).opacity = 0.5;
                         let mut slot = TextSlot::new(node);
-                        slot.set(&mut tree, &separator, &Self::inline_of(name_styles));
+                        slot.set(&mut tree, &separator, &Self::inline_of(name_styles), name_styles.inherit_foreground);
                         (node, slot)
                     });
                     slots.push(NameSlot { anchor, content, separator: separator_node });

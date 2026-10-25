@@ -4117,7 +4117,11 @@ dependencies = [
  "je-extensions",
  "je-instantiation",
  "je-platform",
+ "je-render",
  "je-theme",
+ "je-ui",
+ "je-widgets",
+ "je-workbench",
  "jiff",
  "zyarr",
 ]
@@ -4195,14 +4199,26 @@ dependencies = [
 name = "je-platform"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
+ "flate2",
  "indexmap",
  "je-base",
+ "je-codicons",
  "je-instantiation",
+ "je-server",
  "je-storage",
+ "je-terminal",
+ "je-theme",
  "jiff",
  "libc",
  "notify",
+ "p256",
+ "rand_core 0.6.4",
+ "rustls",
+ "rustls-rustcrypto",
+ "sha2",
  "tempfile",
+ "ureq",
  "url",
  "zyarr",
 ]
@@ -4260,6 +4276,7 @@ name = "je-theme"
 version = "0.0.0"
 dependencies = [
  "je-base",
+ "je-codicons",
  "je-render",
  "serde_json",
 ]
@@ -4298,6 +4315,7 @@ dependencies = [
  "je-extensions",
  "je-exthost",
  "je-instantiation",
+ "je-languages",
  "je-platform",
  "je-render",
  "je-storage",

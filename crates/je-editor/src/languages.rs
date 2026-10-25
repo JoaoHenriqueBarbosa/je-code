@@ -1,6 +1,7 @@
 //! Porte da parte de tokenização de `src/vs/editor/common/languages.ts`: `ILanguageIdCodec`, `IState`,
 //! `Token`, `TokenizationResult`, `EncodedTokenizationResult`, `ITokenizationSupport`,
-//! `IBackgroundTokenizer`, `IBackgroundTokenizationStore` e `ILazyTokenizationSupport`.
+//! `IBackgroundTokenizer`, `IBackgroundTokenizationStore` e `ILazyTokenizationSupport`. No fim estão os tipos de comentários
+//! (`CommentThread`, `Comment`, `CommentingRanges`, `PendingCommentThread`, `CommentThreadChangedEvent` e afins).
 //!
 //! Decisões de tradução:
 //! - `IState` vira o trait [`IState`] com `as_any` (o `equals` de cada implementação recorre ao
@@ -918,4 +919,263 @@ pub trait InlineCompletionsProvider {
     fn to_display_string(&self) -> Option<String> {
         None
     }
+}
+
+// ---- Comentários (`CommentThread` e os tipos que o `contrib/comments` troca com os controladores) ------------------------
+//
+// Divergências:
+// - `CommentThread<T>` é um trait: o original é uma interface implementada pelo `MainThreadCommentThread`. As propriedades
+//   viram um método de leitura e, quando a propriedade é atribuída em algum lugar do original, um `set_*` (a implementação
+//   guarda o estado atrás de `&self`). `isDocumentCommentThread(): this is CommentThread<IRange>` é `is_document_comment_thread`,
+//   e `T` é o tipo do intervalo (`IRange` do editor, que aqui é o [`Range`], ou o `ICellRange` do notebook, que mora no workbench).
+// - `ReadonlyArray<Comment> | undefined` é `Option<Vec<Comment>>` (cópia), e os `Event` das propriedades levam o valor novo.
+// - `IMarkdownString | string` do `Comment.body` é o enum [`CommentBody`]; `boolean | CommentAuthorInformation` do
+//   `canReply` é o enum [`CanReply`]; `AddedCommentThread` (que estende a thread com o `editorId`) é uma struct que guarda a
+//   thread e se comporta como ela por `Deref`.
+// - `IPosition` é o [`Position`] e `UriComponents` é o de `je-base`.
+
+use je_base::event::Event;
+use je_base::html_content::IMarkdownString;
+use je_base::uri::{URI, UriComponents};
+
+use crate::code_action::languages::Command;
+use crate::position::Position;
+use crate::range::Range;
+
+/// `CommentThreadTemplate`.
+#[derive(Clone, Debug)]
+pub struct CommentThreadTemplate {
+    pub controller_handle: i64,
+    pub label: String,
+    pub accept_input_command: Option<Command>,
+    pub additional_commands: Option<Vec<Command>>,
+    pub delete_command: Option<Command>,
+}
+
+/// `CommentInfo<T>`: o que um controlador devolve para um documento (as threads, as que continuam de uma sessão anterior e os
+/// intervalos comentáveis).
+#[derive(Clone)]
+pub struct CommentInfo<T: Clone + 'static = Range> {
+    pub extension_id: Option<String>,
+    pub threads: Vec<Rc<dyn CommentThread<T>>>,
+    pub pending_comment_threads: Option<Vec<PendingCommentThread>>,
+    pub commenting_ranges: CommentingRanges,
+}
+
+/// `CommentingRangeResourceHint`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommentingRangeResourceHint {
+    pub schemes: Vec<String>,
+}
+
+/// `CommentThreadCollapsibleState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommentThreadCollapsibleState {
+    /// Determines an item is collapsed
+    Collapsed = 0,
+    /// Determines an item is expanded
+    Expanded = 1,
+}
+
+/// `CommentThreadState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommentThreadState {
+    Unresolved = 0,
+    Resolved = 1,
+}
+
+/// `CommentThreadApplicability`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommentThreadApplicability {
+    Current = 0,
+    Outdated = 1,
+}
+
+/// `CommentWidget`: o widget do comentário que o controlador do editor enxerga (a entrada de texto atual dele).
+pub trait CommentWidget {
+    fn comment_thread(&self) -> Rc<dyn CommentThread<Range>>;
+    fn comment(&self) -> Option<Comment>;
+    fn input(&self) -> String;
+    fn set_input(&self, input: &str);
+    fn on_did_change_input(&self) -> Event<String>;
+}
+
+/// `CommentInput`.
+#[derive(Clone, Debug)]
+pub struct CommentInput {
+    pub value: String,
+    pub uri: URI,
+}
+
+/// `CommentThreadRevealOptions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommentThreadRevealOptions {
+    pub preserve_focus: bool,
+    pub focus_reply: bool,
+}
+
+/// `boolean | CommentAuthorInformation`.
+#[derive(Clone, Debug)]
+pub enum CanReply {
+    Bool(bool),
+    Author(CommentAuthorInformation),
+}
+
+/// `CommentThread<T>`.
+pub trait CommentThread<T: Clone + 'static> {
+    /// `isDocumentCommentThread()`.
+    fn is_document_comment_thread(&self) -> bool;
+    fn comment_thread_handle(&self) -> i64;
+    fn controller_handle(&self) -> i64;
+    fn extension_id(&self) -> Option<String>;
+    fn thread_id(&self) -> String;
+    /// `resource: string | null`.
+    fn resource(&self) -> Option<String>;
+    fn range(&self) -> Option<T>;
+    fn set_range(&self, range: Option<T>);
+    fn label(&self) -> Option<String>;
+    fn set_label(&self, label: Option<String>);
+    fn context_value(&self) -> Option<String>;
+    fn set_context_value(&self, context_value: Option<String>);
+    fn comments(&self) -> Option<Vec<Comment>>;
+    fn set_comments(&self, comments: Option<Vec<Comment>>);
+    fn on_did_change_comments(&self) -> Event<Option<Vec<Comment>>>;
+    fn collapsible_state(&self) -> Option<CommentThreadCollapsibleState>;
+    fn set_collapsible_state(&self, state: Option<CommentThreadCollapsibleState>);
+    fn initial_collapsible_state(&self) -> Option<CommentThreadCollapsibleState>;
+    fn set_initial_collapsible_state(&self, state: Option<CommentThreadCollapsibleState>);
+    fn on_did_change_initial_collapsible_state(&self) -> Event<Option<CommentThreadCollapsibleState>>;
+    fn state(&self) -> Option<CommentThreadState>;
+    fn set_state(&self, state: Option<CommentThreadState>);
+    fn applicability(&self) -> Option<CommentThreadApplicability>;
+    fn set_applicability(&self, applicability: Option<CommentThreadApplicability>);
+    fn can_reply(&self) -> CanReply;
+    fn set_can_reply(&self, can_reply: CanReply);
+    fn input(&self) -> Option<CommentInput>;
+    fn set_input(&self, input: Option<CommentInput>);
+    fn on_did_change_input(&self) -> Event<Option<CommentInput>>;
+    fn on_did_change_label(&self) -> Event<Option<String>>;
+    fn on_did_change_collapsible_state(&self) -> Event<Option<CommentThreadCollapsibleState>>;
+    fn on_did_change_state(&self) -> Event<Option<CommentThreadState>>;
+    fn on_did_change_can_reply(&self) -> Event<bool>;
+    fn is_disposed(&self) -> bool;
+    fn set_is_disposed(&self, is_disposed: bool);
+    fn is_template(&self) -> bool;
+    fn set_is_template(&self, is_template: bool);
+}
+
+/// `AddedCommentThread<T>`: a thread com o `editorId` do editor que a criou.
+#[derive(Clone)]
+pub struct AddedCommentThread<T: Clone + 'static = Range> {
+    pub thread: Rc<dyn CommentThread<T>>,
+    pub editor_id: Option<String>,
+}
+
+impl<T: Clone + 'static> std::ops::Deref for AddedCommentThread<T> {
+    type Target = dyn CommentThread<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.thread
+    }
+}
+
+/// `CommentingRanges`.
+#[derive(Clone, Debug)]
+pub struct CommentingRanges {
+    pub resource: URI,
+    pub ranges: Vec<Range>,
+    pub file_comments: bool,
+}
+
+/// `CommentAuthorInformation`.
+#[derive(Clone, Debug)]
+pub struct CommentAuthorInformation {
+    pub name: String,
+    pub icon_path: Option<UriComponents>,
+}
+
+/// `CommentReaction`.
+#[derive(Clone, Debug, Default)]
+pub struct CommentReaction {
+    pub label: Option<String>,
+    pub icon_path: Option<UriComponents>,
+    pub count: Option<i64>,
+    pub has_reacted: Option<bool>,
+    pub can_edit: Option<bool>,
+    pub reactors: Option<Vec<String>>,
+}
+
+/// `CommentOptions`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommentOptions {
+    /// An optional string to show on the comment input box when it's collapsed.
+    pub prompt: Option<String>,
+    /// An optional string to show as placeholder in the comment input box when it's focused.
+    pub place_holder: Option<String>,
+}
+
+/// `CommentMode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommentMode {
+    Editing = 0,
+    Preview = 1,
+}
+
+/// `CommentState`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommentState {
+    Published = 0,
+    Draft = 1,
+}
+
+/// `string | IMarkdownString` do `Comment.body`.
+#[derive(Clone, Debug)]
+pub enum CommentBody {
+    Text(String),
+    Markdown(IMarkdownString),
+}
+
+/// `Comment`.
+#[derive(Clone, Debug)]
+pub struct Comment {
+    pub unique_id_in_thread: i64,
+    pub body: CommentBody,
+    pub user_name: String,
+    pub user_icon_path: Option<UriComponents>,
+    pub context_value: Option<String>,
+    pub comment_reactions: Option<Vec<CommentReaction>>,
+    pub label: Option<String>,
+    pub mode: Option<CommentMode>,
+    pub state: Option<CommentState>,
+    pub timestamp: Option<String>,
+}
+
+/// `PendingCommentThread`.
+#[derive(Clone, Debug)]
+pub struct PendingCommentThread {
+    pub range: Option<Range>,
+    pub uri: URI,
+    pub unique_owner: String,
+    pub is_reply: bool,
+    pub comment: PendingComment,
+}
+
+/// `PendingComment`.
+#[derive(Clone, Debug)]
+pub struct PendingComment {
+    pub body: String,
+    pub cursor: Position,
+}
+
+/// `CommentThreadChangedEvent<T>`.
+#[derive(Clone)]
+pub struct CommentThreadChangedEvent<T: Clone + 'static = Range> {
+    /// Pending comment threads.
+    pub pending: Vec<PendingCommentThread>,
+    /// Added comment threads.
+    pub added: Vec<AddedCommentThread<T>>,
+    /// Removed comment threads.
+    pub removed: Vec<Rc<dyn CommentThread<T>>>,
+    /// Changed comment threads.
+    pub changed: Vec<Rc<dyn CommentThread<T>>>,
 }

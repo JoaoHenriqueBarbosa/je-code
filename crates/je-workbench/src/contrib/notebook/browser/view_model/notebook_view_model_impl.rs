@@ -148,6 +148,14 @@ impl CellViewModel {
         }
     }
 
+    /// `getDynamicHeight()`: a célula de código lê o layout (e avisa `onLayoutInfoRead`); a de markup devolve `null`.
+    pub fn get_dynamic_height(&self) -> Option<f64> {
+        match self {
+            CellViewModel::Code(cell) => Some(cell.get_dynamic_height()),
+            CellViewModel::Markup(_) => None,
+        }
+    }
+
     pub fn on_deselect(&self) {
         match self {
             CellViewModel::Code(cell) => cell.on_deselect(),

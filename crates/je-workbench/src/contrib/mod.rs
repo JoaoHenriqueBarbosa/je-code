@@ -1,6 +1,7 @@
 //! Contribuições do workbench (`src/vs/workbench/contrib`).
 
 pub mod bulk_edit;
+pub mod comments;
 pub mod files;
 pub mod markers;
 pub mod merge_editor;
@@ -81,3 +82,6 @@ pub mod accessibility;
 
 // Carrossel de imagens (`contrib/imageCarousel`): a entrada de editor, a configuração e as ações "Open in Images Preview".
 pub mod image_carousel;
+
+// Edit sessions (`contrib/editSessions`): os tipos, as constantes e a codificação do conteúdo sincronizado entre máquinas.
+pub mod edit_sessions;

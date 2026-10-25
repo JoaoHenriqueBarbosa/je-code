@@ -14,6 +14,12 @@ pub mod query_builder;
 
 pub mod file_search_manager;
 pub mod ripgrep_file_search;
+pub mod search_ext_conversion_types;
 pub mod text_search_manager;
 
 pub mod file_walker;
+
+pub mod raw_search_service;
+pub mod ripgrep_disk_path;
+pub mod ripgrep_search_provider;
+pub mod text_search_adapter;

@@ -135,8 +135,8 @@ impl GrammarFactory {
         self.language_to_scope.contains_key(language_id)
     }
 
-    fn set_theme(&self, theme: RawTheme) -> Result<(), String> {
-        self.registry.borrow_mut().set_theme(Some(theme), None).map_err(|e| e.to_string())
+    fn set_theme(&self, theme: RawTheme, color_map: Option<Vec<String>>) -> Result<(), String> {
+        self.registry.borrow_mut().set_theme(Some(theme), color_map).map_err(|e| e.to_string())
     }
 
     fn get_color_map(&self) -> Vec<String> {
@@ -184,6 +184,9 @@ pub struct TextMateTokenizationFeature {
     grammar_factory: RefCell<Option<Rc<GrammarFactory>>>,
     tokenizers_registrations: Rc<DisposableStore>,
     current_theme: RefCell<Option<Value>>,
+    /// O `tokenColorMap` do tema de cores do workbench, que fixa os ids de cor dos tokens (o segundo argumento do
+    /// `setTheme` do original). `None` deixa o ferriki numerar as cores pela ordem das regras.
+    current_color_map: RefCell<Option<Vec<String>>>,
     max_tokenization_line_length: RefCell<HashMap<String, i64>>,
 }
 
@@ -233,6 +236,7 @@ impl TextMateTokenizationFeature {
             grammar_factory: RefCell::new(None),
             tokenizers_registrations,
             current_theme: RefCell::new(None),
+            current_color_map: RefCell::new(None),
             max_tokenization_line_length: RefCell::new(max_line_length_by_language),
         });
 
@@ -301,8 +305,10 @@ impl TextMateTokenizationFeature {
         factory
     }
 
-    /// `_createTokenizationSupport(languageId)`.
-    fn create_tokenization_support(&self, language_id: &str) -> Option<SupportRef> {
+    /// O `new TextMateTokenizationSupport(grammar, initialState, containsEmbeddedLanguages, ..., false)` de uma linguagem,
+    /// sem o limite de linha e sem registro: quem o chama é o dono do suporte e o descarta (é o caminho do
+    /// `FixtureTextMateTokenizerInstance`, que cria os suportes à mão e os guarda no próprio `DisposableStore`).
+    pub fn create_text_mate_tokenization_support(&self, language_id: &str) -> Option<Rc<TextMateTokenizationSupport>> {
         if !self.language_service.is_registered_language_id(Some(language_id)) {
             return None;
         }
@@ -319,14 +325,19 @@ impl TextMateTokenizationFeature {
                 return None;
             }
         };
+        Some(TextMateTokenizationSupport::new(result.grammar, result.initial_state, result.contains_embedded_languages, false))
+    }
+
+    /// `_createTokenizationSupport(languageId)`.
+    fn create_tokenization_support(&self, language_id: &str) -> Option<SupportRef> {
+        let tokenization = self.create_text_mate_tokenization_support(language_id)?;
+        let encoded_language_id = self.language_service.language_id_codec().encode_language_id(language_id);
         let max_length = self
             .max_tokenization_line_length
             .borrow()
             .get(language_id)
             .copied()
             .unwrap_or(DEFAULT_MAX_TOKENIZATION_LINE_LENGTH);
-        let tokenization =
-            TextMateTokenizationSupport::new(result.grammar, result.initial_state, result.contains_embedded_languages, false);
         let language_service = self.language_service.clone();
         let encountered = RefCell::new(Vec::<bool>::new());
         let subscription = tokenization.on_did_encounter_language().listen(move |&encoded| {
@@ -351,7 +362,15 @@ impl TextMateTokenizationFeature {
     /// `_updateTheme(colorTheme, forceUpdate)`: aplica as regras de cor de token às gramáticas e publica o
     /// mapa de cores no `TokenizationRegistry`.
     pub fn set_theme(&self, theme: &TokenTheme) {
-        *self.current_theme.borrow_mut() = Some(theme.raw_theme());
+        self.set_raw_theme(theme.raw_theme(), None);
+    }
+
+    /// `_updateTheme` com o `IRawTheme` já montado (`{ name, settings }`) e, opcionalmente, o `tokenColorMap` do tema de
+    /// cores do workbench: `setTheme(colorTheme.tokenColors, colorTheme.tokenColorMap)`. Com o mapa, os ids de cor dos
+    /// tokens são os do `tokenColorMap` (índice 0 vazio), os mesmos das classes `.mtkN` que o CSS do tema gera.
+    pub fn set_raw_theme(&self, raw_theme: Value, color_map: Option<Vec<String>>) {
+        *self.current_theme.borrow_mut() = Some(raw_theme);
+        *self.current_color_map.borrow_mut() = color_map;
         self.apply_current_theme();
     }
 
@@ -365,7 +384,7 @@ impl TextMateTokenizationFeature {
                 return;
             }
         };
-        if let Err(e) = factory.set_theme(raw_theme) {
+        if let Err(e) = factory.set_theme(raw_theme, self.current_color_map.borrow().clone()) {
             errors::on_unexpected_error(&Error::new(e));
             return;
         }

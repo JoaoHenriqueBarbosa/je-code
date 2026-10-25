@@ -59,6 +59,7 @@ pub mod editor_model;
 pub mod filtered_editor_group_model;
 pub mod resource_editor_input;
 pub mod side_by_side_editor_input;
+pub mod text_diff_editor_model;
 pub mod text_editor_model;
 pub mod text_resource_editor_input;
 pub mod text_resource_editor_model;
@@ -196,6 +197,18 @@ pub trait IEditorPane {
     fn as_any(&self) -> &dyn std::any::Any {
         &()
     }
+
+    /// `getControl()` quando `isDiffEditor(control)`: o `IDiffEditor` do painel, ou `None` quando o painel não tem controle ou
+    /// o controle não é um editor de diff (o padrão).
+    fn get_diff_editor_control(&self) -> Option<Rc<dyn crate::browser::parts::editor::text_diff_editor::IDiffEditor>> {
+        None
+    }
+
+    /// `hasDiffEditorWidthBasedLayoutReset(pane)`: o painel que tem `resetDiffEditorWidthBasedLayout` (o do editor de diff de
+    /// vários arquivos), ou `None` para qualquer outro (o padrão).
+    fn as_diff_editor_width_based_layout_reset(&self) -> Option<&dyn crate::browser::parts::editor::text_diff_editor::IDiffEditorWidthBasedLayoutReset> {
+        None
+    }
 }
 
 /// `isEditorPaneWithSelection`: o painel tem `getSelection` e `onDidChangeSelection`.
@@ -273,20 +286,9 @@ pub fn find_view_state_for_editor(input: &EditorInputRef, group: GroupIdentifier
     })
 }
 
-/// `TextEditorSelectionRevealType`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TextEditorSelectionRevealType {
-    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically.
-    Center = 0,
-    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically only if it lies
-    /// outside the viewport.
-    CenterIfOutsideViewport = 1,
-    /// Option to scroll vertically or horizontally as necessary and reveal a range close to the top of the viewport, but
-    /// not quite at the top.
-    NearTop = 2,
-    /// Same as [`Self::NearTop`], only if it lies outside the viewport.
-    NearTopIfOutsideViewport = 3,
-}
+/// `TextEditorSelectionRevealType`: mora em `je_platform::opener::editor_types`, junto de `ITextEditorSelection`, porque o
+/// `opener_service` do `je-editor` (que não enxerga o workbench) também o lê.
+pub use je_platform::opener::editor_types::TextEditorSelectionRevealType;
 
 /// `TextEditorSelectionSource` (o `const enum` de textos): os valores de `ITextEditorOptions.selectionSource`.
 pub struct TextEditorSelectionSource;

@@ -86,6 +86,7 @@ pub mod json_formatter;
 pub mod json_edit;
 pub mod yaml;
 pub mod json_schema;
+pub mod json_contribution_registry;
 pub mod sse_parser;
 pub mod tf_idf;
 pub mod jsonc;
@@ -141,4 +142,5 @@ pub mod worker;
 pub mod execution_graph;
 
 pub mod virtual_scheduling;
+pub mod snapshot;
 pub mod browser;

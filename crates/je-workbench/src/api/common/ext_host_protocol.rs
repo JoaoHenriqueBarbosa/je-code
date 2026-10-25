@@ -5434,6 +5434,66 @@ mod output_region {
 
 // #endregion
 
+// #region Search
+
+pub use self::search_region::*;
+
+/// `MainThreadSearchShape`, `ExtHostSearchShape` e os identificadores `MainContext.MainThreadSearch` e
+/// `ExtHostContext.ExtHostSearch` (de `extHost.protocol.ts`, usados por `extHostSearch.ts`). `UriComponents` é [`URI`]; `handle` e
+/// `session` são `u64`; `data: any` de `$handleTelemetry` é [`Dynamic`]. As consultas cruas (`IRawFileQuery`, `IRawTextQuery`,
+/// `IRawAITextQuery`, de `search.ts`) têm os `UriComponents` do original no lugar do `URI`; como o `URI` do porte já é o valor
+/// revivido, são as próprias consultas, e `reviveQuery` não existe.
+mod search_region {
+    use je_base::cancellation::CancellationToken;
+    use je_base::dynamic::Dynamic;
+    use je_base::lifecycle::IDisposable;
+    use je_base::promise::Promise;
+    use je_base::uri::URI;
+
+    use super::{ExtHostContext, IRawFileMatch2, MainContext, ProxyIdentifier};
+    use crate::services::search::search::{IAITextQuery, IFileQuery, ISearchCompleteStats, ITextQuery};
+    use crate::services::search::search_ext_types::AISearchKeyword;
+
+    /// `IRawFileQuery`.
+    pub type IRawFileQuery = IFileQuery;
+    /// `IRawTextQuery`.
+    pub type IRawTextQuery = ITextQuery;
+    /// `IRawAITextQuery`.
+    pub type IRawAITextQuery = IAITextQuery;
+
+    /// `MainThreadSearchShape`.
+    pub trait MainThreadSearchShape: IDisposable {
+        fn rpc_register_file_search_provider(&self, handle: u64, scheme: &str);
+        fn rpc_register_ai_text_search_provider(&self, handle: u64, scheme: &str);
+        fn rpc_register_text_search_provider(&self, handle: u64, scheme: &str);
+        fn rpc_unregister_provider(&self, handle: u64);
+        fn rpc_handle_file_match(&self, handle: u64, session: u64, data: Vec<URI>);
+        fn rpc_handle_text_match(&self, handle: u64, session: u64, data: Vec<IRawFileMatch2>);
+        fn rpc_handle_keyword_result(&self, handle: u64, session: u64, data: AISearchKeyword);
+        fn rpc_handle_telemetry(&self, event_name: &str, data: Dynamic);
+    }
+
+    /// `ExtHostSearchShape`.
+    pub trait ExtHostSearchShape {
+        fn rpc_enable_extension_host_search(&self);
+        fn rpc_get_ai_name(&self, handle: u64) -> Promise<Option<String>>;
+        fn rpc_provide_file_search_results(&self, handle: u64, session: u64, query: IRawFileQuery, token: CancellationToken) -> Promise<ISearchCompleteStats>;
+        fn rpc_provide_ai_text_search_results(&self, handle: u64, session: u64, query: IRawAITextQuery, token: CancellationToken) -> Promise<ISearchCompleteStats>;
+        fn rpc_provide_text_search_results(&self, handle: u64, session: u64, query: IRawTextQuery, token: CancellationToken) -> Promise<ISearchCompleteStats>;
+        fn rpc_clear_cache(&self, cache_key: &str) -> Promise<()>;
+    }
+
+    impl MainContext {
+        pub const MAIN_THREAD_SEARCH: ProxyIdentifier<dyn MainThreadSearchShape> = ProxyIdentifier::new("MainThreadSearch");
+    }
+
+    impl ExtHostContext {
+        pub const EXT_HOST_SEARCH: ProxyIdentifier<dyn ExtHostSearchShape> = ProxyIdentifier::new("ExtHostSearch");
+    }
+}
+
+// #endregion
+
 // #region Languages
 
 pub use self::languages_region::*;

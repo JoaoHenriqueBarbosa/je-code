@@ -37,24 +37,44 @@
 //!     `inlineEditsModel`, `theme` e `utils/` com `utils` e `flexBoxLayout`; o `towersLayout` e o `scrollToReveal` do
 //!     `longDistanceHint` seguem em `towers_layout` e `long_distance_hint`), mais o `Rect` de `core_2d` e o
 //!     `getNewLineRanges` e o `toLineEdit` de `edits/line_edit`;
-//!   - 4c-2 (em andamento): as views de inline edits (`inlineEditsViews/*`). Prontas: inserção de palavra, colapsada,
-//!     exclusão, `jumpToView`, `inlineEditsCustomView`, `originalEditorInlineDiffView`, substituição de palavras,
-//!     substituição de linhas e lado a lado (`inline_edits_views/`, com o `NonOverflowOverlayWidget` que as views
-//!     compartilham; o lado a lado trouxe o `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`).
-//!     Faltam: inserção em linha, inserção em várias linhas e long distance hint;
+//!   - 4c-2 (pronta): as views de inline edits (`inlineEditsViews/*`): inserção de palavra, colapsada, exclusão, `jumpToView`,
+//!     `inlineEditsCustomView`, `originalEditorInlineDiffView`, substituição de palavras, substituição de linhas, lado a
+//!     lado, inserção de várias linhas (`inline_edits_insertion_view`, que cria o `GhostTextView` direto) e `longDistanceHint/`
+//!     (`long_distance_hint/`: a dica `InlineEditsLongDistanceHint` e o `LongDistancePreviewEditor`). Todas em
+//!     `inline_edits_views/`, com o `NonOverflowOverlayWidget` que elas compartilham; o lado a lado trouxe o
+//!     `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`. A trilha de símbolos e o arquivo alvo da dica de
+//!     longa distância (a fábrica de breadcrumbs do `HideUnchangedRegionsFeature`, `basename` e `getIconClasses`) entram pelo
+//!     `ILongDistanceHintHost`;
 //!   - 4c-3 (pronta): o gutter indicator, em `view/inline_edits/components/`: `gutterIndicatorView`
 //!     (`InlineEditsGutterIndicator`, `InlineEditsGutterIndicatorData`, `InlineSuggestionGutterMenuData`,
 //!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso) e `gutterIndicatorMenu`
 //!     (`GutterIndicatorMenuContent`, o cabeçalho, as ações, os atalhos e o rodapé como dado em `GutterMenuContentVisual`).
 //!     O `GutterIndicatorMenuHost` implementa o `IGutterIndicatorHost` do indicador; o hover e o rastreador de foco
-//!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter` e a altura do sticky scroll
-//!     pelo construtor do host, ambos fechados pelo pintor nativo e pelo controller (4c-6);
-//!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
-//!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
-//!     (`hintsWidget/*`, com o `StatusBarViewItem`);
-//!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
-//!     injetados;
-//! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
+//!     (`showInstantHover` e `createFocusTracker`) entram pelo `IGutterMenuHoverPresenter`, fechado pelo pintor nativo e pelo
+//!     controller (4c-6); a altura do sticky scroll o indicador lê do `StickyScrollController` do editor;
+//!   - 4c-4 (pronta): a `InlineEditsView`, em `view/inline_edits/inline_edits_view` (o arquivo inteiro: o `_uiState`,
+//!     `_determineView`, `_determineRenderState`, as views portadas, o `JumpToView` e o clique), com o `ILongDistanceHint` e
+//!     o `ILongDistanceViewState` em `long_distance_hint`, e o producer (`inline_edits_view_producer`:
+//!     `InlineEditsViewAndDiffProducer`, que cria o `ModelPerInlineEdit` observável que a view lê). A inserção e a dica de
+//!     longa distância são criadas direto, como no original; o `InlineEditsViewServices` leva os serviços que as views pedem
+//!     e a `IPreviewTextModelFactory` (o `TextModel` de prévia, que o `IInstantiationService` criava);
+//!   - 4c-5 (pronta, menos uma peça): a `InlineSuggestionsView` (`view/inline_suggestions_view`: junta o `GhostTextView`, o
+//!     `InlineEditsViewAndDiffProducer`, o indicador da margem e o hints widget) está pronta. O hints widget
+//!     (`hints_widget/`: `InlineCompletionsHintsWidget`, `InlineSuggestionHintsContentWidget`, `StatusBarViewItem`, o modelo da
+//!     `CustomizedMenuWorkbenchToolBar` sobre o `IMenuService` e `get_action_bar_actions` do `je-platform`, e o
+//!     `InlineCompletionsHoverParticipant`) é criado direto pela view, com os serviços de `InlineEditsViewServices`
+//!     (acrescidos de `command_service` e `menu_service`). Falta, ligada por contrato anotado no `//!` da view, a
+//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que depende do armazenamento e da configuração do usuário
+//!     (o controller não a cria: é a view que a cria, ao fim do construtor);
+//!   - 4c-6 (pronta): o controller (`controller/inline_completions_controller`: `InlineCompletionsController`, que cria o
+//!     modelo e a view, registra os disparos, o foco, o sinal de acessibilidade e as chaves de contexto, e se registra como
+//!     contribuição do editor em `register_inline_completions_controller`). Implementa o `InlineCompletionsEditorHost` do
+//!     modelo (`InlineCompletionsControllerHost`, que entrega o serviço de editores ao `IInlineCompletionsCodeEditorService`
+//!     injetado), o `IInlineCompletionsHoverController` do participante de hover, e o `IInlineCompletionsController` e o
+//!     `IInlineCompletionsHost` do `SuggestModel`. Ficam para quem pinta e para o registro da contribuição: o
+//!     `IInlineCompletionsHoverHost` do participante (o `getWarningWidgetContext` é do pintor), o `FadeoutDecoration`, a
+//!     lista de editores de diff, o `HoverParticipantRegistry.register` e as ações de `controller/commands.ts`;
+//! - fatia 4d (próxima): os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
 //!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
 
@@ -64,6 +84,7 @@ pub mod controller;
 pub mod edit_kind;
 pub mod ghost_text;
 pub mod graph;
+pub mod hints_widget;
 pub mod inline_completion_is_visible;
 pub mod inline_completion_view_data;
 pub mod inline_completions_model;

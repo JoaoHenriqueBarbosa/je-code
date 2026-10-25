@@ -8,11 +8,15 @@
 //!   widget dono, como o `style.top/left/width/height` que o VS Code escreve. Não há motor de layout
 //!   genérico: o layout de cada widget é o do código original portado.
 //! - **Estilo resolvido.** Cor de fundo, borda, raio, texto e ícone já vêm resolvidos do tema pelo
-//!   widget (a regra de CSS correspondente vira código do widget). Nada de seletores nem cascata.
+//!   widget (a regra de CSS correspondente vira código do widget). Nada de seletores nem cascata, com uma
+//!   exceção: o `color`, que o CSS herda, é [`Foreground`] em cada nó e se resolve subindo pelos pais
+//!   ([`Tree::resolved_foreground`]); só um nó que declara ou herda a cor muda de cor com o antepassado, e o
+//!   conteúdo de um nó sem declaração mantém a cor própria.
 //! - **Pintura.** A árvore vira uma [`je_render::DisplayList`] por frame, pela ordem dos filhos (a
 //!   ordem do DOM), com recorte por nó (`overflow: hidden`).
 //! - **Eventos.** Ponteiro por hit test do nó mais ao fundo; teclado para o nó com foco; eventos com
-//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso. Ver [`events`].
+//!   fase de captura e de bolha como no DOM, porque os widgets do VS Code dependem disso; arrastar e soltar com o
+//!   `DataTransfer` ([`drag`]). Ver [`events`].
 //! - **Caixa.** O mínimo do modelo de caixa do CSS que o código dos widgets escreve ou herda:
 //!   `left/top/width/height` explícitos, `width/height: 100%` ([`Tree::set_fill`]), `right/bottom`
 //!   ([`Tree::set_right`], [`Tree::set_bottom`]), `z-index` entre irmãos, `pointer-events` e `display:
@@ -21,11 +25,24 @@
 //!   AccessKit, e guarda os demais atributos do elemento (`aria-checked`, `aria-disabled`, `disabled`,
 //!   `data-*`, `tabindex`, `draggable`) como texto, com `setAttribute`/`getAttribute`/`removeAttribute`
 //!   ([`Tree::set_attribute`], [`Tree::attribute`], [`Tree::remove_attribute`]).
+//! - **Texto.** [`Content::Text`] é uma linha só. O parágrafo com quebra é [`Content::Paragraph`]: trechos com
+//!   estilo, cor e link num nó só, quebrados na largura da caixa dele pelo motor de texto (`je-text`), com a
+//!   altura medida pela quantidade de linhas ([`Paragraph::height`]), o clique em link por
+//!   [`Tree::paragraph_link_at`] e o `textContent` por [`Tree::text_content`]. Cada link do parágrafo é um nó filho
+//!   `Role::Link` sem caixa própria ([`Ui::sync_paragraph_links`]), com nome acessível, caixas vindas da disposição do
+//!   parágrafo ([`Tree::link_boxes`]), ordem de Tab, `Enter` e contorno de foco.
 
+pub mod drag;
 pub mod events;
+mod paragraph;
 mod tree;
 pub mod wheel;
 
-pub use events::{Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
+#[cfg(test)]
+mod paragraph_link_tests;
+
+pub use drag::{DataTransfer, DragImage, DropEffect, EffectAllowed};
+pub use events::{DEFAULT_DRAG_THRESHOLD, Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
+pub use paragraph::{Paragraph, Span, SpanFrame, SpanKind};
 pub use wheel::{DeltaMode, StandardWheelEvent, WheelData};
-pub use tree::{Border, Content, Cursor, NodeId, PointerEvents, NodeStyle, Role, Tree};
+pub use tree::{Border, Content, Cursor, Foreground, NodeId, PointerEvents, NodeStyle, Role, Tree};

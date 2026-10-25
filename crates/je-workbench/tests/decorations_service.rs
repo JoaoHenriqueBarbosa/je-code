@@ -41,7 +41,8 @@ use je_base::uri::{Field, URI, UriChange};
 use je_platform::resources::ext_uri;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_workbench::services::decorations::decorations::{DecorationData, DecorationLetter, IDecorationsProvider, IDecorationsService};
-use je_workbench::services::decorations::decorations_service::{DecorationsService, IProductIconTheme, IconDefinition};
+use je_theme::icon_registry::{IconContribution, IconDefinition};
+use je_workbench::services::decorations::decorations_service::{DecorationsService, IProductIconTheme};
 
 /// O `mock<IUriIdentityService>()` com `extUri = resources.extUri`.
 struct TestUriIdentityService {
@@ -62,7 +63,7 @@ impl IUriIdentityService for TestUriIdentityService {
 struct UnthemedProductIconTheme;
 
 impl IProductIconTheme for UnthemedProductIconTheme {
-    fn get_icon(&self, _icon_id: &str) -> Option<IconDefinition> {
+    fn get_icon(&self, _contribution: &IconContribution) -> Option<IconDefinition> {
         None
     }
 }

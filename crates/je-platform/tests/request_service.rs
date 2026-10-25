@@ -1,311 +1,372 @@
-//! Porte de `src/vs/platform/request/test/common/requestService.test.ts` (suíte `AbstractRequestService`), caso a caso e na mesma ordem.
+//! Porte de `src/vs/platform/request/test/node/requestService.test.ts`.
 //!
-//! Pendente: `src/vs/platform/request/test/node/requestService.test.ts` (323 linhas, `RequestService` do Node sobre um
-//! servidor HTTP local, proxy e certificados): o je-code ainda não tem cliente HTTP (ver `src/request/mod.rs`).
+//! Os casos saem um a um e na mesma ordem do original, mais três casos de rede real que o original não tem (no fim,
+//! com o prefixo `extra_`).
 //!
-//! Divergência: o `TestLogService` do original junta `[message, ...args].join(' ')`; aqui o `join` do
-//! JavaScript é refeito sobre os argumentos (`undefined` e `null` viram texto vazio).
+//! Divergências:
+//! - O original não sobe servidor: injeta, por `getRawRequest`, um `http.ClientRequest` falso que dispara o `error`
+//!   (`setTimeout(..., 0)`) ou o `callback` da resposta. Aqui o falso é o [`MockClientRequest`], com os mesmos
+//!   disparos em `runtime::set_timeout(..., 0)`; os cinco casos que só variam o método, a mensagem e o código do erro
+//!   dividem os auxiliares [`succeeds_on_third_attempt`] e [`always_fails`].
+//! - `ensureNoDisposablesAreLeakedInTestSuite()` é o `LeakGuard` criado no começo de cada caso e o laço de eventos é o
+//!   real (`run_with_real_timers`): a espera entre as tentativas (100 ms e 200 ms) é de verdade, como no mocha.
+//! - O `assert.fail('Should have thrown an error')` dentro do `try` do original é capturado pelo próprio `catch`
+//!   (`AssertionError` é um `Error`), então esses casos nunca reprovavam por falta de erro; aqui a ausência do erro
+//!   reprova, e o erro tem o `code` que o falso lançou.
+//! - O caso `Kerberos lookup` é `(isWindows ? test : test.skip)`: fora do Windows é `#[ignore]`. O módulo nativo
+//!   `kerberos` não existe no porte (ver o topo de `node_request_service.rs`), então no Windows o caso reprova.
+//! - Os `extra_*` sobem um servidor HTTP em `127.0.0.1` com `std::net::TcpListener` e exercitam o cliente de produção.
 
 mod common;
 
-use std::cell::RefCell;
+use std::cell::Cell;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
+use std::thread::JoinHandle;
 
-use common::*;
-use je_base::buffer::{VSBuffer, buffer_to_stream, stream_to_buffer};
-use je_base::cancellation::CancellationToken;
-use je_base::dynamic::Dynamic;
-use je_base::errors::{self, Error};
-use je_base::event::Event;
-use je_base::lifecycle::IDisposable;
-use je_base::parts::ipc::IChannel;
-use je_base::marshalling::Marshalled;
-use je_base::parts::ipc::IServerChannel;
-use je_base::parts::request::{HeaderValue, IHeaders, IRequestContext, IRequestOptions, IRequestResponse, IRequestTimings};
-use je_base::promise::Promise;
-use je_platform::js::to_js_string;
-use je_platform::log::{AbstractLogger, LogArg, LogLevel, LogMessage, Logger};
-use je_platform::request::request_ipc::{RequestChannel, RequestChannelClient};
-use je_platform::request::{AuthInfo, Credentials, IRequestService, NO_FETCH_TELEMETRY, RequestCompleteEvent, RequestLogger};
+use common::{ensure_no_disposables_are_leaked_in_test_suite, null_log, run_with_real_timers};
+use je_base::buffer::BytesOrString;
+use je_base::cancellation::{CancellationToken, CancellationTokenSource};
+use je_base::errors::{Error, is_cancellation_error};
+use je_base::parts::request::{HeaderValue, IHeaders, IRequestOptions};
+use je_base::runtime;
+use je_base::stream::new_writeable_stream;
+use je_platform::request::as_text;
+use je_platform::request::node_request_service::{
+    ClientRequest, IncomingMessage, NodeRequestOptions, RawRequestFunction, RawRequestOptions, ResponseCallback, lookup_kerberos_authorization, node_request,
+};
 
-fn join(message: &str, args: &[LogArg]) -> String {
-    let mut parts = vec![message.to_owned()];
-    parts.extend(args.iter().map(|arg| match arg.to_dynamic() {
-        Dynamic::Undefined | Dynamic::Null => String::new(),
-        other => to_js_string(&other).to_string_lossy(),
-    }));
-    parts.join(" ")
+/// O `mockReq` dos casos: `on('error', handler)` e `end()` disparam o que o caso quiser; o resto do `ClientRequest` não
+/// faz nada (`on` de outros eventos, `abort`, `setTimeout`).
+struct MockClientRequest {
+    on_error: Box<dyn Fn(Rc<dyn Fn(Error)>)>,
+    on_end: Box<dyn Fn()>,
 }
 
-#[derive(Default)]
-struct TestLogService {
-    base: AbstractLogger,
-    traces: RefCell<Vec<String>>,
-    errors: RefCell<Vec<String>>,
+impl ClientRequest for MockClientRequest {
+    fn on_error(&self, handler: Rc<dyn Fn(Error)>) {
+        (self.on_error)(handler);
+    }
+
+    fn on_response(&self, _handler: Rc<dyn Fn()>) {}
+
+    fn on_abort(&self, _handler: Rc<dyn Fn()>) {}
+
+    fn set_timeout(&self, _ms: u64) {}
+
+    fn remove_header(&self, _name: &str) {}
+
+    fn write(&self, _data: &str) {}
+
+    fn end(&self) {
+        (self.on_end)();
+    }
+
+    fn abort(&self) {}
 }
 
-impl IDisposable for TestLogService {
-    fn dispose(&self) {
-        self.base.dispose();
-    }
+/// `getRawRequest: () => mockRawRequest`.
+fn get_raw_request(mock_raw_request: impl Fn(ResponseCallback) -> MockClientRequest + 'static) -> Rc<dyn Fn(&IRequestOptions) -> RawRequestFunction> {
+    let raw_request: RawRequestFunction = Rc::new(move |_options: &RawRequestOptions, callback: ResponseCallback| -> Rc<dyn ClientRequest> { Rc::new(mock_raw_request(callback)) });
+    Rc::new(move |_| raw_request.clone())
 }
 
-impl Logger for TestLogService {
-    fn on_did_change_log_level(&self) -> Event<LogLevel> {
-        self.base.on_did_change_log_level()
-    }
-    fn get_level(&self) -> LogLevel {
-        self.base.get_level()
-    }
-    fn set_level(&self, level: LogLevel) {
-        self.base.set_level(level);
-    }
-    fn trace_args(&self, message: &str, args: &[LogArg]) {
-        self.traces.borrow_mut().push(join(message, args));
-    }
-    fn debug_args(&self, _message: &str, _args: &[LogArg]) {}
-    fn info_args(&self, _message: &str, _args: &[LogArg]) {}
-    fn warn_args(&self, _message: &LogMessage, _args: &[LogArg]) {}
-    fn error_args(&self, error: &LogMessage, args: &[LogArg]) {
-        let text = match error {
-            LogMessage::Text(text) => text.clone(),
-            LogMessage::Error(error) => error.message.clone(),
-        };
-        self.errors.borrow_mut().push(if args.is_empty() { text } else { join(&text, args) });
-    }
-    fn flush(&self) {}
+/// `const err = new Error(message) as NodeJS.ErrnoException; err.code = code;`.
+fn errno_error(message: &str, code: &str) -> Error {
+    Error::new(message).with_prop("code", code)
 }
 
-type Handler = Rc<dyn Fn(&IRequestOptions) -> Promise<IRequestContext>>;
-
-struct TestRequestService {
-    logger: Rc<RequestLogger>,
-    handler: Handler,
+/// `{ statusCode: 200, headers: {}, on: () => { }, pipe: () => ({ on: () => { } }) }`: uma resposta cujo corpo nunca emite.
+fn ok_response() -> IncomingMessage {
+    IncomingMessage { status_code: Some(200), headers: IHeaders::new(), stream: new_writeable_stream::<BytesOrString>(None, None) }
 }
 
-impl TestRequestService {
-    fn new(handler: impl Fn(&IRequestOptions) -> Promise<IRequestContext> + 'static) -> Rc<Self> {
-        Self::with_log(handler, Rc::new(TestLogService::default()))
-    }
-
-    fn with_log(handler: impl Fn(&IRequestOptions) -> Promise<IRequestContext> + 'static, log: Rc<TestLogService>) -> Rc<Self> {
-        Rc::new(Self { logger: RequestLogger::new(log), handler: Rc::new(handler) })
-    }
-}
-
-impl IRequestService for TestRequestService {
-    fn on_did_complete_request(&self) -> Event<RequestCompleteEvent> {
-        self.logger.on_did_complete_request()
-    }
-    fn request(&self, options: IRequestOptions, _token: CancellationToken) -> Promise<IRequestContext> {
-        let handler = self.handler.clone();
-        let for_handler = options.clone();
-        self.logger.log_and_request(&options, move || handler(&for_handler))
-    }
-    fn resolve_proxy(&self, _url: &str) -> Promise<Option<String>> {
-        Promise::resolved(None)
-    }
-    fn lookup_authorization(&self, _auth_info: AuthInfo) -> Promise<Option<Credentials>> {
-        Promise::resolved(None)
-    }
-    fn lookup_kerberos_authorization(&self, _url: &str) -> Promise<Option<String>> {
-        Promise::resolved(None)
-    }
-    fn load_certificates(&self) -> Promise<Vec<String>> {
-        Promise::resolved(Vec::new())
-    }
-}
-
-impl IDisposable for TestRequestService {
-    fn dispose(&self) {
-        self.logger.dispose();
-    }
-}
-
-fn make_response(status_code: u16) -> IRequestContext {
-    IRequestContext {
-        res: IRequestResponse { headers: IHeaders::new(), status_code: Some(status_code) },
-        stream: buffer_to_stream(VSBuffer::from_string("")),
-        timings: None,
-    }
-}
-
-fn options(url: &str, call_site: &str) -> IRequestOptions {
-    IRequestOptions { url: Some(url.to_owned()), call_site: call_site.to_owned(), ..IRequestOptions::default() }
-}
-
-fn collect_events(service: &TestRequestService) -> Rc<RefCell<Vec<RequestCompleteEvent>>> {
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let sink = events.clone();
-    service.on_did_complete_request().listen(move |e| sink.borrow_mut().push(e.clone()));
-    events
-}
-
-#[test]
-fn on_did_complete_request_fires_with_correct_data() {
-    run_with_faked_timers(async {
-        let service = TestRequestService::new(|_| Promise::resolved(make_response(200)));
-        let events = collect_events(&service);
-
-        service.request(options("http://test", "test.callSite"), CancellationToken::None).await.unwrap();
-
-        let events = events.borrow();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].call_site, "test.callSite");
-        assert_eq!(events[0].status_code, Some(200));
-        assert!(events[0].latency >= 0.0);
-        service.dispose();
-    });
-}
-
-#[test]
-fn on_did_complete_request_reports_status_code_from_response() {
-    run_with_faked_timers(async {
-        let service = TestRequestService::new(|_| Promise::resolved(make_response(404)));
-        let events = collect_events(&service);
-
-        service.request(options("http://test", "test.notFound"), CancellationToken::None).await.unwrap();
-
-        let events = events.borrow();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].status_code, Some(404));
-        service.dispose();
-    });
-}
-
-#[test]
-fn on_did_complete_request_fires_for_no_fetch_telemetry() {
-    run_with_faked_timers(async {
-        let service = TestRequestService::new(|_| Promise::resolved(make_response(200)));
-        let events = collect_events(&service);
-
-        service.request(options("http://test", NO_FETCH_TELEMETRY), CancellationToken::None).await.unwrap();
-
-        let events = events.borrow();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].call_site, NO_FETCH_TELEMETRY);
-        service.dispose();
-    });
-}
-
-#[test]
-fn on_did_complete_request_does_not_fire_when_request_throws() {
-    run_with_faked_timers(async {
-        let service = TestRequestService::new(|_| Promise::rejected(Error::new("network error")));
-        let events = collect_events(&service);
-
-        assert!(service.request(options("http://test", "test.error"), CancellationToken::None).await.is_err());
-
-        assert_eq!(events.borrow().len(), 0);
-        service.dispose();
-    });
-}
-
-#[test]
-fn logs_cancellation_at_trace_level() {
-    run_with_faked_timers(async {
-        let log = Rc::new(TestLogService::default());
-        let service = TestRequestService::with_log(|_| Promise::rejected(Error::cancellation()), log.clone());
-
-        let Err(error) = service.request(options("http://test", "test.cancelled"), CancellationToken::None).await else { panic!("devia rejeitar") };
-        assert!(errors::is_cancellation_error(&error));
-
-        assert_eq!(log.traces.borrow().iter().filter(|m| m.contains(" - cancelled")).count(), 1);
-        assert!(log.errors.borrow().is_empty());
-        service.dispose();
-    });
-}
-
-#[test]
-fn on_did_complete_request_fires_for_each_request() {
-    run_with_faked_timers(async {
-        let service = TestRequestService::new(|_| Promise::resolved(make_response(200)));
-        let events = collect_events(&service);
-
-        service.request(options("http://test/1", "first"), CancellationToken::None).await.unwrap();
-        service.request(options("http://test/2", "second"), CancellationToken::None).await.unwrap();
-
-        assert_eq!(events.borrow().iter().map(|e| e.call_site.clone()).collect::<Vec<_>>(), ["first", "second"]);
-        service.dispose();
-    });
-}
-
-/// O canal de IPC do teste: `channel.call(undefined, command, args, token)` direto.
-struct DirectChannel(RequestChannel);
-
-impl IChannel for DirectChannel {
-    fn call(&self, command: &str, arg: Marshalled, token: CancellationToken) -> Promise<Marshalled> {
-        self.0.call(&Marshalled::Undefined, command, arg, token)
-    }
-    fn listen(&self, _event: &str, _arg: Marshalled) -> Event<Marshalled> {
-        Event::none()
-    }
-}
-
-#[test]
-fn request_ipc_preserves_optional_diagnostics() {
-    // `for (const timings of [undefined, { responseHeadersMs: 30, ... }])`: um teste por valor, no original.
-    for timings in [None, Some(IRequestTimings { response_headers_ms: 30.0, response_body_ms: 70.0, decoded_body_bytes: 0 })] {
-        run_with_faked_timers(async move {
-            let diagnostic_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-            let seen = diagnostic_id.clone();
-            let service = TestRequestService::new(move |options| {
-                *seen.borrow_mut() = options.diagnostic_id.clone();
-                Promise::resolved(IRequestContext { timings, ..make_response(200) })
-            });
-            let channel = RequestChannel::new(service.clone());
-            let client = RequestChannelClient::new(Rc::new(DirectChannel(channel)));
-            let mut request_options = options("https://example.test", "test.ipc");
-            request_options.diagnostic_id = Some("local-test".to_owned());
-            let result = client.request(request_options, CancellationToken::None).await.unwrap();
-
-            assert_eq!(diagnostic_id.borrow().as_deref(), Some("local-test"));
-            assert_eq!(result.timings, timings);
-            assert_eq!(stream_to_buffer(&*result.stream).await.unwrap().to_string(), "");
-            service.dispose();
-        });
-    }
-}
-
-#[test]
-fn log_url_false_logs_only_the_host_the_status_and_the_error_code_never_the_url_headers_or_error_message() {
-    run_with_faked_timers(async {
-        let log = Rc::new(TestLogService::default());
-        let signed = "https://acct.blob.core.windows.net/models/m.gguf?sv=2024&sig=SECRET";
-        let failure = Error::new(format!("connect failed for {signed}")).with_prop("code", "ECONNRESET");
-        let fail = Rc::new(std::cell::Cell::new(false));
-        let should_fail = fail.clone();
-        let service = TestRequestService::with_log(
-            move |_| {
-                if should_fail.get() {
-                    Promise::rejected(failure.clone())
-                } else {
-                    let mut headers = IHeaders::new();
-                    headers.insert("location".to_owned(), HeaderValue::One(signed.to_owned()));
-                    Promise::resolved(IRequestContext { res: IRequestResponse { status_code: Some(302), headers }, ..make_response(302) })
+/// O `mockRawRequest` dos casos que repetem: as duas primeiras tentativas disparam o erro (`setTimeout(() => handler(err), 0)`) e
+/// a terceira responde 200 no `end()`.
+fn succeeds_on_third_attempt(attempt_count: Rc<Cell<u32>>, message: &'static str, code: &'static str) -> impl Fn(ResponseCallback) -> MockClientRequest {
+    move |callback| {
+        attempt_count.set(attempt_count.get() + 1);
+        let current_attempt = attempt_count.get();
+        MockClientRequest {
+            on_error: Box::new(move |handler| {
+                if current_attempt < 3 {
+                    let err = errno_error(message, code);
+                    runtime::set_timeout(move || handler(err), 0);
                 }
-            },
-            log.clone(),
-        );
+            }),
+            on_end: Box::new(move || {
+                if current_attempt >= 3 {
+                    // Succeed on third attempt by calling the response callback
+                    let callback = callback.clone();
+                    runtime::set_timeout(move || callback(ok_response()), 0);
+                }
+            }),
+        }
+    }
+}
 
-        let mut first = options(signed, "test.noUrl");
-        first.r#type = Some("GET".to_owned());
-        first.log_url = Some(false);
-        let mut headers = IHeaders::new();
-        headers.insert("Authorization".to_owned(), HeaderValue::One("Bearer SECRET".to_owned()));
-        first.headers = Some(headers);
-        service.request(first, CancellationToken::None).await.unwrap();
-        fail.set(true);
-        let mut second = options(signed, "test.noUrl");
-        second.r#type = Some("GET".to_owned());
-        second.log_url = Some(false);
-        assert!(service.request(second, CancellationToken::None).await.is_err());
+/// O `mockRawRequest` dos casos que não repetem: toda tentativa dispara `ECONNREFUSED`.
+fn always_fails(attempt_count: Rc<Cell<u32>>) -> impl Fn(ResponseCallback) -> MockClientRequest {
+    move |_callback| {
+        attempt_count.set(attempt_count.get() + 1);
+        MockClientRequest {
+            on_error: Box::new(|handler| {
+                let err = errno_error("Connection refused", "ECONNREFUSED");
+                runtime::set_timeout(move || handler(err), 0);
+            }),
+            on_end: Box::new(|| {}),
+        }
+    }
+}
 
-        assert_eq!(
-            *log.traces.borrow(),
-            ["#1: acct.blob.core.windows.net - begin GET", "#1: acct.blob.core.windows.net - end GET 302", "#2: acct.blob.core.windows.net - begin GET"]
-        );
-        assert_eq!(*log.errors.borrow(), ["#2: acct.blob.core.windows.net - error GET ECONNRESET"]);
-        service.dispose();
+fn mock_options(method: &str, call_site: &str, get_raw_request: Rc<dyn Fn(&IRequestOptions) -> RawRequestFunction>) -> NodeRequestOptions {
+    NodeRequestOptions {
+        base: IRequestOptions { url: Some("http://example.com".to_owned()), r#type: Some(method.to_owned()), call_site: call_site.to_owned(), ..IRequestOptions::default() },
+        get_raw_request: Some(get_raw_request),
+        ..NodeRequestOptions::default()
+    }
+}
+
+/// Um caso "should retry <method> requests on transient errors".
+fn assert_retries(method: &str, call_site: &str, message: &'static str, code: &'static str) {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let method = method.to_owned();
+    let call_site = call_site.to_owned();
+    run_with_real_timers(async move {
+        let attempt_count = Rc::new(Cell::new(0));
+        let options = mock_options(&method, &call_site, get_raw_request(succeeds_on_third_attempt(attempt_count.clone(), message, code)));
+
+        // Expected to eventually succeed or fail after retries
+        let _ = node_request(options, CancellationToken::None).await;
+
+        assert!(attempt_count.get() > 1, "{method} request should have been retried");
     });
+}
+
+/// Um caso "should NOT retry <method> requests".
+fn assert_does_not_retry(method: &str, call_site: &str) {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let method = method.to_owned();
+    let call_site = call_site.to_owned();
+    run_with_real_timers(async move {
+        let attempt_count = Rc::new(Cell::new(0));
+        let options = mock_options(&method, &call_site, get_raw_request(always_fails(attempt_count.clone())));
+
+        match node_request(options, CancellationToken::None).await {
+            Ok(_) => panic!("Should have thrown an error"),
+            Err(err) => assert_eq!(err.prop("code"), Some("ECONNREFUSED")),
+        }
+
+        assert_eq!(attempt_count.get(), 1, "{method} request should not have been retried");
+    });
+}
+
+// Kerberos module fails to load on local macOS and Linux CI.
+#[test]
+#[cfg_attr(not(windows), ignore = "o original só roda no Windows (isWindows ? test : test.skip)")]
+fn kerberos_lookup() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    run_with_real_timers(async move {
+        let log_service = null_log();
+        match lookup_kerberos_authorization("http://localhost:9999", None, &log_service, "requestService.test.ts").await {
+            Ok(response) => assert!(!response.is_empty()),
+            Err(err) => {
+                let message = err.message;
+                assert!(
+                    message.contains("No authority could be contacted for authentication")
+                        || message.contains("No Kerberos credentials available")
+                        || message.contains("No credentials are available in the security package")
+                        || message.contains("no credential for"),
+                    "Unexpected error: {message}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn request_cancellation_during_retry_backoff() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let cts = guard.add_rc(Rc::new(CancellationTokenSource::new(None)));
+    run_with_real_timers(async move {
+        let attempt_count = Rc::new(Cell::new(0));
+        let mock_raw_request = {
+            let (attempt_count, cts) = (attempt_count.clone(), cts.clone());
+            move |_callback: ResponseCallback| {
+                attempt_count.set(attempt_count.get() + 1);
+                let cts = cts.clone();
+                MockClientRequest {
+                    on_error: Box::new(move |handler| {
+                        let err = errno_error("Connection refused", "ECONNREFUSED");
+                        let cts = cts.clone();
+                        // Fail the first attempt with a transient error, then cancel while the
+                        // retry backoff is pending so cancellation is observed during the backoff.
+                        runtime::set_timeout(
+                            move || {
+                                handler(err);
+                                cts.cancel();
+                            },
+                            0,
+                        );
+                    }),
+                    on_end: Box::new(|| {}),
+                }
+            }
+        };
+
+        match node_request(mock_options("GET", "requestService.test.cancellation", get_raw_request(mock_raw_request)), cts.token()).await {
+            Ok(_) => panic!("Request should have been cancelled"),
+            Err(err) => assert!(is_cancellation_error(&err), "Error should be a CancellationError"),
+        }
+
+        assert_eq!(attempt_count.get(), 1, "Request should be cancelled during backoff without further retries");
+    });
+}
+
+#[test]
+fn should_retry_get_requests_on_transient_errors() {
+    assert_retries("GET", "requestService.test.retryGET", "Connection refused", "ECONNREFUSED");
+}
+
+#[test]
+fn should_not_retry_post_requests() {
+    assert_does_not_retry("POST", "requestService.test.noRetryPOST");
+}
+
+#[test]
+fn should_retry_head_requests_on_transient_errors() {
+    assert_retries("HEAD", "requestService.test.retryHEAD", "Host unreachable", "EHOSTUNREACH");
+}
+
+#[test]
+fn should_retry_options_requests_on_transient_errors() {
+    assert_retries("OPTIONS", "requestService.test.retryOPTIONS", "Network unreachable", "ENETUNREACH");
+}
+
+#[test]
+fn should_not_retry_delete_requests() {
+    assert_does_not_retry("DELETE", "requestService.test.noRetryDELETE");
+}
+
+#[test]
+fn should_not_retry_put_requests() {
+    assert_does_not_retry("PUT", "requestService.test.noRetryPUT");
+}
+
+#[test]
+fn should_not_retry_patch_requests() {
+    assert_does_not_retry("PATCH", "requestService.test.noRetryPATCH");
+}
+
+// --- Casos de rede real (sem equivalente no original)
+
+/// Atende uma conexão por resposta (na ordem de `responses`) e devolve as requisições recebidas, cabeçalho e corpo.
+fn serve(listener: TcpListener, responses: Vec<Vec<u8>>) -> JoinHandle<Vec<String>> {
+    std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("aceitar a conexão");
+            requests.push(read_request(&mut stream));
+            stream.write_all(&response).expect("responder");
+        }
+        requests
+    })
+}
+
+/// Lê até o fim do cabeçalho e, se houver `Content-Length`, o corpo.
+fn read_request(stream: &mut TcpStream) -> String {
+    let mut received = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let count = stream.read(&mut chunk).expect("ler a requisição");
+        received.extend_from_slice(&chunk[..count]);
+        let text = String::from_utf8_lossy(&received).into_owned();
+        if let Some(head_end) = text.find("\r\n\r\n") {
+            let length = text[..head_end].lines().find_map(|line| line.to_lowercase().strip_prefix("content-length:").and_then(|value| value.trim().parse::<usize>().ok())).unwrap_or(0);
+            if received.len() >= head_end + 4 + length {
+                return text;
+            }
+        }
+        if count == 0 {
+            return text;
+        }
+    }
+}
+
+fn http_response(status_line: &str, headers: &[String], body: &[u8]) -> Vec<u8> {
+    let mut response = format!("HTTP/1.1 {status_line}\r\n");
+    for header in headers {
+        response.push_str(header);
+        response.push_str("\r\n");
+    }
+    response.push_str(&format!("Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()));
+    let mut bytes = response.into_bytes();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn local_options(url: String, method: &str) -> NodeRequestOptions {
+    NodeRequestOptions::from(IRequestOptions { url: Some(url), r#type: Some(method.to_owned()), call_site: "requestService.test.extra".to_owned(), ..IRequestOptions::default() })
+}
+
+#[test]
+fn extra_follows_redirects_and_decompresses_gzip() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("abrir a porta");
+    let port = listener.local_addr().expect("endereço").port();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(b"hello gzip").expect("comprimir");
+    let server = serve(
+        listener,
+        vec![
+            http_response("302 Found", &[format!("Location: http://127.0.0.1:{port}/final")], b""),
+            http_response("200 OK", &["Content-Encoding: gzip".to_owned()], &encoder.finish().expect("fechar o gzip")),
+        ],
+    );
+    run_with_real_timers(async move {
+        let context = node_request(local_options(format!("http://127.0.0.1:{port}/start"), "GET"), CancellationToken::None).await.expect("requisição");
+        assert_eq!(context.res.status_code, Some(200));
+        assert_eq!(as_text(&context).await.expect("corpo"), Some("hello gzip".to_owned()));
+    });
+    let requests = server.join().expect("servidor");
+    assert!(requests[0].starts_with("GET /start HTTP/1.1"), "{}", requests[0]);
+    assert!(requests[1].starts_with("GET /final HTTP/1.1"), "{}", requests[1]);
+}
+
+#[test]
+fn extra_does_not_follow_redirects_when_follow_redirects_is_zero() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("abrir a porta");
+    let port = listener.local_addr().expect("endereço").port();
+    let server = serve(listener, vec![http_response("302 Found", &["Location: http://127.0.0.1:1/never".to_owned()], b"")]);
+    run_with_real_timers(async move {
+        let mut options = local_options(format!("http://127.0.0.1:{port}/start"), "GET");
+        options.base.follow_redirects = Some(0);
+        let context = node_request(options, CancellationToken::None).await.expect("requisição");
+        assert_eq!(context.res.status_code, Some(302));
+        assert_eq!(context.res.headers.get("location"), Some(&HeaderValue::One("http://127.0.0.1:1/never".to_owned())));
+    });
+    assert_eq!(server.join().expect("servidor").len(), 1);
+}
+
+#[test]
+fn extra_post_sends_the_body_and_basic_credentials() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("abrir a porta");
+    let port = listener.local_addr().expect("endereço").port();
+    let server = serve(listener, vec![http_response("201 Created", &[], b"done")]);
+    run_with_real_timers(async move {
+        let mut options = local_options(format!("http://127.0.0.1:{port}/submit"), "POST");
+        options.base.data = Some("payload".to_owned());
+        options.base.user = Some("user".to_owned());
+        options.base.password = Some("pass".to_owned());
+        let context = node_request(options, CancellationToken::None).await.expect("requisição");
+        assert_eq!(context.res.status_code, Some(201));
+        assert_eq!(as_text(&context).await.expect("corpo"), Some("done".to_owned()));
+    });
+    let request = server.join().expect("servidor").remove(0);
+    assert!(request.starts_with("POST /submit HTTP/1.1"), "{request}");
+    assert!(request.to_lowercase().contains("authorization: basic dxnlcjpwyxnz"), "{request}");
+    assert!(request.ends_with("payload"), "{request}");
 }

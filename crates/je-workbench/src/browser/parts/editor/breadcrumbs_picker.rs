@@ -76,7 +76,7 @@ use super::breadcrumbs::{BreadcrumbsConfig, BreadcrumbsConfigKeys, SymbolSortOrd
 use super::breadcrumbs_model::{BreadcrumbsElement, FileElement, OutlineElement2, OutlineElementValue};
 use crate::browser::labels::{FileDecorations, IFileLabelOptions, IResourceLabel, IResourceLabelOptions, ResourceLabels, ResourceLabelsServices, default_labels_container};
 use crate::browser::workbench_tree::workbench_tree_data_preamble;
-use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
+use je_widgets::list::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::contrib::notebook::browser::contrib::outline::notebook_outline::IFileIconTheme;
 use crate::services::editor::editor_groups_service::PreferredGroup;
 use crate::services::editor::editor_service::IEditorService;

@@ -12,8 +12,13 @@
 //!   [`ListOverrides`](crate::list::list_widget::ListOverrides) que a árvore passa à lista.
 //! - Os eventos do DOM são os do `je-ui`. `isButton`, `isEditableElement`, `isMonacoEditor`,
 //!   `isMonacoCustomToggle` e `isActionItem` (classes de widgets que o `je-ui` ainda não tem) não são
-//!   conferidos. A arrastar e soltar (`TreeNodeListDragAndDrop`), o tipo-para-navegar (a `List` do
-//!   `je-widgets` não o tem), o `aria-*`, o `createStyleSheet` e o `style()` (CSS gerado) ficam de fora.
+//!   conferidos. O tipo-para-navegar é o da [`List`] (o [`TypeNavigationController`](crate::list::type_navigation::TypeNavigationController)):
+//!   o `keyboardNavigationLabelProvider` das opções chega à lista sobre o nó, junto com `keyboardNavigationDelegate`,
+//!   `keyboardNavigationEventFilter` e, em [`AbstractTreeOptionsUpdate`], `typeNavigationEnabled` e `typeNavigationMode`;
+//!   o `triggerTypeNavigation` da árvore (um repasse à lista) não existe: o chamador, o comando `list.triggerTypeNavigation`, ainda não foi portado. O
+//!   `aria-level`/`aria-expanded`, o `createStyleSheet` e o `style()` (CSS gerado) ficam de fora. O
+//!   `accessibilityProvider` das opções vira o papel (`tree`/`treeitem`) e o rótulo que a [`List`] aplica à árvore e aos nós.
+//!   O `dnd` das opções é o [`TreeNodeListDragAndDrop`] sobre o modelo (a [`List`] o recebe em `ListOptions::dnd`).
 //! - O `Relay` de eventos do modelo é um `Emitter` que repassa (o modelo não é trocado depois do
 //!   construtor).
 
@@ -29,19 +34,25 @@ use je_base::lifecycle::{ById, DisposableRef, DisposableStore, IDisposable};
 use je_base::map::SetMap;
 use je_base::promise::MaybePromise;
 use je_base::symbols::Delay;
-use je_ui::{EventKind, KeyData, NodeId, Ui};
+use je_ui::{EventKind, KeyData, NodeId, Role, Ui};
 
 use crate::common::{store_emitter, throw};
-use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationLabelProvider, IListRenderer, IListVirtualDelegate, ListMouseEvent};
+use crate::list::list_dnd::IListDragAndDrop;
+use crate::list::list_types::{
+    BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IKeyboardNavigationDelegate, IKeyboardNavigationEventFilter, IKeyboardNavigationLabelProvider, IListAccessibilityProvider, IListRenderer,
+    IListVirtualDelegate, ListMouseEvent,
+};
 use crate::list::list_view::{ListViewOptions, ListViewOptionsUpdate};
 use crate::list::list_widget::{List, ListOptions, ListOverrides};
+use crate::list::type_navigation::TypeNavigationMode;
 use crate::tree::find::{DefaultFindVisibility, FindHandle};
 use crate::tree::sticky_scroll::{IStickyScrollDelegate, StickyScrollController, StickyScrollNodeSourceRangeProvider};
 use crate::list::list_styles::IListStyles;
+use crate::tree::tree_dnd::TreeNodeListDragAndDrop;
 use crate::tree::tree_renderer::{Collection, EventCollection, RenderIndentGuides, RenderedIndentGuides, TreeRenderer, TreeRendererOptions, TwistieClassProvider};
 use crate::tree::tree_trait::TreeTrait;
 use crate::tree::tree_types::{
-    CollapseStateChangeEvent, ITreeFilter, ITreeModel, ITreeNavigator, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi, tree_error,
+    CollapseStateChangeEvent, ITreeDragAndDrop, ITreeFilter, ITreeModel, ITreeNavigator, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeMouseEventTarget, TreeNodeApi, tree_error,
 };
 
 /// `TreeFindMode`.
@@ -141,6 +152,10 @@ pub struct AbstractTreeOptionsUpdate<E> {
     pub enable_sticky_scroll: Option<bool>,
     pub sticky_scroll_max_item_count: Option<usize>,
     pub sticky_scroll_max_node_height: Option<f64>,
+    /// `typeNavigationEnabled`.
+    pub type_navigation_enabled: Option<bool>,
+    /// `typeNavigationMode`.
+    pub type_navigation_mode: Option<TypeNavigationMode>,
 }
 
 impl<E> Default for AbstractTreeOptionsUpdate<E> {
@@ -166,6 +181,8 @@ impl<E> Default for AbstractTreeOptionsUpdate<E> {
             enable_sticky_scroll: None,
             sticky_scroll_max_item_count: None,
             sticky_scroll_max_node_height: None,
+            type_navigation_enabled: None,
+            type_navigation_mode: None,
         }
     }
 }
@@ -193,6 +210,8 @@ impl<E> Clone for AbstractTreeOptionsUpdate<E> {
             enable_sticky_scroll: self.enable_sticky_scroll,
             sticky_scroll_max_item_count: self.sticky_scroll_max_item_count,
             sticky_scroll_max_node_height: self.sticky_scroll_max_node_height,
+            type_navigation_enabled: self.type_navigation_enabled,
+            type_navigation_mode: self.type_navigation_mode,
         }
     }
 }
@@ -223,7 +242,9 @@ impl<E> AbstractTreeOptionsUpdate<E> {
             expand_only_on_twistie_click,
             enable_sticky_scroll,
             sticky_scroll_max_item_count,
-            sticky_scroll_max_node_height
+            sticky_scroll_max_node_height,
+            type_navigation_enabled,
+            type_navigation_mode
         );
     }
 
@@ -257,6 +278,10 @@ pub struct AbstractTreeOptions<M: ITreeModel> {
     pub view: ListViewOptions,
     pub identity_provider: Option<Rc<dyn IIdentityProvider<M::Element>>>,
     pub keyboard_navigation_label_provider: Option<Rc<dyn IKeyboardNavigationLabelProvider<M::Element>>>,
+    /// `keyboardNavigationDelegate`: o delegate da navegação por tipo da lista (padrão: o da lista).
+    pub keyboard_navigation_delegate: Option<Rc<dyn IKeyboardNavigationDelegate>>,
+    /// `keyboardNavigationEventFilter`.
+    pub keyboard_navigation_event_filter: Option<IKeyboardNavigationEventFilter>,
     pub keyboard_support: Option<bool>,
     pub collapse_by_default: bool,
     pub allow_non_collapsible_parents: bool,
@@ -267,6 +292,10 @@ pub struct AbstractTreeOptions<M: ITreeModel> {
     pub disable_expand_on_spacebar: bool,
     /// `findWidgetEnabled` (padrão: ligado, se houver `keyboard_navigation_label_provider`).
     pub find_widget_enabled: Option<bool>,
+    /// `accessibilityProvider`: o papel (`tree` e `treeitem`) e o rótulo da árvore e dos nós.
+    pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<M::Element>>>,
+    /// `dnd`: a arrastar e soltar dos elementos da árvore (ver [`TreeNodeListDragAndDrop`]).
+    pub dnd: Option<Rc<dyn ITreeDragAndDrop<M::Element>>>,
 }
 
 impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
@@ -276,6 +305,8 @@ impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
             view: ListViewOptions::default(),
             identity_provider: None,
             keyboard_navigation_label_provider: None,
+            keyboard_navigation_delegate: None,
+            keyboard_navigation_event_filter: None,
             keyboard_support: None,
             collapse_by_default: false,
             allow_non_collapsible_parents: false,
@@ -285,6 +316,8 @@ impl<M: ITreeModel> Default for AbstractTreeOptions<M> {
             sticky_scroll_node_source_range_provider: None,
             disable_expand_on_spacebar: false,
             find_widget_enabled: None,
+            accessibility_provider: None,
+            dnd: None,
         }
     }
 }
@@ -296,6 +329,8 @@ impl<M: ITreeModel> Clone for AbstractTreeOptions<M> {
             view: self.view.clone(),
             identity_provider: self.identity_provider.clone(),
             keyboard_navigation_label_provider: self.keyboard_navigation_label_provider.clone(),
+            keyboard_navigation_delegate: self.keyboard_navigation_delegate.clone(),
+            keyboard_navigation_event_filter: self.keyboard_navigation_event_filter.clone(),
             keyboard_support: self.keyboard_support,
             collapse_by_default: self.collapse_by_default,
             allow_non_collapsible_parents: self.allow_non_collapsible_parents,
@@ -305,13 +340,50 @@ impl<M: ITreeModel> Clone for AbstractTreeOptions<M> {
             sticky_scroll_node_source_range_provider: self.sticky_scroll_node_source_range_provider.clone(),
             disable_expand_on_spacebar: self.disable_expand_on_spacebar,
             find_widget_enabled: self.find_widget_enabled,
+            accessibility_provider: self.accessibility_provider.clone(),
+            dnd: self.dnd.clone(),
         }
+    }
+}
+
+/// O `TreeNodeListAccessibilityProvider` do `asListOptions`: o provedor do usuário sobre o elemento visto como provedor da lista
+/// sobre o nó, com `tree` e `treeitem` no lugar de `list` e `listitem`. O `aria-level` e o `aria-expanded` não existem no `je-ui`.
+struct NodeAccessibilityProvider<M: ITreeModel> {
+    provider: Rc<dyn IListAccessibilityProvider<M::Element>>,
+}
+
+impl<M: ITreeModel> IListAccessibilityProvider<Rc<M::Node>> for NodeAccessibilityProvider<M> {
+    fn get_aria_label(&self, node: &Rc<M::Node>) -> Option<String> {
+        self.provider.get_aria_label(&node.element())
+    }
+
+    fn get_widget_aria_label(&self) -> String {
+        self.provider.get_widget_aria_label()
+    }
+
+    fn get_widget_role(&self) -> Option<Role> {
+        Some(self.provider.get_widget_role().unwrap_or(Role::Tree))
+    }
+
+    fn get_role(&self, node: &Rc<M::Node>) -> Option<Role> {
+        Some(self.provider.get_role(&node.element()).unwrap_or(Role::TreeItem))
     }
 }
 
 /// O `IIdentityProvider<ITreeNode<T>>` que o `asListOptions` monta sobre o do usuário.
 struct NodeIdentityProvider<M: ITreeModel> {
     provider: Rc<dyn IIdentityProvider<M::Element>>,
+}
+
+/// O `keyboardNavigationLabelProvider` que o `asListOptions` monta sobre o do usuário: o rótulo do elemento do nó.
+struct NodeKeyboardNavigationLabelProvider<M: ITreeModel> {
+    provider: Rc<dyn IKeyboardNavigationLabelProvider<M::Element>>,
+}
+
+impl<M: ITreeModel> IKeyboardNavigationLabelProvider<Rc<M::Node>> for NodeKeyboardNavigationLabelProvider<M> {
+    fn get_keyboard_navigation_label(&self, node: &Rc<M::Node>) -> Vec<Option<String>> {
+        self.provider.get_keyboard_navigation_label(&node.element())
+    }
 }
 
 impl<M: ITreeModel> IIdentityProvider<Rc<M::Node>> for NodeIdentityProvider<M> {
@@ -635,6 +707,20 @@ where
                 multiple_selection_support: options.update.multiple_selection_support,
                 keyboard_support: Some(false),
                 overrides: Some(Rc::new(TreeListOverrides::<M> { tree: weak.clone() })),
+                accessibility_provider: options
+                    .accessibility_provider
+                    .clone()
+                    .map(|provider| Rc::new(NodeAccessibilityProvider::<M> { provider }) as Rc<dyn IListAccessibilityProvider<Rc<M::Node>>>),
+                keyboard_navigation_label_provider: options
+                    .keyboard_navigation_label_provider
+                    .clone()
+                    .map(|provider| Rc::new(NodeKeyboardNavigationLabelProvider::<M> { provider }) as Rc<dyn IKeyboardNavigationLabelProvider<Rc<M::Node>>>),
+                keyboard_navigation_delegate: options.keyboard_navigation_delegate.clone(),
+                keyboard_navigation_event_filter: options.keyboard_navigation_event_filter.clone(),
+                type_navigation_enabled: options.update.type_navigation_enabled,
+                type_navigation_mode: options.update.type_navigation_mode,
+                // `dnd: options.dnd && disposableStore.add(new TreeNodeListDragAndDrop(modelProvider, options.dnd))`
+                dnd: options.dnd.clone().map(|dnd| Rc::new(TreeNodeListDragAndDrop::<M>::new(model.clone(), dnd)) as Rc<dyn IListDragAndDrop<Rc<M::Node>>>),
             };
 
             let list_renderers: Vec<Rc<dyn IListRenderer<Rc<M::Node>>>> = tree_renderers.iter().map(|r| r.clone() as Rc<dyn IListRenderer<Rc<M::Node>>>).collect();
@@ -790,6 +876,7 @@ where
         }
 
         self.view.view.update_options(&update.view_options_update());
+        self.view.update_type_navigation_options(update.type_navigation_enabled, update.type_navigation_mode);
         if let Some(find) = self.find_handle() {
             find.update_options(update);
         }

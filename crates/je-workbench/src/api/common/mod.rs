@@ -100,3 +100,5 @@ pub mod ext_host_terminal_service;
 pub mod ext_host_terminal_shell_integration;
 // Openers externos de URI: `extHostUriOpener.ts`.
 pub mod ext_host_uri_opener;
+// Busca: `extHostSearch.ts`.
+pub mod ext_host_search;

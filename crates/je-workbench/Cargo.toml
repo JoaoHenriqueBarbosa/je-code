@@ -25,6 +25,9 @@ je-editor = { path = "../je-editor" }
 je-instantiation = { path = "../je-instantiation" }
 # `Color.Format.CSS.parseHex` da validação de settings (`format: color-hex`).
 je-theme = { path = "../je-theme" }
+# A tokenização TextMate (`TextMateTokenizationFeature`, sobre o `ferriki-textmate`) que os fixtures de componentes
+# registram no `TokenizationRegistry` (`test/browser/component_fixtures/fixture_syntax_highlighting.rs`).
+je-languages = { path = "../je-languages" }
 # `RegExp` ECMAScript do `terminalLinkParsing` e do padrão de busca do usuário (`ReplacePattern`).
 zyarr = { path = "../zyarr" }
 # `Date.parse` e `toLocaleDateString` de `updateUtils` (mesmo `jiff` do je-base, fuso do sistema).

@@ -930,6 +930,42 @@ fn top_step<T: Clone>(array: &[T], compare: &impl Fn(&T, &T) -> CompareResult, r
     }
 }
 
+/// `topAsync`: como [`top`], em lotes de `batch` elementos, cedendo ao laço de eventos entre um lote e outro (um
+/// `setTimeout` de 0 ms, que não deixa a E/S passar fome) e rejeitando com [`Error::cancellation`](crate::errors::Error::cancellation)
+/// se o `token` cancelar entre dois lotes. O array é recebido por valor porque a promessa o usa depois que a chamada volta.
+pub fn top_async<T: Clone + 'static>(
+    array: Vec<T>,
+    compare: impl Fn(&T, &T) -> CompareResult + 'static,
+    n: usize,
+    batch: usize,
+    token: Option<crate::cancellation::CancellationToken>,
+) -> crate::promise::Promise<Vec<T>> {
+    if n == 0 {
+        return crate::promise::Promise::resolved(Vec::new());
+    }
+
+    crate::async_::async_fn(async move {
+        let o = array.len();
+        let mut result = array[..n.min(o)].to_vec();
+        sort_by_compare(&mut result, &compare);
+        let mut i = n;
+        let mut m = (n + batch).min(o);
+        while i < o {
+            if i > n {
+                // any other delay function would starve I/O
+                crate::async_::timeout(0).await?;
+            }
+            if token.as_ref().is_some_and(|token| token.is_cancellation_requested()) {
+                return Err(crate::errors::Error::cancellation());
+            }
+            top_step(&array, &compare, &mut result, i, m);
+            i = m;
+            m = (m + batch).min(o);
+        }
+        Ok(result)
+    })
+}
+
 /// Novo array sem os valores falsos (`None`, e `0`, `""`, `false`, `NaN` quando `T` os tem).
 pub fn coalesce<T: Truthy + Clone>(array: &[Option<T>]) -> Vec<T> {
     array.iter().filter(|e| e.is_truthy()).filter_map(Clone::clone).collect()

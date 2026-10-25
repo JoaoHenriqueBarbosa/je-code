@@ -17,6 +17,8 @@ je-storage = { path = "../je-storage" }
 je-instantiation = { path = "../je-instantiation" }
 # Os ids dos codicons (`getAllCodicons`) do esquema `terminalIconSchema` da configuração do terminal.
 je-codicons = { path = "../je-codicons" }
+# A `Color` (`Color.Format.CSS.parse`) que o `dimColor` dos controles de janela (`windowImpl.ts`) usa; depende só de je-base e je-render.
+je-theme = { path = "../je-theme" }
 # O motor de `RegExp` ECMAScript (as regex do `when`, do scanner).
 zyarr = { path = "../zyarr" }
 
@@ -46,6 +48,27 @@ notify = { version = "8", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
+# O `RequestService` do lado Node (`request/node_request_service.rs`): o mesmo cliente do marketplace em `je-extensions`
+# (`ureq` com `rustls` e o provedor RustCrypto, em Rust puro: o provedor padrão do `rustls` compila C e o
+# `scripts/pure-rust-check.sh` o barra) e o `flate2` com `zlib-rs` (o `createGunzip` do original). Fora do `wasm32`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+rustls-rustcrypto = "0.0.2-alpha"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+# O pty cru (`je_terminal::pty::RawPty`, o papel do `node-pty`) sob o `TerminalProcess` (`terminal/terminal_process.rs`). O
+# Alacritty é Rust puro; no wasm não há processo local.
+je-terminal = { path = "../je-terminal" }
+
+# O `TunnelProxy` (`tunnel/tunnel_proxy.rs`): o servidor HTTPS em `127.0.0.1` é o `rustls` (com o mesmo provedor RustCrypto,
+# Rust puro) sobre `std::net`; o certificado autoassinado ECDSA P-256 (`tunnel/self_signed_cert.rs`) é assinado com o
+# `p256` e identificado por SHA-256; as credenciais aleatórias vêm do `rand_core` (`OsRng`). Todos de Rust puro, sem C.
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand_core = { version = "0.6", features = ["getrandom"] }
+
 # Só as constantes (`O_NONBLOCK`) da abertura de leitura do `DiskFileSystemProvider`: nenhuma chamada da libc,
 # então nada de `unsafe` e nada de C compilado.
 [target.'cfg(unix)'.dependencies]
@@ -53,3 +76,6 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# O servidor de recursos remotos do teste do `ProtocolMainService` usa os cabeçalhos de resposta do `je-server`
+# (`getRemoteResourceResponseHeaders`); o ciclo é só de teste, que o cargo permite.
+je-server = { path = "../je-server" }

@@ -63,12 +63,14 @@ use crate::editor_browser::{
 use crate::inline_completions::provide_inline_completions::InlineCompletionEditorType;
 use crate::inline_decorations::{InlineDecoration, InlineDecorationType};
 use crate::language_service::ILanguageService;
+use crate::languages::ILanguageIdCodec;
 use crate::line_decorations::LineDecoration;
 use crate::line_range::LineRange;
 use crate::line_tokens::{IViewLineTokens, LineTokens, TokenArray};
 use crate::observable_code_editor::{ObservableCodeEditor, ValueOrObservable};
 use crate::range::Range;
 use crate::services::theme_service::IThemeService;
+use crate::text_model::TextModel;
 use crate::view_line_renderer::{RenderLineInput, RenderLineInputOptions, render_view_line2};
 use crate::view_model_types::ViewLineRenderingData;
 
@@ -83,10 +85,10 @@ use super::NonOverflowOverlayWidget;
 /// `scrollbarShadow` (`scrollbar.shadow`).
 const SCROLLBAR_SHADOW: &str = "scrollbar.shadow";
 
-const DISABLE_MONOSPACE_OPTIMIZATIONS: Opt<bool> = Opt::new(EditorOption::DisableMonospaceOptimizations);
-const STOP_RENDERING_LINE_AFTER: Opt<f64> = Opt::new(EditorOption::StopRenderingLineAfter);
-const RENDER_WHITESPACE: Opt<String> = Opt::new(EditorOption::RenderWhitespace);
-const RENDER_CONTROL_CHARACTERS: Opt<bool> = Opt::new(EditorOption::RenderControlCharacters);
+pub(crate) const DISABLE_MONOSPACE_OPTIMIZATIONS: Opt<bool> = Opt::new(EditorOption::DisableMonospaceOptimizations);
+pub(crate) const STOP_RENDERING_LINE_AFTER: Opt<f64> = Opt::new(EditorOption::StopRenderingLineAfter);
+pub(crate) const RENDER_WHITESPACE: Opt<String> = Opt::new(EditorOption::RenderWhitespace);
+pub(crate) const RENDER_CONTROL_CHARACTERS: Opt<bool> = Opt::new(EditorOption::RenderControlCharacters);
 
 /// `Replacement`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -224,7 +226,7 @@ struct PreviousViewZone {
 
 /// `renderOriginalLine` de `renderLines.ts` sem o DOM: o `maxCharWidth` da linha, o deslocamento horizontal do último
 /// caractere da `RenderLineInput` montada com as opções do editor, em unidades de `typicalHalfwidthCharacterWidth`.
-fn rendered_line_chars(editor: &Rc<CodeEditorWidget>, tokens: &LineTokens, decorations: &[InlineDecoration]) -> f64 {
+pub(super) fn rendered_line_chars(editor: &Rc<CodeEditorWidget>, tokens: &LineTokens, decorations: &[InlineDecoration]) -> f64 {
     let font_info = editor.get_option(FONT_INFO);
     let line_content = tokens.get_line_content_ref().clone();
     let is_basic_ascii = ViewLineRenderingData::is_basic_ascii(line_content.units(), true);
@@ -259,6 +261,21 @@ fn rendered_line_chars(editor: &Rc<CodeEditorWidget>, tokens: &LineTokens, decor
         use_two_cell_fullwidth_characters: *editor.get_option(EFFECTIVE_FULLWIDTH_CHARACTER_WIDTH) == FullwidthCharacterWidth::TwoCells,
     }));
     f64::from(output.character_mapping.get_horizontal_offset(output.character_mapping.length as i32))
+}
+
+/// `textModel.tokenization.tokenizeLinesAt(lineNumber, [line])?.[0]` convertido em `LineTokens` da linha (vazios quando o
+/// modelo não tokeniza). A `InlineEditsInsertionView` mede as linhas do mesmo modo.
+pub(super) fn tokenize_line_for_render(
+    text_model: &TextModel,
+    line_number: i32,
+    line: &JsString,
+    language_id_codec: &Rc<dyn ILanguageIdCodec>,
+) -> LineTokens {
+    let tokenized = text_model.tokenization().tokenize_lines_at(line_number, std::slice::from_ref(line)).and_then(|lines| lines.into_iter().next());
+    match tokenized {
+        Some(t) => TokenArray::from_line_tokens(&t).to_line_tokens(line, Rc::clone(language_id_codec)),
+        None => LineTokens::create_empty(line.clone(), Rc::clone(language_id_codec)),
+    }
 }
 
 /// `rangesToBubbleRanges(ranges)`: as faixas de várias linhas viram uma faixa por linha.
@@ -303,11 +320,7 @@ fn compute_modified_line_elements(
         let trim = usize::try_from(max_prefix_trim).unwrap_or(0).min(original_mod_line.len());
         let mod_line = original_mod_line.slice(trim, original_mod_line.len());
 
-        let tokenized = text_model.tokenization().tokenize_lines_at(line_number, std::slice::from_ref(&mod_line)).and_then(|lines| lines.into_iter().next());
-        let tokens = match tokenized {
-            Some(t) => TokenArray::from_line_tokens(&t).to_line_tokens(&mod_line, Rc::clone(&language_id_codec)),
-            None => LineTokens::create_empty(mod_line.clone(), Rc::clone(&language_id_codec)),
-        };
+        let tokens = tokenize_line_for_render(&text_model, line_number, &mod_line, &language_id_codec);
 
         let mut decorations: Vec<InlineDecoration> = Vec::new();
         for modified in modified_bubbles.iter().filter(|b| b.start_line_number == line_number) {

@@ -14,7 +14,18 @@ const TEXT: Rgba = Rgba::opaque(0xcc, 0xcc, 0xcc);
 const HIGHLIGHT: Rgba = Rgba::opaque(0x2a, 0xaa, 0xff);
 
 fn styles() -> HighlightedLabelStyles {
-    HighlightedLabelStyles { foreground: TEXT, highlight_foreground: Some(HIGHLIGHT), highlight_weight: 700, font_size: 13.0, font_weight: 400, line_height: Some(22.0), italic: false, strikethrough: false }
+    HighlightedLabelStyles {
+        foreground: TEXT,
+        highlight_foreground: Some(HIGHLIGHT),
+        highlight_background: None,
+        highlight_weight: 700,
+        font_size: 13.0,
+        font_weight: 400,
+        line_height: Some(22.0),
+        italic: false,
+        strikethrough: false,
+        inherit_foreground: false,
+    }
 }
 
 fn make(ui: &Ui, store: &support::LeakGuard) -> std::rc::Rc<HighlightedLabel> {
