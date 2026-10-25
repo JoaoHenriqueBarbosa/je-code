@@ -304,6 +304,20 @@ fn folder_to_value(folder: &RawWorkspaceFolder) -> Value {
     Value::Object(object)
 }
 
+/// O `IStoredWorkspace` como valor JSON (o que o `JSON.stringify` do original enxerga): `folders` e, quando definidos,
+/// `remoteAuthority` e `transient`.
+pub fn stored_workspace_to_value(workspace: &StoredWorkspace) -> Value {
+    let mut object = json::Object::new();
+    object.insert(JsString::from("folders"), Value::Array(workspace.folders.iter().map(folder_to_value).collect()));
+    if let Some(remote_authority) = &workspace.remote_authority {
+        object.insert(JsString::from("remoteAuthority"), Value::String(JsString::from(remote_authority.as_str())));
+    }
+    if let Some(transient) = workspace.transient {
+        object.insert(JsString::from("transient"), Value::Bool(transient));
+    }
+    Value::Object(object)
+}
+
 /// Reescreve o conteúdo de um arquivo de workspace para ser salvo em outro local.
 /// Dá erro se o arquivo não for um arquivo de workspace válido.
 pub fn rewrite_workspace_file_for_new_location(
@@ -313,7 +327,7 @@ pub fn rewrite_workspace_file_for_new_location(
     target_config_path_uri: &URI,
     ext_uri: &ExtUri,
 ) -> Result<String, Error> {
-    let stored_workspace = do_parse_stored_workspace(config_path_uri, raw_workspace_contents)?;
+    let stored_workspace = do_parse_stored_workspace(config_path_uri, raw_workspace_contents, false)?;
 
     let source_config_folder = ext_uri.dirname(config_path_uri);
     let target_config_folder = ext_uri.dirname(target_config_path_uri);
@@ -366,17 +380,20 @@ pub fn rewrite_workspace_file_for_new_location(
     Ok(String::from_utf16_lossy(&new_content))
 }
 
-fn do_parse_stored_workspace(path: &URI, contents: &str) -> Result<StoredWorkspace, Error> {
+/// `doParseStoredWorkspace`. `skip_encoding_in_message` escolhe como o URI aparece na mensagem do erro: o `common` usa
+/// `${path}` (codificado, `false`) e o `WorkspacesManagementMainService` tem a sua cópia com `path.toString(true)`.
+pub fn do_parse_stored_workspace(path: &URI, contents: &str, skip_encoding_in_message: bool) -> Result<StoredWorkspace, Error> {
     // Parse workspace file (fault tolerant parser)
     let mut errors_found = Vec::new();
     let parsed = json::parse_str(contents, &mut errors_found);
 
     // Filter out folders which do not have a path or uri set
+    let invalid = || Error::new(format!("{} looks like an invalid workspace file.", path.to_string(skip_encoding_in_message).to_string_lossy()));
     let Some(Value::Object(object)) = parsed else {
-        return Err(Error::new(format!("{} looks like an invalid workspace file.", path.to_string(false).to_string_lossy())));
+        return Err(invalid());
     };
     let Some(Value::Array(folders)) = object.get("folders") else {
-        return Err(Error::new(format!("{} looks like an invalid workspace file.", path.to_string(false).to_string_lossy())));
+        return Err(invalid());
     };
     let folders = folders.iter().filter_map(stored_workspace_folder_from_value).collect();
     let remote_authority = match object.get("remoteAuthority") {

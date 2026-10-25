@@ -1,9 +1,9 @@
 //! Porte de `src/vs/platform/workspaces`: o formato `.code-workspace`, os recentes, os identificadores
-//! estáveis e o contrato do `IWorkspacesService`.
+//! estáveis e o contrato do `IWorkspacesService`, mais o lado "main" dos workspaces (o
+//! `WorkspacesManagementMainService`, em [`workspaces_management_main_service`]).
 //!
-//! Fora do porte (e por quê): `workspacesManagementMainService`, `workspacesHistoryMainService` e
-//! `workspacesMainService` (`electron-main`: dependem de janelas, menu nativo e do `IBackupMainService` do
-//! processo principal do Electron).
+//! Fora do porte (e por quê): `workspacesHistoryMainService` e `workspacesMainService` (`electron-main`: dependem
+//! de janelas e menu nativo do processo principal do Electron).
 
 pub mod node;
 pub mod workspace_identifier;
@@ -11,3 +11,5 @@ pub mod workspace_identifier;
 pub mod workspaces;
 
 pub use workspaces::*;
+
+pub mod workspaces_management_main_service;
