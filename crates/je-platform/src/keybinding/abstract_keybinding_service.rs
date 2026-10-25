@@ -174,6 +174,12 @@ impl KeybindingServiceState {
     pub fn log(&self, message: &str) {
         self.inner.log(message);
     }
+
+    /// `(str) => this._log(str)`: o registro do serviço como função independente do `&self`, que o resolvedor guarda.
+    pub fn logger(&self) -> Rc<dyn Fn(&str)> {
+        let inner = self.inner.clone();
+        Rc::new(move |message| inner.log(message))
+    }
 }
 
 impl IDisposable for KeybindingServiceState {

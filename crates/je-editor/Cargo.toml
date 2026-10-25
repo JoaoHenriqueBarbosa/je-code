@@ -27,6 +27,12 @@ je-widgets = { path = "../je-widgets" }
 # O `new Date()` (fuso do sistema) do `TimeBasedVariableResolver` dos snippets: o mesmo `jiff` do `je-base`.
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
+[dev-dependencies]
+# O `InMemoryTextModelService` do `standaloneServices.test.ts` mora no `je-workbench` (o `ITextEditorModel` que ele devolve
+# depende do `IEditorModel` do workbench). O `je-workbench` depende do `je-editor`, e uma dependência de desenvolvimento
+# circular é aceita pelo Cargo (só os testes de integração a usam, como o `je-exthost` no `je-workbench`).
+je-workbench = { path = "../je-workbench" }
+
 [[bench]]
 name = "piece_tree"
 harness = false
