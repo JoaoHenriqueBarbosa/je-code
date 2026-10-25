@@ -56,8 +56,9 @@
 //! - O medidor de quebra de linha do DOM (`DOMLineBreaksComputerFactory`) é o monoespaçado: sem DOM, a quebra
 //!   `advanced` cai no mesmo cálculo da `simple`. `scheduleAtNextAnimationFrame` é um `setTimeout` de 16 ms e
 //!   `runWhenWindowIdle` o `runWhenGlobalIdle` do porte; os testes síncronos nunca os veem rodar.
-//! - O modelo criado pelo harness usa só o `UndoRedoService` (`instantiateTextModel` do original também injeta o
-//!   `ILanguageService` e o `ILanguageConfigurationService`): a linguagem é a `plaintext`.
+//! - O modelo criado pelo harness recebe o `UndoRedoService`, o `ILanguageService` e o
+//!   `ILanguageConfigurationService` dos mesmos serviços do editor (o `instantiateTextModel` do original), de modo que
+//!   registrar uma linguagem ou uma configuração nesses serviços chega ao modelo; a linguagem inicial é a `plaintext`.
 //! - `TestCodeEditor.dispose` descarta o widget e depois o que foi pelo `registerDisposable`, a ordem do original
 //!   (o `dispose` do `CodeEditorWidget` vem antes do `Disposable.dispose` que descarta o registrado).
 
@@ -85,7 +86,8 @@ use je_editor::model_line_projection_data::LineBreaksComputerFactory;
 use je_editor::monospace_line_breaks_computer::MonospaceLineBreaksComputerFactory;
 use je_editor::piece_tree_text_buffer_builder::PieceTreeTextBufferFactory;
 use je_editor::services::abstract_code_editor_service::ICodeEditorRegistry;
-use je_editor::text_model::{TextModel, TextSource};
+use je_editor::language_configuration_registry::ILanguageConfigurationService;
+use je_editor::text_model::{TextModel, TextModelServices, TextSource};
 use je_editor::undo_redo_service::UndoRedoService;
 use je_editor::view_model_types::IViewModel;
 use je_instantiation::{ServiceCollection, ServiceEntry, ServiceId, ServicesAccessor};
@@ -98,7 +100,7 @@ use super::test_configuration::TestConfiguration;
 use super::test_instantiation_service::TestInstantiationService;
 use super::test_language_configuration_service::TestLanguageConfigurationService;
 use super::test_notification_service::TestNotificationService;
-use super::test_text_model::instantiate_text_model;
+use super::test_text_model::{PLAINTEXT_LANGUAGE_ID, resolve_options};
 use super::test_theme_service::TestThemeService;
 
 /// `ITestCodeEditor`: o editor de teste (ver o topo do módulo).
@@ -477,12 +479,18 @@ impl TestCodeEditorFixture {
 
         // create a model if necessary
         let create_model = |source: TextSource| {
-            let model = instantiate_text_model(
-                services.undo_redo_service.clone(),
+            let language_configuration_service: Rc<dyn ILanguageConfigurationService> =
+                services.language_configuration_service.clone();
+            let model = TextModel::new_with_language_service(
                 source,
+                PLAINTEXT_LANGUAGE_ID,
+                resolve_options(&RelaxedTextModelCreationOptions::default()),
                 None,
-                RelaxedTextModelCreationOptions::default(),
-                None,
+                services.undo_redo_service.clone(),
+                Some(TextModelServices {
+                    language_service: services.get(I_LANGUAGE_SERVICE),
+                    language_configuration_service,
+                }),
             );
             let owned = model.clone();
             disposables.add(to_disposable(move || owned.dispose()));
