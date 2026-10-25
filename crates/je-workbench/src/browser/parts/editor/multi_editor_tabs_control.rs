@@ -4364,8 +4364,12 @@ impl MultiEditorTabsControlState {
         // Whether revealing or skipping, the one-time block is consumed
         self.block_reveal_active_tab = false;
 
-        if let Some(scroll_left) = reveal {
+        // `tabsScrollbar.setScrollPosition` dispara o `onScroll`, que refaz o recorte conectado na posição nova.
+        if let Some(scroll_left) = reveal
+            && scroll_left != self.container.scroll_left
+        {
             self.container.scroll_left = scroll_left;
+            self.update_connected_tab_clipping(scroll_left, measurer);
         }
 
         reveal
