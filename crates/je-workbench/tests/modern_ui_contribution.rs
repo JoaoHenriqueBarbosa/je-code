@@ -42,6 +42,10 @@
 //! actions only when ...`, e de `uses legacy color customizations ...` até `keeps panel global actions above ...`.
 //! Portados com a geometria do resolvedor (`pane_composite_action_box`, `activity_rail_geometry`, `floating_part_margins`,
 //! `activity_bar_corner_radii`): de `pane composite actions fill ...` até `keeps a gutter between horizontal panels ...`.
+//! Portados com o resolvedor das alças dos sashes (`sash_grip_content`, `sash_grip`, `vertical_sash_highlight_insets`) e
+//! dos raios das partes (`part_corner_radii` e afins, com o zoom e a moldura nativa do macOS): de `keeps collapsed primary
+//! side bar grips ...` até `keeps macOS corner radii in sync ...`. No caso dos sashes do editor modal, o cursor, o
+//! `pointer-events` e o destaque (`::before`) vêm do `Sash` nativo de `je-widgets`, que pinta o que o `sash.css` define.
 //! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
 //! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
 //! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`).
@@ -81,23 +85,26 @@ use je_theme::ColorTheme;
 use je_theme::ThemeType;
 use je_theme::color::Color;
 use je_theme::registry::ColorValue::Id;
-use je_theme::registry::{ColorTransform, ColorValue, Defaults, color_registry};
+use je_theme::registry::{ColorDefaults, ColorTransform, ColorValue, Defaults, color_registry};
+use je_theme::to_rgba8;
 use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
 use je_base::actions::{Action, ActionRef, Separator};
 use je_base::key_codes::KeyCode;
+use je_render::Rgba;
 use je_render::kurbo::Rect;
-use je_ui::{Event as UiEvent, EventKind, KeyData, Modifiers, NodeId, Role, Ui};
+use je_ui::{Cursor, Event as UiEvent, EventKind, KeyData, Modifiers, NodeId, PointerEvents, Role, Ui};
 use je_widgets::action_bar::{ActionBar, ActionsOrientation, IActionBarOptions, IActionOptions};
 use je_widgets::menu::{HorizontalDirection, IMenuDirection, IMenuOptions, Menu, VerticalDirection, unthemed_menu_styles};
 use je_widgets::menu_bar::{IMenuBarOptions, MenuBar, MenuBarMenu};
 use je_widgets::modifier_key_emitter::ModifierKeyEmitter;
 use je_widgets::paneview::{Pane, PaneContent, PaneOptions};
+use je_widgets::sash::{Sash, SashOptions, set_global_sash_hover_border};
 use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
     ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle, NotificationInsets,
-    NotificationsPlacement, PaneHost, PaneState, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
+    NotificationsPlacement, PaneHost, PaneState, SashPlacement, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
 };
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
@@ -1742,5 +1749,284 @@ fn styles_focused_and_open_compact_application_menu_states() {
         )
     };
     assert_eq!((focus_and_open, high_contrast_focus_and_open), (expected("rgb(18, 52, 86)"), expected("rgb(171, 205, 239)")));
+}
+
+/// Os `classList` de um nó da árvore nativa, para o resolvedor.
+fn node_classes(ui: &Ui, node: NodeId) -> ClassList {
+    ClassList::new(&ui.tree().classes(node).join(" "))
+}
+
+/// Os seletores de descendente de `sashHandles.css`: o sash está dentro de um `.part` ou de um `.monaco-modal-editor-block`?
+fn sash_placement(ui: &Ui, node: NodeId) -> SashPlacement {
+    let tree = ui.tree();
+    let mut placement = SashPlacement::default();
+    let mut ancestor = tree.parent(node);
+    while let Some(current) = ancestor {
+        placement.inside_part |= tree.has_class(current, "part");
+        placement.inside_modal_editor_block |= tree.has_class(current, "monaco-modal-editor-block");
+        ancestor = tree.parent(current);
+    }
+    placement
+}
+
+/// O `background-color` computado de um nó pintado: `rgb(...)` opaco ou `rgba(...)`.
+fn rgba_css(color: Option<Rgba>) -> Option<String> {
+    color.map(|Rgba { r, g, b, a }| if a == 255 { format!("rgb({r}, {g}, {b})") } else { format!("rgba({r}, {g}, {b}, {})", f64::from(a) / 255.0) })
+}
+
+#[test]
+fn keeps_collapsed_primary_side_bar_grips_only_while_the_activity_bar_can_anchor_them() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `getComputedStyle(sash, '::after').content` de cada sash, na ordem do objeto do original: o sash mínimo e o máximo da
+    // barra lateral primária, o mínimo e o máximo da barra lateral secundária e o do painel.
+    let grips = |root_class_name: &str| {
+        let style = ModernUiStyle::new(&theme, root_class_name);
+        [
+            "monaco-sash vertical minimum primary-sidebar-sash",
+            "monaco-sash vertical maximum primary-sidebar-sash",
+            "monaco-sash vertical minimum",
+            "monaco-sash vertical maximum",
+            "monaco-sash horizontal maximum",
+        ]
+        .map(|sash| style.sash_grip_content(&ClassList::new(sash), SashPlacement::default()))
+    };
+
+    assert_eq!(
+        (
+            // A trilha fica sozinha como o próprio cartão, então o sash de revelar fica num vão de verdade.
+            grips("monaco-workbench modern-ui nosidebar nopanel"),
+            // Nada sobrou naquela borda para formar um vão.
+            grips("monaco-workbench modern-ui nosidebar noactivitybar nopanel"),
+        ),
+        (["\"\"", "\"\"", "\"\"", "\"\"", "none"], ["none", "none", "\"\"", "\"\"", "none"])
+    );
+}
+
+#[test]
+fn modal_editor_sashes_hide_grips_without_changing_resize_affordances() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("sash.hoverBorder", "#123456")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+    // `--vscode-sash-hoverBorder` é a cor do destaque do sash nativo.
+    set_global_sash_hover_border(style.variable("--vscode-sash-hoverBorder").map(|color| to_rgba8(&color)));
+    let ui = Ui::new();
+    let (workbench, resizable) = {
+        let root = ui.root();
+        let mut tree = ui.tree_mut();
+        let workbench = tree.create(root, Role::Generic);
+        add_classes(&mut tree, workbench, "monaco-workbench modern-ui");
+        let modal = tree.create(workbench, Role::Generic);
+        add_classes(&mut tree, modal, "monaco-modal-editor-block");
+        let resizable = tree.create(modal, Role::Generic);
+        add_classes(&mut tree, resizable, "modal-editor-resizable");
+        (workbench, resizable)
+    };
+    let workbench_sash = guard.add_rc(Sash::new_vertical(&ui, workbench, Rc::new(|_: &Sash| 0.0), SashOptions::default()));
+    let vertical_sash = guard.add_rc(Sash::new_vertical(&ui, resizable, Rc::new(|_: &Sash| 0.0), SashOptions::default()));
+    let horizontal_sash = guard.add_rc(Sash::new_horizontal(&ui, resizable, Rc::new(|_: &Sash| 0.0), SashOptions::default()));
+    let sashes = [&vertical_sash, &horizontal_sash];
+    let grip = |sash: &Rc<Sash>| style.sash_grip_content(&node_classes(&ui, sash.element()), sash_placement(&ui, sash.element()));
+    let resting_grips = sashes.map(grip);
+
+    guard.add(vertical_sash.add_class("hover"));
+    guard.add(horizontal_sash.add_class("active"));
+    sashes.iter().for_each(|sash| sash.refresh_style());
+
+    assert_eq!(
+        (
+            grip(&workbench_sash),
+            resting_grips,
+            sashes.map(grip),
+            sashes.map(|sash| ui.tree().style(sash.element()).pointer_events),
+            sashes.map(|sash| ui.tree().style(sash.element()).cursor),
+            // O `::before` do sash nativo é o primeiro filho.
+            sashes.map(|sash| rgba_css({
+                let tree = ui.tree();
+                tree.style(tree.children(sash.element())[0]).background
+            })),
+        ),
+        (
+            "\"\"",
+            ["none", "none"],
+            ["none", "none"],
+            [PointerEvents::Auto, PointerEvents::Auto],
+            [Some(Cursor::EwResize), Some(Cursor::NsResize)],
+            [Some("rgb(18, 52, 86)".to_owned()), Some("rgb(18, 52, 86)".to_owned())],
+        )
+    );
+}
+
+#[test]
+fn compact_density_hides_sash_grips() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-compact");
+    let grip = |sash: &str| style.sash_grip_content(&ClassList::new(sash), SashPlacement::default());
+
+    assert_eq!((grip("monaco-sash vertical"), grip("monaco-sash horizontal")), ("none", "none"));
+}
+
+#[test]
+fn sash_grips_use_the_modern_sash_grip_color() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("modernSash.gripForeground", "#123456")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui");
+    let grip = |sash: &str| style.sash_grip(&ClassList::new(sash), SashPlacement::default()).expect("a alça do sash");
+    let (vertical, horizontal) = (grip("monaco-sash vertical"), grip("monaco-sash horizontal"));
+    const FOREGROUND_AT_40_PERCENT: ColorValue = ColorValue::Transform(&ColorTransform::Transparent { value: Id("foreground"), factor: 0.4 });
+
+    assert_eq!(
+        (
+            registered_defaults("modernSash.gripForeground"),
+            css_rgb(&vertical.dot_color),
+            // Os dois pontos de fora são desenhados com `box-shadow` e por isso leem `currentColor`.
+            css_rgb(&horizontal.shadow_color),
+            css_rgb(&horizontal.dot_color),
+            vertical.opacity,
+        ),
+        (
+            Some(Defaults::PerTheme(ColorDefaults {
+                dark: Some(FOREGROUND_AT_40_PERCENT),
+                light: Some(FOREGROUND_AT_40_PERCENT),
+                hc_dark: Some(Id("foreground")),
+                hc_light: Some(Id("foreground")),
+            })),
+            "rgb(18, 52, 86)".to_owned(),
+            "rgb(18, 52, 86)".to_owned(),
+            "rgb(18, 52, 86)".to_owned(),
+            1.0,
+        )
+    );
+}
+
+#[test]
+fn compact_vertical_sash_highlights_meet_both_panel_edges() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-compact floating-panels");
+    let vertical_sash = ClassList::new("monaco-sash vertical");
+    let insets = |style: &ModernUiStyle| style.vertical_sash_highlight_insets(&vertical_sash, SashPlacement::default()).expect("o destaque do sash da grade");
+    let (attached_top, attached_bottom) = insets(&style);
+
+    style.set_root_class_name("monaco-workbench modern-ui modern-ui-compact floating-panels top-window-edge");
+    let (exposed_top, _) = insets(&style);
+
+    assert_eq!(
+        ([px(attached_top), px(attached_bottom)], px(exposed_top)),
+        (["0px".to_owned(), "0px".to_owned()], "0px".to_owned())
+    );
+}
+
+#[test]
+fn default_density_top_panel_keeps_the_outer_bottom_gutter_when_maximized() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let margin_bottom = |panel: &str| px(style.floating_part_margins(&ClassList::new(panel)).expect("a margem do painel").bottom);
+
+    assert_eq!(
+        (margin_bottom("part panel top"), margin_bottom("part panel top floating-part-outer-bottom")),
+        ("0px".to_owned(), "4px".to_owned())
+    );
+}
+
+#[test]
+fn compact_auxiliary_window_editors_keep_their_outer_radius() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-compact");
+    let editor = ClassList::new("part editor");
+
+    assert_eq!(radii_css(style.part_corner_radii(&editor).expect("o raio do editor")), "8px");
+}
+
+#[test]
+fn matches_exposed_macos_window_corners_without_changing_internal_card_corners() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels mac macos-tahoe nostatusbar noactivitybar");
+    let part = |classes: &str| radii_css_list(style.part_corner_radii(&ClassList::new(classes)).expect("o raio da parte"));
+    let editor_content = |classes: &str| radii_css_list(style.editor_content_corner_radii(&ClassList::new(classes)).expect("o raio do conteúdo do editor"));
+    let webview = |classes: &str| radii_css_list(style.webview_overlay_corner_radii(&ClassList::new(classes)).expect("o raio do webview"));
+    let editor = "part editor floating-editor-outer-left floating-editor-outer-right floating-editor-outer-bottom";
+    let corners = |radii: [&str; 4]| radii.map(str::to_owned);
+
+    assert_eq!(
+        vec![
+            ("leftActivityBar", part("part activitybar left")),
+            ("rightActivityBar", part("part activitybar right")),
+            ("sidebar", part("part sidebar left floating-part-outer-left floating-part-outer-bottom")),
+            ("auxiliaryBar", part("part auxiliarybar right floating-part-outer-right floating-part-outer-bottom")),
+            ("panel", part("part panel bottom floating-part-outer-left floating-part-outer-right floating-part-outer-bottom")),
+            ("editor", part(editor)),
+            ("editorContent", editor_content(editor)),
+            ("webview", webview("webview-overlay-content webview-overlay-outer-left webview-overlay-outer-right webview-overlay-outer-bottom")),
+            ("modalWebview", webview("webview-overlay-content webview-overlay-modal")),
+            ("internalPanel", part("part panel bottom floating-part-outer-bottom")),
+            ("sidebarAbovePanel", part("part sidebar left floating-part-outer-left")),
+        ],
+        vec![
+            ("leftActivityBar", corners(["8px", "0px", "0px", "12px"])),
+            ("rightActivityBar", corners(["0px", "8px", "12px", "0px"])),
+            ("sidebar", corners(["8px", "8px", "8px", "12px"])),
+            ("auxiliaryBar", corners(["8px", "8px", "12px", "8px"])),
+            ("panel", corners(["8px", "8px", "12px", "12px"])),
+            ("editor", corners(["8px", "8px", "12px", "12px"])),
+            ("editorContent", corners(["8px", "8px", "11px", "11px"])),
+            ("webview", corners(["8px", "8px", "11px", "11px"])),
+            ("modalWebview", corners(["8px", "8px", "8px", "8px"])),
+            ("internalPanel", corners(["8px", "8px", "8px", "8px"])),
+            ("sidebarAbovePanel", corners(["8px", "8px", "8px", "8px"])),
+        ]
+    );
+}
+
+#[test]
+fn keeps_macos_corner_radii_in_sync_with_zoom_window_borders_and_chrome() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench");
+    let panel = ClassList::new("part panel bottom floating-part-outer-right floating-part-outer-bottom");
+    let mut radius = |classes: &str, zoom_factor: f64| {
+        style.set_root_class_name(&format!("monaco-workbench modern-ui floating-panels {classes}"));
+        style.set_window_zoom_factor(zoom_factor);
+        // `border-bottom-right-radius`.
+        px(style.part_corner_radii(&panel).expect("o raio do painel").2)
+    };
+
+    let actual = vec![
+        ("tahoe", radius("mac macos-tahoe nostatusbar", 1.0)),
+        ("olderMacOS", radius("mac nostatusbar", 1.0)),
+        ("windowBorder", radius("mac macos-tahoe nostatusbar border hc-black", 1.0)),
+        ("zoomedIn", radius("mac macos-tahoe nostatusbar", 2.0)),
+        ("zoomedOut", radius("mac macos-tahoe nostatusbar", 0.5)),
+        ("clamped", radius("mac macos-tahoe nostatusbar", 4.0)),
+        ("statusBar", radius("mac macos-tahoe", 1.0)),
+        ("fullscreen", radius("mac macos-tahoe nostatusbar fullscreen", 1.0)),
+        ("compact", radius("mac macos-tahoe nostatusbar modern-ui-compact", 1.0)),
+        ("web", radius("mac macos-tahoe nostatusbar web", 1.0)),
+        ("windows", radius("windows nostatusbar", 1.0)),
+        ("linux", radius("linux nostatusbar", 1.0)),
+    ];
+
+    assert_eq!(
+        actual,
+        [
+            ("tahoe", "12px"),
+            ("olderMacOS", "6px"),
+            ("windowBorder", "11px"),
+            ("zoomedIn", "4px"),
+            ("zoomedOut", "28px"),
+            ("clamped", "0px"),
+            ("statusBar", "8px"),
+            ("fullscreen", "8px"),
+            ("compact", "0px"),
+            ("web", "8px"),
+            ("windows", "8px"),
+            ("linux", "8px"),
+        ]
+        .map(|(name, value)| (name, value.to_owned()))
+    );
 }
 
