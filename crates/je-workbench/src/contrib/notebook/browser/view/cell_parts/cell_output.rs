@@ -9,8 +9,9 @@
 //!   `style.top`, `style.display`, `DOM.show` e `DOM.hide`). O `FastDomNode<HTMLElement>` de `outputContainer` e de
 //!   `outputShowMoreContainer` é um [`ElementNode`] dentro do [`CodeCellRenderTemplate`], que traz só os campos que esta parte lê
 //!   (o resto do `CodeCellRenderTemplate` de `notebookRenderingCommon.ts` é do widget).
-//! - `CellContentPart` (`cellPart.ts`) não tem porte: `CellOutputContainer` estende só o `Disposable`, e `updateInternalLayoutNow` é um
-//!   método próprio (os ganchos `renderCell`, `unrenderCell` e `updateState` não são chamados por nada nesta parte).
+//! - `CellOutputContainer` estende `CellContentPart` (`cellPart.ts`): é [`CellPart`] e [`CellContentPart`], com o estado da parte e o
+//!   `updateInternalLayoutNow(viewCell)` sobrescrito (o método próprio sem argumento, que a classe também chama, e que o container
+//!   resolve sozinho porque já guarda a célula). Os ganchos `renderCell`, `unrenderCell` e `updateState` ficam os da base.
 //! - `INotebookEditorDelegate` é o trait [`ICellOutputEditor`], só com o que esta parte chama (`hasModel`, `textModel`,
 //!   `activeKernel?.preloadProvides`, `createOutput`, `updateOutput`, `removeInset`, `hideInset`, `layoutNotebookCell`).
 //!   `IInsetRenderOutput` e `RenderOutputType` (de `notebookBrowser.ts`) são [`IInsetRenderOutput`] e [`RenderOutputType`] aqui.
@@ -55,8 +56,10 @@ use je_platform::actions::menu_ids::notebook_output_toolbar;
 use je_platform::contextkey::{ContextKeyMeta, I_CONTEXT_KEY_SERVICE, IContextKeyService, IContextKeyServiceTarget, RawContextKey};
 use je_platform::opener::opener::{I_OPENER_SERVICE, OpenResource};
 
+use crate::contrib::notebook::browser::view::cell_part::{CellContentPart, CellPart, CellPartState};
 use crate::contrib::notebook::browser::view_model::cell_output_view_model::CellOutputViewModel;
 use crate::contrib::notebook::browser::view_model::code_cell_view_model::CodeCellViewModel;
+use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
 use crate::contrib::notebook::browser::view_model::cell_output_text_helper::TEXT_BASED_MIMETYPES;
 use crate::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
 use crate::contrib::notebook::common::notebook_common::{CellUri, ICell, INotebookRendererInfo, IOrderedMimeType, NotebookCellExecutionState, NotebookCellOutputsSplice};
@@ -875,6 +878,8 @@ impl IDisposable for CellOutputElement {
 /// `CellOutputContainer`.
 pub struct CellOutputContainer {
     base: Rc<Disposable>,
+    /// O estado de `CellContentPart` de que a classe herda (`currentCell` e `cellDisposables`).
+    state: CellPartState,
     me: Weak<CellOutputContainer>,
     notebook_editor: Rc<dyn ICellOutputEditor>,
     view_cell: Rc<CodeCellViewModel>,
@@ -900,6 +905,7 @@ impl CellOutputContainer {
         let notebook_execution_state_service = instantiation_service.invoke_function(|accessor| accessor.get(I_NOTEBOOK_EXECUTION_STATE_SERVICE));
         let this = Rc::new_cyclic(|me| Self {
             base: Disposable::new(),
+            state: CellPartState::new(),
             me: me.clone(),
             notebook_editor,
             view_cell,
@@ -1270,6 +1276,7 @@ impl IDisposable for CellOutputContainer {
             entry.element.dispose();
         }
 
+        self.state.dispose();
         self.base.dispose();
     }
 
@@ -1277,3 +1284,16 @@ impl IDisposable for CellOutputContainer {
         "CellOutputContainer"
     }
 }
+
+impl CellPart for CellOutputContainer {
+    fn state(&self) -> &CellPartState {
+        &self.state
+    }
+
+    /// `override updateInternalLayoutNow(viewCell)`: a célula é a que o container já guarda.
+    fn update_internal_layout_now(&self, _element: &CellViewModel) {
+        CellOutputContainer::update_internal_layout_now(self);
+    }
+}
+
+impl CellContentPart for CellOutputContainer {}
