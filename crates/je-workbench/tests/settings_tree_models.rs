@@ -49,6 +49,7 @@ use je_base::console::WarnSpy;
 use je_base::dynamic::{Dynamic, json_stringify};
 use je_base::policy::PolicyValue;
 use je_editor::range::Range;
+use je_platform::configuration::service::IConfigurationService;
 use je_platform::configuration::registry::ConfigurationScope;
 use je_platform::configuration::test_configuration_service::{TestConfigurationService, TestConfigurationValue};
 use je_platform::network_filter::settings::AgentNetworkDomainSettingId;
