@@ -9,7 +9,8 @@
 //! - **`Set<ResourceMarkers>`.** `MarkerChangesEvent` guarda `Vec<Rc<ResourceMarkers>>` sem repetição por identidade, na
 //!   ordem de inserção (a de um `Set`).
 //! - **Elementos compartilhados.** `ResourceMarkers`, `Marker` e `RelatedInformation` são `Rc`, e `MarkerElement` é o
-//!   enum da união `ResourceMarkers | Marker | RelatedInformation`.
+//!   enum da união `ResourceMarkers | Marker | RelatedInformation`. `MarkerElement` compara e faz hash pelo ponteiro do `Rc`
+//!   (o `===` do JavaScript), porque é o elemento da árvore do painel.
 //! - **`MarkerTableItem extends Marker`.** É a composição: o campo `base` é o `Marker` que o construtor original recebe em
 //!   `super(marker.id, marker.marker, marker.relatedInformation)`.
 //! - **`relatedInformation` do `Marker`.** O campo `readonly` do original é preenchido no construtor; o `null` que o teste
@@ -53,6 +54,32 @@ pub enum MarkerElement {
     ResourceMarkers(Rc<ResourceMarkers>),
     Marker(Rc<Marker>),
     RelatedInformation(Rc<RelatedInformation>),
+}
+
+/// A identidade do `===` do JavaScript: os elementos da árvore do painel (chaves do `Map` por objeto e do modelo da
+/// árvore) são iguais quando são o mesmo objeto.
+impl PartialEq for MarkerElement {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::ResourceMarkers(a), Self::ResourceMarkers(b)) => Rc::ptr_eq(a, b),
+            (Self::Marker(a), Self::Marker(b)) => Rc::ptr_eq(a, b),
+            (Self::RelatedInformation(a), Self::RelatedInformation(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for MarkerElement {}
+
+impl std::hash::Hash for MarkerElement {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+        match self {
+            Self::ResourceMarkers(element) => Rc::as_ptr(element).hash(state),
+            Self::Marker(element) => Rc::as_ptr(element).hash(state),
+            Self::RelatedInformation(element) => Rc::as_ptr(element).hash(state),
+        }
+    }
 }
 
 /// O sinal de um número de comparação do original como [`Ordering`].
