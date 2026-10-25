@@ -27,6 +27,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use common::ensure_no_disposables_are_leaked_in_test_suite;
+use je_base::lifecycle::IDisposable;
 use je_base::JsString;
 use je_base::lifecycle::DisposableStore;
 use je_base::observable::base::{AnyObservable, IObservable, Observable};
