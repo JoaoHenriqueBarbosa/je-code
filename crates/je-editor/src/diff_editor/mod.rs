@@ -1,0 +1,57 @@
+//! Porte de `src/vs/editor/browser/widget/diffEditor/`: o editor de diff do Monaco. Esta é a fatia 1: os dois editores internos
+//! (`components/diffEditorEditors.ts`), o sash (`components/diffEditorSash.ts`), as decorações
+//! (`components/diffEditorDecorations.ts`), o editor delegante (`delegatingEditorImpl.ts`) e o editor de diff embutido
+//! (`embeddedDiffEditorWidget.ts`), mais o `registrations.contribution.ts` de que as decorações dependem.
+//!
+//! Fatias seguintes (ainda não portadas):
+//! - **Fatia 2:** `diffEditorWidget.ts` (o `DiffEditorWidget`, que implementa [`delegating_editor_impl::DelegatingEditor`] e
+//!   [`embedded_diff_editor_widget::EmbeddedDiffEditorBase`], e fica com a criação dos editores internos, do
+//!   `DiffEditorEditors` e do `DiffEditorSash`).
+//! - **Fatia 3:** as features (`hideUnchangedRegions`, `movedBlocksLines`, `gutter`, `revertButtons`, `overviewRuler`) e o
+//!   `accessibleDiffViewer`.
+//!
+//! Onde ficam os arquivos `diff_editor_*` que já existiam em `crates/je-editor/src/`: `diff_editor_options`, `diff_editor_utils`,
+//! `diff_editor_view_model`, `diff_editor_view_zones` e `diff_provider_factory_service` continuam onde estão, porque outros
+//! módulos e crates os referenciam por esses caminhos; mover é uma troca de `use` em todos eles, e fica para quando a fatia 2
+//! fechar o widget. O `diff_editor_utils` ganhou aqui o `applyObservableDecorations`.
+//!
+//! Divergências desta fatia (detalhes em cada módulo):
+//! - **DOM vira dado.** Os `HTMLElement` que o original passa (contêineres dos editores, nó do sash) não existem como tipo: o
+//!   contêiner de cada editor é da fábrica [`components::diff_editor_editors::CreateInnerEditor`], que o liga ao editor novo, e o
+//!   nó do sash é o `NodeId` da árvore de widgets de `je-ui`.
+//! - **Constantes das features.** [`ENTIRE_DIFF_OVERVIEW_WIDTH`] (`OverviewRulerFeature.ENTIRE_DIFF_OVERVIEW_WIDTH`) e
+//!   [`MOVED_CODE_BLOCK_PADDING`] (`MovedBlocksLinesFeature.movedCodeBlockPadding`) moram aqui até a fatia 3, que as reexporta
+//!   nas features.
+//! - **`IDiffCodeEditorWidgetOptions`** (de `diffEditorWidget.ts`) é [`DiffCodeEditorWidgetOptions`], aqui porque os componentes
+//!   o recebem; a fatia 2 o reexporta do módulo do widget.
+
+use std::rc::Rc;
+
+use crate::code_editor_widget::CodeEditorWidgetOptions;
+use crate::multi_diff_editor_options::DiffEditorVariant;
+
+pub mod components;
+pub mod delegating_editor_impl;
+pub mod embedded_diff_editor_widget;
+pub mod registrations_contribution;
+
+/// `OverviewRulerFeature.ENTIRE_DIFF_OVERVIEW_WIDTH` (`ONE_OVERVIEW_WIDTH * 2`, com `ONE_OVERVIEW_WIDTH = 15`).
+pub const ENTIRE_DIFF_OVERVIEW_WIDTH: f64 = 15.0 * 2.0;
+
+/// `MovedBlocksLinesFeature.movedCodeBlockPadding`.
+pub const MOVED_CODE_BLOCK_PADDING: i32 = 4;
+
+/// O tipo de `runWithOriginalEditorScrollAnchor` e `runWithModifiedEditorScrollAnchor`: `(anchorLineNumber, update) => void`,
+/// em que `update` roda uma vez, segurando a âncora de rolagem.
+pub type ScrollAnchorRunner = Rc<dyn Fn(i32, Box<dyn FnOnce()>)>;
+
+/// `IDiffCodeEditorWidgetOptions`.
+#[derive(Default)]
+pub struct DiffCodeEditorWidgetOptions {
+    /// Controla a apresentação dos controles das regiões sem mudanças.
+    pub variant: Option<DiffEditorVariant>,
+    pub original_editor: Option<CodeEditorWidgetOptions>,
+    pub modified_editor: Option<CodeEditorWidgetOptions>,
+    pub run_with_original_editor_scroll_anchor: Option<ScrollAnchorRunner>,
+    pub run_with_modified_editor_scroll_anchor: Option<ScrollAnchorRunner>,
+}
