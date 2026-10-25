@@ -2,6 +2,7 @@
 //! `UserDataProfilesMainService` que o serviço lê, como o `createStorageService` de `storageMainService.test.ts` (que
 //! os cria um a um). Os serviços entram no `disposables` do chamador.
 
+use je_instantiation::Injectable;
 use std::rc::Rc;
 
 use je_base::lifecycle::DisposableStore;
