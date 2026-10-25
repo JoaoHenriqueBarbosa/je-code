@@ -35,6 +35,7 @@ pub mod suggest_test_utils;
 pub mod test_clipboard_service;
 pub mod test_color_theme_service;
 pub mod test_text_resource_properties_service;
+pub mod mock_environment_service;
 
 use std::rc::Rc;
 

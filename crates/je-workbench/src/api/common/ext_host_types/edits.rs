@@ -134,6 +134,16 @@ impl SnippetString {
         SnippetString { tabstop: 1.0, value: value.unwrap_or("").to_owned() }
     }
 
+    /// Um snippet que continua de onde parou: o `value` e o contador `_tabstop` de um objeto que a extensão já vinha montando.
+    pub fn resume(value: &str, tabstop: f64) -> SnippetString {
+        SnippetString { tabstop, value: value.to_owned() }
+    }
+
+    /// O contador `_tabstop`: o número que o próximo `appendTabstop()` sem argumento usa.
+    pub fn tabstop(&self) -> f64 {
+        self.tabstop
+    }
+
     /// O `number = this._tabstop++` do parâmetro padrão: só consome o contador quando não há número.
     fn take_tabstop(&mut self, number: Option<f64>) -> f64 {
         number.unwrap_or_else(|| {

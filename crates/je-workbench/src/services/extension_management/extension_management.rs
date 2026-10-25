@@ -36,7 +36,7 @@ use std::rc::Rc;
 use je_base::event::Event;
 use je_base::promise::Promise;
 use je_base::uri::URI;
-use je_extensions::management::{ExtensionsControlManifest, GalleryExtension, InstallOperation, LocalExtension};
+use je_extensions::management::{ExtensionManagementError, ExtensionsControlManifest, GalleryExtension, InstallOperation, LocalExtension};
 use je_extensions::manifest::{ExtensionIdentifierInfo, ExtensionManifest};
 use je_instantiation::service_id;
 
@@ -97,6 +97,8 @@ pub struct InstallExtensionResult {
     pub local: Option<ExtensionRef>,
     /// `workspaceScoped`.
     pub workspace_scoped: Option<bool>,
+    /// `error`: por que a instalação falhou, se falhou.
+    pub error: Option<ExtensionManagementError>,
 }
 
 /// `DidUninstallExtensionEvent` (com o `server` do `DidUninstallExtensionOnServerEvent`).

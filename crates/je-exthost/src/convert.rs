@@ -10,6 +10,7 @@ use std::rc::Rc;
 use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::errors::Error;
 use je_base::uri::URI;
+use je_workbench::api::common::ext_host_file_system_consumer::FILE_SYSTEM_ERROR_SUFFIX;
 use je_workbench::api::common::ext_host_values::ApiValue;
 use zjsc::api::embed_node::{JsData, JsHandle, NodeRunner, CLASS_KEY};
 
@@ -138,14 +139,46 @@ pub fn error_to_js(error: &Error) -> JsData {
     ])
 }
 
-/// O motivo de uma rejeição JavaScript como [`Error`]: a `message` de um erro, ou o texto do valor.
+/// O motivo de uma rejeição JavaScript como [`Error`]: a `message` de um erro, ou o texto do valor. Um `FileSystemError` (o `name`
+/// termina em ` (FileSystemError)`) mantém o `name`, que carrega o código que o `ExtHostConsumerFileSystem` reconhece.
 pub fn js_to_error(reason: &JsData) -> Error {
     let message = match (field(reason, "message"), reason) {
         (Some(JsData::Str(message)), _) => message.clone(),
         (_, JsData::Str(text)) => text.clone(),
         _ => "rejeição sem mensagem".to_owned(),
     };
-    Error::new(message)
+    match field(reason, "name") {
+        Some(JsData::Str(name)) if name.ends_with(FILE_SYSTEM_ERROR_SUFFIX) => Error::named(name.clone(), message),
+        _ => Error::new(message),
+    }
+}
+
+/// O byte de um número inteiro entre 0 e 255.
+fn byte_of(item: &JsData) -> Result<u8, String> {
+    match item {
+        JsData::Num(number) if number.fract() == 0.0 && (0.0..256.0).contains(number) => Ok(*number as u8),
+        _ => Err("os bytes precisam ser números inteiros entre 0 e 255".to_owned()),
+    }
+}
+
+/// Os bytes de um `Uint8Array` que a extensão passou. O `Uint8Array` não atravessa o motor: os bytes chegam como uma lista de números,
+/// um texto (os bytes UTF-8) ou um `Uint8Array` copiado como objeto de índices.
+pub fn bytes_of(value: Option<&JsData>) -> Result<Vec<u8>, String> {
+    match value {
+        Some(JsData::Str(text)) => Ok(text.clone().into_bytes()),
+        Some(JsData::Array(items)) => items.iter().map(byte_of).collect(),
+        Some(JsData::Object(fields)) => {
+            let mut indexed: Vec<(usize, &JsData)> = fields.iter().filter_map(|(key, item)| key.parse::<usize>().ok().map(|index| (index, item))).collect();
+            indexed.sort_by_key(|(index, _)| *index);
+            indexed.into_iter().map(|(_, item)| byte_of(item)).collect()
+        }
+        _ => Err("os bytes precisam ser uma lista de números".to_owned()),
+    }
+}
+
+/// Os bytes como a lista de números que o motor entrega no lugar de um `Uint8Array`.
+pub fn bytes_to_js(bytes: &[u8]) -> JsData {
+    JsData::Array(bytes.iter().map(|byte| JsData::Num(f64::from(*byte))).collect())
 }
 
 /// Uma função nativa do Rust como objeto de [`Rc`] pronto para entrar numa tabela de API.

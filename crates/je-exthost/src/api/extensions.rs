@@ -2,8 +2,10 @@
 //! `extensionKind`, `isFromDifferentExtensionHost`, `isActive`, `exports`, `activate()`), sobre os registros e o ativador do
 //! `ExtHostExtensionService` (`extHost.api.impl.ts`: o literal `extensions` e a classe `Extension`).
 //!
-//! Falta: `allAcrossExtensionHosts` e `getExtension(id, true)` (propostas `extensionsAny`, que o host não habilita) e `onDidChange` (o
-//! `ExtensionDescriptionRegistry` do porte ainda não expõe o evento).
+//! Falta: `allAcrossExtensionHosts` e `getExtension(id, true)` (propostas `extensionsAny`, que o host não habilita).
+//!
+//! `onDidChange` é o evento do `ExtensionDescriptionRegistry` das extensões do host (`extensionInfo.mine.onDidChange` do original), lido
+//! no instante do acesso: ler `extensions.onDidChange` antes de o host ligar o serviço lança.
 //!
 //! Divergências:
 //! - O `vscode` é um só para todas as extensões, então a extensão de origem de `activate()` (o `extensionId` do `reason`) é sempre
@@ -32,6 +34,8 @@ use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS
 
 use crate::api::accessor_namespace;
 use crate::api::commands::promise_to_js;
+use crate::api::disposable::DisposableTable;
+use crate::api::events::event_function;
 use crate::api::HOST_EXTENSION;
 use crate::convert::{dynamic_to_js, uri_to_js};
 use crate::ext_host_extension_service::ExtHostExtensionService;
@@ -70,7 +74,7 @@ impl ExtensionServiceSlot {
         self.service.borrow().as_ref().map_or_else(Vec::new, |service| service.my_registry().get_all_extension_descriptions())
     }
 
-    fn service(&self) -> Result<Rc<ExtHostExtensionService>, String> {
+    pub(crate) fn service(&self) -> Result<Rc<ExtHostExtensionService>, String> {
         self.service.borrow().clone().ok_or_else(|| "vscode.extensions: o serviço de extensões do host ainda não foi iniciado".to_owned())
     }
 }
@@ -87,7 +91,7 @@ pub(crate) fn json_to_js(value: &serde_json::Value) -> JsData {
     }
 }
 
-fn instance(id: &str) -> JsData {
+pub(crate) fn instance(id: &str) -> JsData {
     JsData::Object(vec![(CLASS_KEY.to_owned(), JsData::Str("Extension".to_owned())), ("_id".to_owned(), JsData::Str(id.to_owned()))])
 }
 
@@ -196,9 +200,11 @@ pub fn define_class(runner: &NodeRunner, slot: &Rc<ExtensionServiceSlot>) {
 }
 
 /// O namespace `extensions`.
-pub fn namespace(runner: &NodeRunner, slot: &Rc<ExtensionServiceSlot>) -> JsData {
+pub fn namespace(runner: &NodeRunner, slot: &Rc<ExtensionServiceSlot>, table: &Rc<DisposableTable>) -> JsData {
     let get_slot = slot.clone();
     let all_slot = slot.clone();
+    let change_slot = slot.clone();
+    let (change_runner, change_table) = (runner.clone(), table.clone());
     let methods: Vec<(String, u32, MethodCallback)> = vec![(
         "getExtension".to_owned(),
         2,
@@ -208,12 +214,21 @@ pub fn namespace(runner: &NodeRunner, slot: &Rc<ExtensionServiceSlot>) -> JsData
             Ok(service.my_registry().get_extension_description(&id).map_or(JsData::Undefined, |description| instance(&description.identifier.value)))
         }),
     )];
-    let getters: Vec<(String, MethodCallback)> = vec![(
-        "all".to_owned(),
-        Rc::new(move |_, _| {
-            let service = all_slot.service()?;
-            Ok(JsData::Array(service.my_registry().get_all_extension_descriptions().iter().map(|description| instance(&description.identifier.value)).collect()))
-        }),
-    )];
+    let getters: Vec<(String, MethodCallback)> = vec![
+        (
+            "all".to_owned(),
+            Rc::new(move |_, _| {
+                let service = all_slot.service()?;
+                Ok(JsData::Array(service.my_registry().get_all_extension_descriptions().iter().map(|description| instance(&description.identifier.value)).collect()))
+            }),
+        ),
+        (
+            "onDidChange".to_owned(),
+            Rc::new(move |_, _| {
+                let service = change_slot.service()?;
+                Ok(event_function(&change_runner, &change_table, "onDidChange", service.my_registry().on_did_change(), |()| JsData::Undefined))
+            }),
+        ),
+    ];
     accessor_namespace(runner, "extensions", methods, getters)
 }

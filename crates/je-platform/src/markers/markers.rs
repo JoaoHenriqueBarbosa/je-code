@@ -198,9 +198,42 @@ pub struct ResourceMarker {
     pub marker: MarkerData,
 }
 
+/// A identidade de instância de um `IMarker`. O original compara marcadores por referência (o `MarkerDecorations#update`
+/// confia em que o `MarkerService` recria cada marcador a cada `changeOne`/`changeAll` e mantém os dos outros donos); aqui cada
+/// marcador criado pelo serviço recebe um número novo, e as cópias de um mesmo marcador o compartilham. Não faz parte do valor:
+/// dois marcadores com os mesmos campos são iguais em `==` e no `Debug`, seja qual for a instância.
+#[derive(Clone, Copy, Default)]
+pub struct MarkerInstance(u64);
+
+impl MarkerInstance {
+    /// Uma instância que nenhum outro marcador tem.
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub fn id(self) -> u64 {
+        self.0
+    }
+}
+
+impl PartialEq for MarkerInstance {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for MarkerInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MarkerInstance")
+    }
+}
+
 /// `IMarker`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
+    /// A identidade do objeto no original (ver `MarkerInstance`).
+    pub instance: MarkerInstance,
     pub owner: String,
     pub resource: URI,
     pub severity: MarkerSeverity,

@@ -216,7 +216,13 @@ impl ExtHostEditorTab {
     }
 
     pub fn group(&self) -> TabGroup {
-        self.parent_group.upgrade().expect("o grupo da aba foi descartado")
+        self.try_group().expect("o grupo da aba foi descartado")
+    }
+
+    /// `group`, sem lançar: `None` quando o grupo já saiu do modelo (o original mantém o objeto vivo pela referência da aba;
+    /// aqui a aba guarda o grupo fraco para não formar ciclo).
+    pub fn try_group(&self) -> Option<TabGroup> {
+        self.parent_group.upgrade()
     }
 
     fn tab_id(&self) -> String {
@@ -439,10 +445,15 @@ impl TabGroups {
 
     /// `activeTabGroup`: lança quando o modelo ainda não tem grupo ativo.
     pub fn active_tab_group(&self) -> TabGroup {
+        assert_returns_defined(self.try_active_tab_group())
+    }
+
+    /// O grupo ativo, sem o `assertReturnsDefined`: `None` quando o modelo ainda não tem grupo ativo.
+    pub fn try_active_tab_group(&self) -> Option<TabGroup> {
         let host = self.host();
         let active_tab_group_id = host.active_group_id.get();
-        let active = host.ext_host_tab_groups.borrow().iter().find(|candidate| Some(candidate.group_id()) == active_tab_group_id).cloned();
-        assert_returns_defined(active)
+        let groups = host.ext_host_tab_groups.borrow();
+        groups.iter().find(|candidate| Some(candidate.group_id()) == active_tab_group_id).cloned()
     }
 
     /// `close(tabOrTabGroup, preserveFocus)`.

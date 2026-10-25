@@ -1456,6 +1456,7 @@ fn test_extension_is_enabled_when_its_dependency_becomes_valid() {
             profile_location: Some(valid_location),
             local: Some(valid_extension.clone()),
             workspace_scoped: None,
+            error: None,
         }]);
 
         assert_eq!(t.get_enablement_state(&extension), E::EnabledGlobally);

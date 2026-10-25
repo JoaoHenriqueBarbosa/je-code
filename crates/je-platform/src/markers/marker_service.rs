@@ -15,7 +15,7 @@ use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::uri::URI;
 
-use super::markers::{IMarkerService, Marker, MarkerChangeOptions, MarkerData, MarkerReadOptions, MarkerSeverity, MarkerStatistics, ResourceMarker};
+use super::markers::{IMarkerService, Marker, MarkerChangeOptions, MarkerInstance, MarkerData, MarkerReadOptions, MarkerSeverity, MarkerStatistics, ResourceMarker};
 
 /// `unsupportedSchemas`.
 pub fn unsupported_schemas() -> HashSet<&'static str> {
@@ -194,6 +194,7 @@ impl MarkerService {
         let end_line_number = if data.end_line_number >= start_line_number { data.end_line_number } else { start_line_number };
         let end_column = if data.end_column > 0 { data.end_column } else { start_column };
         Some(Marker {
+            instance: MarkerInstance::new(),
             resource: resource.clone(),
             owner: owner.to_string(),
             code: data.code.clone(),
@@ -219,6 +220,7 @@ impl MarkerService {
             localize("filtered.network", "Problems are paused because: \"{0}\" and {1} more", &[&reasons[0], &(reasons.len() - 1).to_string()])
         };
         Marker {
+            instance: MarkerInstance::new(),
             owner: "markersFilter".to_string(),
             resource: resource.clone(),
             severity: MarkerSeverity::INFO,

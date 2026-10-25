@@ -573,6 +573,10 @@ pub struct PickerProviderAdapter<O: AsQuickAccessRunOptions + 'static> {
 }
 
 impl<O: AsQuickAccessRunOptions + 'static> IQuickAccessProvider<O> for PickerProviderAdapter<O> {
+    fn as_disposable(&self) -> Option<&dyn IDisposable> {
+        Some(&self.provider)
+    }
+
     fn provide(&self, picker: Rc<dyn IQuickPick>, token: CancellationToken, options: Option<Rc<O>>) -> DisposableRef {
         self.provider.provide(self.source.clone(), picker, token, options)
     }

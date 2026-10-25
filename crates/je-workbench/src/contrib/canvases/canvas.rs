@@ -57,7 +57,7 @@ pub enum CanvasExtensionSource {
 }
 
 /// One canvas type registered for a live chat.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ICanvasDefinition {
     pub canvas_id: String,
     pub extension_id: String,

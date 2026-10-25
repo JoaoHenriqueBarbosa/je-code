@@ -186,6 +186,40 @@ exports.activate = (context) => {
     }
     return messages.join('|');
   });
+  command('t.decorations', () => {
+    const editor = vscode.window.activeTextEditor;
+    const type = vscode.window.createTextEditorDecorationType({
+      backgroundColor: new vscode.ThemeColor('editor.findMatchBackground'),
+      isWholeLine: true,
+      overviewRulerLane: 4,
+      before: { contentText: '>', color: '#ff0000' },
+      light: { borderColor: '#000000' },
+    });
+    editor.setDecorations(type, [new vscode.Range(0, 0, 0, 5)]);
+    const key = type.key;
+    const withRanges = key.startsWith('TextEditorDecorationType') + '|' + typeof type.dispose;
+    editor.setDecorations(type, [{ range: new vscode.Range(1, 0, 1, 3), hoverMessage: 'dica', renderOptions: { after: { contentText: '!' } } }]);
+    editor.setDecorations(type, []);
+    type.dispose();
+    return withRanges;
+  });
+  command('t.insertSnippet', async () => {
+    const editor = vscode.window.activeTextEditor;
+    // `SnippetString#append*` ainda não existe na ponte (o motor copia o receptor); o texto pronto equivale a
+    // `new SnippetString('x').appendTabstop(1).appendText('$y')`.
+    const snippet = new vscode.SnippetString('x$1\\$y');
+    const results = [];
+    results.push(String(await editor.insertSnippet(snippet)));
+    results.push(String(await editor.insertSnippet(snippet, new vscode.Position(0, 0))));
+    results.push(String(await editor.insertSnippet(snippet, [new vscode.Range(0, 0, 0, 1), new vscode.Position(1, 0)], { undoStopBefore: false })));
+    try {
+      await editor.insertSnippet('texto');
+      results.push('sem erro');
+    } catch (error) {
+      results.push(error.message);
+    }
+    return results.join('|');
+  });
 };
 "#;
 
@@ -464,6 +498,42 @@ fn open_text_document_returns_a_known_document_by_uri_and_by_path() {
 
         assert_eq!(run(workbench, "t.open"), Dynamic::string("plaintext|linha um\nlinha dois|/proj/a.txt|1"));
 
+        model.dispose();
+    });
+}
+
+#[test]
+fn decoration_types_and_set_decorations_reach_the_main_thread_editor() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, observed| {
+        let model = create_document(&observed, "a.txt", "linha um\nlinha dois");
+        let editor = create_focused_editor(&observed, &model);
+        // o editor já tem decorações próprias; as do tipo da extensão são as que passam desta contagem
+        let own = model.get_all_decorations(0, false, false).len();
+
+        assert_eq!(run(workbench, "t.decorations"), Dynamic::string("true|function"), "o tipo recebe uma chave gerada e expõe dispose");
+        // a última chamada limpou a lista: nada do tipo fica no modelo
+        let leftover = model.get_all_decorations(0, false, false).len();
+        assert_eq!(leftover, own, "setDecorations com lista vazia remove as decorações do tipo");
+
+        editor.dispose();
+        model.dispose();
+    });
+}
+
+#[test]
+fn insert_snippet_validates_its_arguments_and_asks_the_main_thread_editor() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, observed| {
+        let model = create_document(&observed, "a.txt", "linha um\nlinha dois");
+        let editor = create_focused_editor(&observed, &model);
+
+        // o editor de teste não tem o `SnippetController2` (`contributions: []`), então o main thread responde `false` a cada pedido
+        assert_eq!(
+            run(workbench, "t.insertSnippet"),
+            Dynamic::string("false|false|false|insertSnippet: esperava um SnippetString"),
+            "location ausente, Position e lista de Range e Position chegam ao main thread, e a string pura é recusada na ponte"
+        );
+
+        editor.dispose();
         model.dispose();
     });
 }

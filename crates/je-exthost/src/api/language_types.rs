@@ -7,10 +7,11 @@
 //! o mesmo, como no original (que só usa `instanceof` onde há ambiguidade).
 //!
 //! Divergências:
-//! - O motor entrega o objeto comum por cópia, então um método de classe nunca altera o receptor. Por isso os métodos que MUDAM o
-//!   objeto em `MarkdownString` (`appendText`, `appendMarkdown`, `appendCodeblock`), em `SnippetString` (`appendText`,
-//!   `appendTabstop`, `appendPlaceholder`, `appendChoice`, `appendVariable`) e a classe `WorkspaceEdit` não existem: chamar um deles
-//!   lança `TypeError` em vez de perder a escrita em silêncio. O construtor e as propriedades (`value`, `isTrusted`,
+//! - O motor entrega o objeto comum por cópia, então a classe `WorkspaceEdit` não existe aqui. Os métodos que MUDAM o objeto em
+//!   `MarkdownString` (`appendText`, `appendMarkdown`, `appendCodeblock`) e em `SnippetString` (`appendText`, `appendTabstop`,
+//!   `appendPlaceholder`, `appendChoice`, `appendVariable`) usam o `this` por referência (`define_reference_class` do zjsc): leem o
+//!   objeto, aplicam o tipo do host e gravam `value` (e o `_tabstop` do snippet) de volta, devolvendo `this` para encadear.
+//!   O construtor e as propriedades (`value`, `isTrusted`,
 //!   `supportThemeIcons`, `supportHtml`, `baseUri`) funcionam, e `md.value = ...` também.
 //! - `CodeActionKind` é um objeto com os membros estáticos (`QuickFix`, `Refactor`, `SourceFixAll`...) cujas instâncias têm `append`,
 //!   `contains` e `intersects` (nenhum muda o receptor, como no original); `new CodeActionKind(value)` não existe, porque uma
@@ -23,16 +24,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::errors::Error;
+use je_base::themables::ThemeIcon;
 use je_workbench::api::common::ext_host_language_features_api::{
     ApiCodeActionRef, ApiCompletionList, ApiCompletionResult, ApiDocumentSymbols, ApiLocationResult, CommandOrCodeAction, CompletionItemRef, DefinitionLink, LocationOrLink,
 };
 use je_workbench::api::common::ext_host_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, Command, CompletionItem, CompletionItemKind, CompletionItemLabel, CompletionItemTag, CompletionLabel, CompletionRange,
     Diagnostic, DiagnosticCode, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Documentation, DocumentSymbol, EndOfLine, InsertText, Location,
-    MarkdownString, MarkedString, Position, Range, RangeOrPosition, SnippetString, SymbolInformation, SymbolKind, SymbolTag, TextEdit, VerboseHover,
+    MarkdownString, MarkedString, Position, Range, RangeOrPosition, SnippetContent, SnippetString, SymbolInformation, SymbolKind, SymbolTag, TextEdit, VerboseHover,
 };
 use je_workbench::api::common::ext_host_values::ApiValue;
-use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeRunner, CLASS_KEY};
+use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NativeCallback, NodeArg, NodeRunner, ReferenceMethodCallback, CLASS_KEY};
 
 use crate::api::types::{range_data, to_position, to_range};
 use crate::api::workspace_edit::WorkspaceEditObjects;
@@ -244,7 +246,7 @@ pub fn completion_result_from_js(value: &JsData) -> Result<Option<ApiCompletionR
     }
 }
 
-fn marked_string_from_js(value: &JsData) -> Result<MarkedString, Error> {
+pub(crate) fn marked_string_from_js(value: &JsData) -> Result<MarkedString, Error> {
     match value {
         JsData::Str(text) => Ok(MarkedString::Text(text.clone())),
         JsData::Object(_) => match (opt_string(field(value, "language")), opt_string(field(value, "value"))) {
@@ -272,6 +274,26 @@ pub fn hover_from_js(value: &JsData) -> Result<Option<VerboseHover>, Error> {
         opt_bool(field(value, "canIncreaseVerbosity")),
         opt_bool(field(value, "canDecreaseVerbosity")),
     )))
+}
+
+fn marked_string_data(value: &MarkedString) -> JsData {
+    match value {
+        MarkedString::Text(text) => JsData::Str(text.clone()),
+        MarkedString::Markdown(markdown) => api_to_js(markdown),
+        MarkedString::Code { language, value } => JsData::Object(vec![("language".to_owned(), JsData::Str(language.clone())), ("value".to_owned(), JsData::Str(value.clone()))]),
+    }
+}
+
+/// O `Hover` que a extensão devolveu, como ela o lê de volta (`HoverContext#previousHover`): `contents` sempre lista, o `range` que o
+/// adaptador preencheu (o original altera o `Hover` da extensão no lugar) e as duas flags de verbosidade quando ela as definiu.
+pub fn hover_data(hover: &VerboseHover) -> JsData {
+    class_fields(vec![
+        (CLASS_KEY, Some(JsData::Str("Hover".to_owned()))),
+        ("contents", Some(JsData::Array(hover.hover.contents.iter().map(marked_string_data).collect()))),
+        ("range", hover.hover.range.map(range_data)),
+        ("canIncreaseVerbosity", hover.can_increase_verbosity.map(JsData::Bool)),
+        ("canDecreaseVerbosity", hover.can_decrease_verbosity.map(JsData::Bool)),
+    ])
 }
 
 fn location_or_link_from_js(value: &JsData) -> Result<LocationOrLink, Error> {
@@ -360,17 +382,17 @@ pub(crate) fn code_action_raw_entries(entries: &[JsData]) -> impl Iterator<Item 
     entries.iter().filter(|entry| !is_nullish(Some(*entry)))
 }
 
-fn symbol_kind_of(value: &JsData) -> Result<SymbolKind, Error> {
+pub(crate) fn symbol_kind_of(value: &JsData) -> Result<SymbolKind, Error> {
     opt_number(field(value, "kind"))
         .and_then(|kind| SymbolKind::from_value(kind as i32))
         .ok_or_else(|| Error::type_error("SymbolKind must be a number of the SymbolKind enum"))
 }
 
-fn symbol_tags_of(value: &JsData) -> Option<Vec<SymbolTag>> {
+pub(crate) fn symbol_tags_of(value: &JsData) -> Option<Vec<SymbolTag>> {
     numbers_of(field(value, "tags")).map(|tags| tags.into_iter().filter_map(SymbolTag::from_value).collect())
 }
 
-fn symbol_information_from_js(value: &JsData) -> Result<SymbolInformation, Error> {
+pub(crate) fn symbol_information_from_js(value: &JsData) -> Result<SymbolInformation, Error> {
     let location = field(value, "location").ok_or_else(|| error("SymbolInformation.location must be a Location"))?;
     let mut information = SymbolInformation::new(
         &opt_string(field(value, "name")).unwrap_or_default(),
@@ -437,6 +459,166 @@ pub(crate) fn define_with_getters(
         statics,
         parent: None,
     })))
+}
+
+/// [`define`] com métodos em que o `this` chega por referência (os `append*` de `MarkdownString` e `SnippetString`).
+fn define_with_methods(
+    runner: &NodeRunner,
+    name: &str,
+    length: u32,
+    construct: impl Fn(&[JsData]) -> Result<JsData, String> + 'static,
+    methods: Vec<(String, u32, ReferenceMethodCallback)>,
+) -> JsData {
+    let spec = ClassSpec { name: name.to_owned(), length, construct: Rc::new(construct), methods: vec![], getters: vec![], statics: vec![], parent: None };
+    JsData::Handle(Rc::new(runner.define_reference_class(spec, methods)))
+}
+
+/// Um método de `MarkdownString` que muda o receptor: lê o objeto, aplica `change` no tipo do host, grava o `value` de volta e
+/// devolve o próprio `this` (o `return this` do original, que encadeia).
+fn markdown_method(change: impl Fn(&mut MarkdownString, &[JsData]) -> Result<(), String> + 'static) -> ReferenceMethodCallback {
+    Rc::new(move |runner, this, args| {
+        let mut markdown = markdown_from_js(&runner.export(this)).map_err(|error| error.message)?;
+        change(&mut markdown, args)?;
+        runner.set_property(this, "value", &JsData::Str(markdown.value.to_string_lossy()))?;
+        Ok(JsData::Handle(this.clone()))
+    })
+}
+
+fn markdown_methods() -> Vec<(String, u32, ReferenceMethodCallback)> {
+    vec![
+        (
+            "appendText".to_owned(),
+            1,
+            markdown_method(|markdown, args| {
+                markdown.append_text(&string_arg(args, 0, "appendText: o texto")?);
+                Ok(())
+            }),
+        ),
+        (
+            "appendMarkdown".to_owned(),
+            1,
+            markdown_method(|markdown, args| {
+                markdown.append_markdown(&string_arg(args, 0, "appendMarkdown: o texto")?);
+                Ok(())
+            }),
+        ),
+        (
+            "appendCodeblock".to_owned(),
+            2,
+            markdown_method(|markdown, args| {
+                markdown.append_codeblock(&string_arg(args, 0, "appendCodeblock: o código")?, opt_string(args.get(1)).as_deref());
+                Ok(())
+            }),
+        ),
+    ]
+}
+
+/// O `SnippetString` como o motor o guarda: `value` e o contador `_tabstop` (que o construtor não cria, então falta = 1).
+fn snippet_data(snippet: &SnippetString) -> JsData {
+    JsData::Object(vec![
+        (CLASS_KEY.to_owned(), JsData::Str("SnippetString".to_owned())),
+        ("value".to_owned(), JsData::Str(snippet.value.clone())),
+        ("_tabstop".to_owned(), JsData::Num(snippet.tabstop())),
+    ])
+}
+
+fn snippet_from_data(data: &JsData) -> SnippetString {
+    SnippetString::resume(&opt_string(field(data, "value")).unwrap_or_default(), opt_number(field(data, "_tabstop")).unwrap_or(1.0))
+}
+
+/// Um método de `SnippetString` que muda o receptor: como [`markdown_method`], gravando `value` e `_tabstop`.
+fn snippet_method(change: impl Fn(&NodeRunner, &mut SnippetString, &[JsData]) -> Result<(), String> + 'static) -> ReferenceMethodCallback {
+    Rc::new(move |runner, this, args| {
+        let mut snippet = snippet_from_data(&runner.export(this));
+        change(runner, &mut snippet, args)?;
+        runner.set_property(this, "value", &JsData::Str(snippet.value.clone()))?;
+        runner.set_property(this, "_tabstop", &JsData::Num(snippet.tabstop()))?;
+        Ok(JsData::Handle(this.clone()))
+    })
+}
+
+/// `string | (snippet: SnippetString) => unknown`: o texto vai direto; a função recebe um `SnippetString` aninhado (por
+/// referência, então os `append*` dela valem) que continua a contagem de tabstops, e o que ela lançar sobe como erro.
+fn with_snippet_content(runner: &NodeRunner, content: &JsData, apply: impl FnOnce(SnippetContent<'_>)) -> Result<(), String> {
+    match content {
+        JsData::Str(text) => {
+            apply(SnippetContent::Text(text));
+            Ok(())
+        }
+        JsData::Handle(function) => {
+            let failure: RefCell<Option<String>> = RefCell::new(None);
+            let build = |nested: &mut SnippetString| {
+                if failure.borrow().is_some() {
+                    return;
+                }
+                let object = runner.import(&snippet_data(nested));
+                match runner.call(function, &[NodeArg::Handle(&object)]) {
+                    Ok(_) => *nested = snippet_from_data(&runner.export(&object)),
+                    Err(message) => *failure.borrow_mut() = Some(message),
+                }
+            };
+            apply(SnippetContent::Build(&build));
+            failure.into_inner().map_or(Ok(()), Err)
+        }
+        _ => Err("o conteúdo precisa ser texto ou função".to_owned()),
+    }
+}
+
+fn snippet_methods() -> Vec<(String, u32, ReferenceMethodCallback)> {
+    vec![
+        (
+            "appendText".to_owned(),
+            1,
+            snippet_method(|_, snippet, args| {
+                snippet.append_text(&string_arg(args, 0, "appendText: o texto")?);
+                Ok(())
+            }),
+        ),
+        (
+            "appendTabstop".to_owned(),
+            1,
+            snippet_method(|_, snippet, args| {
+                snippet.append_tabstop(opt_number(args.first()));
+                Ok(())
+            }),
+        ),
+        (
+            "appendPlaceholder".to_owned(),
+            2,
+            snippet_method(|runner, snippet, args| {
+                let content = required(args, 0, "appendPlaceholder: o conteúdo")?;
+                with_snippet_content(runner, content, |content| {
+                    snippet.append_placeholder(content, opt_number(args.get(1)));
+                })
+            }),
+        ),
+        (
+            "appendChoice".to_owned(),
+            2,
+            snippet_method(|_, snippet, args| {
+                let values = strings_of(args.first()).ok_or("appendChoice: os valores precisam ser uma lista")?;
+                let values: Vec<&str> = values.iter().map(String::as_str).collect();
+                snippet.append_choice(&values, opt_number(args.get(1)));
+                Ok(())
+            }),
+        ),
+        (
+            "appendVariable".to_owned(),
+            2,
+            snippet_method(|runner, snippet, args| {
+                let name = string_arg(args, 0, "appendVariable: o nome")?;
+                match args.get(1).filter(|default| !is_nullish(Some(*default))) {
+                    Some(default) => with_snippet_content(runner, default, |content| {
+                        snippet.append_variable(&name, Some(content));
+                    }),
+                    None => {
+                        snippet.append_variable(&name, None);
+                        Ok(())
+                    }
+                }
+            }),
+        ),
+    ]
 }
 
 pub(crate) fn required<'a>(args: &'a [JsData], index: usize, what: &str) -> Result<&'a JsData, String> {
@@ -529,10 +711,37 @@ fn define_code_action_kind(runner: &NodeRunner) -> JsData {
     )
 }
 
+/// `ThemeIcon` de `extHostTypes.ts` (o `ThemeColor` mora em `window.rs`): as instâncias têm os campos `id` e `color` (o `ApiValue` lê
+/// os dois), e `ThemeIcon.File` e `ThemeIcon.Folder` são instâncias de verdade, como as atribuições estáticas do original.
+fn define_theme_icon(runner: &NodeRunner) -> Result<JsData, String> {
+    let theme_icon = runner.define_class(ClassSpec {
+        name: "ThemeIcon".to_owned(),
+        length: 2,
+        construct: Rc::new(|args| Ok(class_fields(vec![("id", args.first().cloned()), ("color", args.get(1).filter(|color| !is_nullish(Some(*color))).cloned())]))),
+        methods: vec![],
+        getters: vec![],
+        statics: vec![(
+            "isThemeIcon".to_owned(),
+            1,
+            Rc::new(|args| match args.first() {
+                Some(thing) if !is_nullish(Some(thing)) => Ok(JsData::Bool(matches!(field(thing, "id"), Some(JsData::Str(_))))),
+                _ => Err("Cannot read properties of undefined (reading 'id')".to_owned()),
+            }),
+        )],
+        parent: None,
+    });
+    for (name, id) in [("File", "file"), ("Folder", "folder")] {
+        runner.set_property(&theme_icon, name, &api_to_js(&ThemeIcon::from_id(id)))?;
+    }
+    Ok(JsData::Handle(Rc::new(theme_icon)))
+}
+
 /// As classes deste módulo como entradas do objeto `vscode`.
 pub fn classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
     let entry = |name: &str, value: JsData| (name.to_owned(), value);
+    let theme_icon = define_theme_icon(runner).unwrap_or_else(|message| panic!("ThemeIcon.File e ThemeIcon.Folder: {message}"));
     vec![
+        entry("ThemeIcon", theme_icon),
         entry(
             "Location",
             define(
@@ -587,15 +796,18 @@ pub fn classes(runner: &NodeRunner) -> Vec<(String, JsData)> {
         entry("TextEdit", define_text_edit(runner)),
         entry(
             "MarkdownString",
-            define(
+            define_with_methods(
                 runner,
                 "MarkdownString",
                 2,
                 |args| Ok(api_to_js(&MarkdownString::new(text_arg(args, 0).as_deref(), opt_bool(args.get(1)).unwrap_or(false)))),
-                vec![],
+                markdown_methods(),
             ),
         ),
-        entry("SnippetString", define(runner, "SnippetString", 1, |args| Ok(api_to_js(&SnippetString::new(text_arg(args, 0).as_deref()))), vec![])),
+        entry(
+            "SnippetString",
+            define_with_methods(runner, "SnippetString", 1, |args| Ok(api_to_js(&SnippetString::new(text_arg(args, 0).as_deref()))), snippet_methods()),
+        ),
         entry(
             "CompletionItem",
             define(

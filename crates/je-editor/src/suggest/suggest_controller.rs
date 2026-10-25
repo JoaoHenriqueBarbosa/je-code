@@ -27,13 +27,15 @@
 //!   `hash(...).toString(16)` é o hexadecimal com sinal do `Number.prototype.toString`.
 //!
 //! Divergências:
+//! - Sem o widget, o item em foco (`widget.getFocusedItem()`) é guardado pelos ouvintes de `onDidSuggest` (índice da
+//!   memória e `selectionMode`, como o `showSuggestions`) e de `onDidCancel` (como o `hideWidget`), e o
+//!   `acceptSelectedSuggestion` o lê. As `_selectors` do `PriorityRegistry` se reduzem ao seletor da memória.
 //! - O `SuggestWidget` ainda não tem porte (ver `suggest_widget_contract.rs`), então tudo o que o controlador faz
 //!   com ele não existe aqui: o `widget` e o `_wantsForceRenderingAbove`, o `onDidSelect`, o
 //!   `CommitCharacterController`, as chaves `suggestionMakesTextEdit`, `suggestionHasInsertAndReplaceRange` e
-//!   `suggestionCanResolve` (que o `onDidFocus` do widget escreve), o `showTriggered` do `onDidTrigger`, o
-//!   `showSuggestions` do `onDidSuggest` (e com ele as `_selectors` do `PriorityRegistry`, que só esse ouvinte lê),
-//!   o `hideWidget` do `onDidCancel`, os comandos de navegação do widget (`acceptSelectedSuggestion`,
-//!   `cancelSuggestWidget`, `focusSuggestion`, `selectNextSuggestion`... `toggleExplainMode`, `resetWidgetSize`,
+//!   `suggestionCanResolve` (que o `onDidFocus` do widget escreve), o `showTriggered` do `onDidTrigger`, os
+//!   comandos de navegação do widget (`cancelSuggestWidget`, `focusSuggestion`, `selectNextSuggestion`...
+//!   `toggleExplainMode`, `resetWidgetSize`,
 //!   `forceRenderingAbove`, `stopForceRenderingAbove`) e os registros de ações e comandos
 //!   do fim do arquivo, que dependem do widget, do sistema de menus e do `ICommandService`. Entram com o porte do
 //!   `suggestWidget.ts`.
@@ -72,11 +74,11 @@ use je_platform::telemetry::telemetry::ITelemetryService;
 use crate::code_action::languages::ProviderId;
 use crate::code_editor_widget::{CodeEditorWidget, ExecuteEditsSource, ICodeEditor, IEditorContribution};
 use crate::config::editor_options::registry::ACCEPT_SUGGESTION_ON_ENTER;
-use crate::config::editor_options::suggest::{SUGGEST, SuggestInsertMode};
+use crate::config::editor_options::suggest::{SUGGEST, SuggestInsertMode, SuggestSelectionMode};
 use crate::cursor_common::CursorSimpleModel;
 use crate::edit_operation::EditOperation;
 use crate::editor_common::ScrollType;
-use crate::languages::completion_item_insert_text_rule;
+use crate::languages::{CompletionTriggerKind, completion_item_insert_text_rule};
 use crate::model::{ModelDecorationOptionsInit, TrackedRangeStickiness};
 use crate::position::Position;
 use crate::range::Range;
@@ -87,7 +89,7 @@ use crate::stable_editor_scroll::StableEditorScrollState;
 use crate::suggest::suggest::{CompletionItem, ProviderSet, suggest_context};
 use crate::suggest::suggest_alternatives::SuggestAlternatives;
 use crate::suggest::suggest_memory::ISuggestMemoryService;
-use crate::suggest::suggest_model::{PartialCompletionOptions, SuggestModel, SuggestModelServices, SuggestTriggerOptions};
+use crate::suggest::suggest_model::{PartialCompletionOptions, State, SuggestModel, SuggestModelServices, SuggestTriggerOptions};
 use crate::suggest::suggest_overtyping_capturer::OvertypingCapturer;
 use crate::suggest::suggest_widget_contract::ISelectedSuggestion;
 use crate::suggest::word_context_key::WordContextKey;
@@ -225,6 +227,9 @@ pub struct SuggestController {
     line_suffix: Rc<MutableDisposable<LineSuffix>>,
     to_dispose: Rc<DisposableStore>,
     overtyping_capturer: Rc<GlobalIdleValue<Rc<OvertypingCapturer>>>,
+    /// O item que o `SuggestWidget` teria em foco (`widget.getFocusedItem()`), mantido pelos ouvintes de `onDidSuggest`
+    /// e `onDidCancel` enquanto o widget não tem porte.
+    focused_item: Rc<RefCell<Option<ISelectedSuggestion>>>,
 
     on_will_insert_suggest_item: Rc<Emitter<WillInsertSuggestItem>>,
 }
@@ -295,6 +300,75 @@ impl SuggestController {
                 &to_dispose,
             );
         }
+        // `onDidSuggest`: a escolha do índice e o foco do `showSuggestions` do widget (sem o widget, só o item em foco)
+        let focused_item: Rc<RefCell<Option<ISelectedSuggestion>>> = Rc::new(RefCell::new(None));
+        {
+            let (weak_editor, weak_model, memory_service, focused_item) =
+                (Rc::downgrade(editor), Rc::downgrade(&model), Rc::clone(&memory_service), Rc::clone(&focused_item));
+            model.on_did_suggest().listen_in(
+                move |e| {
+                    if e.trigger_options.shy.unwrap_or(false) {
+                        return;
+                    }
+                    let (Some(editor), Some(suggest_model)) = (weak_editor.upgrade(), weak_model.upgrade()) else {
+                        return;
+                    };
+                    let text_model = editor.get_model().expect("o editor tem modelo ao sugerir");
+                    let position = editor.get_position().expect("o editor com modelo tem posição");
+                    let items = e.completion_model.items();
+                    // o seletor da memória é o único registrado e nunca devolve -1 no porte
+                    let index = memory_service.select(&text_model, position, &items);
+                    if suggest_model.state() == State::Idle {
+                        // selecting an item can "pump" out selection/cursor change events
+                        // which can cancel suggest halfway through this function. therefore
+                        // we need to check again and bail if the session has been canceled
+                        return;
+                    }
+                    let mut no_focus = false;
+                    if e.trigger_options.auto {
+                        // don't "focus" item when configured to do
+                        let options = editor.get_option(SUGGEST);
+                        match options.selection_mode {
+                            // simple: always or never
+                            SuggestSelectionMode::Always => no_focus = false,
+                            SuggestSelectionMode::Never => no_focus = true,
+                            // on with trigger character
+                            SuggestSelectionMode::WhenTriggerCharacter => {
+                                no_focus = e.trigger_options.trigger_kind != Some(CompletionTriggerKind::TriggerCharacter);
+                            }
+                            // without trigger character or when refiltering
+                            SuggestSelectionMode::WhenQuickSuggestion => {
+                                no_focus = e.trigger_options.trigger_kind == Some(CompletionTriggerKind::TriggerCharacter)
+                                    && e.trigger_options.refilter != Some(true);
+                            }
+                        }
+                    }
+                    let focused = if no_focus {
+                        None
+                    } else {
+                        items.get(index).map(|item| ISelectedSuggestion {
+                            item: item.clone(),
+                            index,
+                            model: Rc::clone(&e.completion_model),
+                        })
+                    };
+                    *focused_item.borrow_mut() = focused;
+                },
+                &to_dispose,
+            );
+        }
+        {
+            let focused_item = Rc::clone(&focused_item);
+            model.on_did_cancel().listen_in(
+                move |e| {
+                    if !e.retrigger {
+                        // `hideWidget()`
+                        *focused_item.borrow_mut() = None;
+                    }
+                },
+                &to_dispose,
+            );
+        }
         {
             let weak_model = Rc::downgrade(&model);
             editor.on_did_blur_editor_widget().listen_in(
@@ -341,6 +415,7 @@ impl SuggestController {
             line_suffix,
             to_dispose,
             overtyping_capturer,
+            focused_item,
             on_will_insert_suggest_item: Emitter::new(),
         })
     }
@@ -772,6 +847,19 @@ impl SuggestController {
             editor.reveal_position(editor.get_position().expect("o editor com modelo tem posição"), Some(ScrollType::Smooth));
             editor.focus();
         }
+    }
+
+    /// `acceptSelectedSuggestion(keepAlternativeSuggestions, alternativeOverwriteConfig)`.
+    pub fn accept_selected_suggestion(&self, keep_alternative_suggestions: bool, alternative_overwrite_config: bool) {
+        let item = self.focused_item.borrow().clone();
+        let mut flags = 0;
+        if keep_alternative_suggestions {
+            flags |= insert_flags::KEEP_ALTERNATIVE_SUGGESTIONS;
+        }
+        if alternative_overwrite_config {
+            flags |= insert_flags::ALTERNATIVE_OVERWRITE_CONFIG;
+        }
+        self.insert_suggestion(item.as_ref(), flags);
     }
 
     /// `acceptNextSuggestion()`.

@@ -180,6 +180,12 @@ impl IFileService for FileService {
         FileService::resolve_with_metadata(&self.rc(), resource, options)
     }
 
+    /// O `stat` do original vai direto ao provedor: o erro dele (com o código, `EntryNotFound` por exemplo) chega intacto,
+    /// sem o `FileOperationError` do `resolve`.
+    fn stat(&self, resource: &URI) -> Promise<FileStatWithMetadata> {
+        FileService::stat(&self.rc(), resource)
+    }
+
     fn exists(&self, resource: &URI) -> Promise<bool> {
         FileService::exists(&self.rc(), resource)
     }

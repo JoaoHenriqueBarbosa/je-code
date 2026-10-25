@@ -57,7 +57,7 @@ use je_editor::model::EndOfLineSequence;
 use je_editor::position::Position as EditorPosition;
 use je_editor::range::Range as EditorRange;
 use je_exthost::in_process::IMainThreadBinder;
-use je_workbench::api::common::ext_host_protocol::FormattingOptions;
+use je_workbench::api::common::ext_host_protocol::{FormattingOptions, HoverContextDto, HoverIdDto, HoverVerbosityRequestDto};
 use languages_support::{create_document, languages_setup, project_file, Observed};
 
 /// O JavaScript da extensão de exemplo.
@@ -76,9 +76,16 @@ exports.activate = (context) => {
   // uma classe de usuário: os métodos moram no protótipo e usam `this`
   class Named {
     constructor(name) { this.name = name; }
-    provideHover(document, position, token) {
+    provideHover(document, position, token, hoverContext) {
       note('hover:' + this.name + ':' + at(document, position) + ':' + typeof token.isCancellationRequested);
-      return new vscode.Hover([new vscode.MarkdownString('**' + this.name + '**'), 'texto', { language: 'rust', value: 'fn main() {}' }], new vscode.Range(position, position));
+      if (hoverContext) {
+        const previous = hoverContext.previousHover;
+        note('verbosity:' + hoverContext.verbosityDelta + ':' + previous.constructor.name + ':' + previous.contents.length + ':' + previous.contents[0].value + ':'
+          + previous.contents[1] + ':' + previous.contents[2].language + ':' + describe(previous.range) + ':' + previous.canIncreaseVerbosity + ':' + previous.canDecreaseVerbosity);
+      }
+      const hover = new vscode.Hover([new vscode.MarkdownString('**' + this.name + '**'), 'texto', { language: 'rust', value: 'fn main() {}' }], new vscode.Range(position, position));
+      hover.canIncreaseVerbosity = true;
+      return hover;
     }
     provideDefinition(document, position, token) {
       note('definition:' + this.name + ':' + at(document, position));
@@ -141,13 +148,12 @@ exports.activate = (context) => {
     const edit = vscode.TextEdit.insert(new vscode.Position(1, 2), 'x');
     const location = new vscode.Location(vscode.Uri.file('/proj/a.txt'), new vscode.Position(3, 4));
     const markdown = new vscode.MarkdownString('texto', true);
-    let missingMethod;
-    try { markdown.appendText('mais'); missingMethod = 'sem erro'; } catch (error) { missingMethod = error.constructor.name; }
+    const chained = markdown.appendText('mais') === markdown;
     return JSON.stringify({
       edit: describe(edit.range) + ':' + edit.newText,
       location: location.uri.path + ':' + describe(location.range),
       markdown: markdown.value + ':' + markdown.supportThemeIcons,
-      missingMethod,
+      chained,
       severity: vscode.DiagnosticSeverity[vscode.DiagnosticSeverity.Hint],
       kind: vscode.SymbolKind[vscode.SymbolKind.Function] + ':' + vscode.CompletionItemKind[vscode.CompletionItemKind.Snippet],
     });
@@ -201,6 +207,38 @@ fn hover_provider_keeps_this_and_its_rich_result_converts() {
         workbench.pump();
         assert!(settled_ok(&pending, "provideHover").is_some(), "o Hover com MarkdownString, texto e bloco de código converte");
         assert_eq!(calls(workbench), r#"["hover:hov:/proj/a.txt@1,2:boolean"]"#, "o `this` da classe e o documento e a posição chegam ao provedor");
+        model.dispose();
+    });
+}
+
+#[test]
+fn hover_verbosity_request_delivers_the_previous_hover_of_the_extension() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, observed| {
+        let model = create_document(&observed, "a.txt", "linha um\nlinha dois\nterceira");
+        let hover = observed.language_features.handle_of("rpc_register_hover_provider");
+        let features = observed.features_proxy();
+
+        let first = features.rpc_provide_hover(hover, &project_file("a.txt"), EditorPosition::new(2, 3), None, CancellationToken::None);
+        workbench.pump();
+        let first = settled_ok(&first, "provideHover").expect("o primeiro hover");
+
+        let request = HoverContextDto { verbosity_request: Some(HoverVerbosityRequestDto { verbosity_delta: 1.0, previous_hover: HoverIdDto { id: first.id } }) };
+        let second = features.rpc_provide_hover(hover, &project_file("a.txt"), EditorPosition::new(2, 3), Some(request), CancellationToken::None);
+        workbench.pump();
+        assert!(settled_ok(&second, "provideHover com verbosidade").is_some());
+        assert_eq!(
+            calls(workbench),
+            r#"["hover:hov:/proj/a.txt@1,2:boolean","hover:hov:/proj/a.txt@1,2:boolean","verbosity:1:Hover:3:**hov**:texto:rust:1,2-1,2:true:undefined"]"#,
+            "o provedor lê o Hover anterior (conteúdo, intervalo e flags) e o delta"
+        );
+
+        let unknown = HoverContextDto { verbosity_request: Some(HoverVerbosityRequestDto { verbosity_delta: -1.0, previous_hover: HoverIdDto { id: 999 } }) };
+        let missing = features.rpc_provide_hover(hover, &project_file("a.txt"), EditorPosition::new(2, 3), Some(unknown), CancellationToken::None);
+        workbench.pump();
+        match missing.result() {
+            Some(Err(error)) => assert!(error.message.contains("Hover with id 999 not found"), "{}", error.message),
+            other => panic!("um id desconhecido deveria rejeitar: {:?}", other.map(|result| result.is_ok())),
+        }
         model.dispose();
     });
 }
@@ -321,7 +359,7 @@ fn value_classes_build_the_objects_of_the_original() {
         assert_eq!(
             workbench.execute("t.valueClasses", Vec::new()),
             Dynamic::string(concat!(
-                r#"{"edit":"1,2-1,2:x","location":"/proj/a.txt:3,4-3,4","markdown":"texto:true","missingMethod":"TypeError","#,
+                r#"{"edit":"1,2-1,2:x","location":"/proj/a.txt:3,4-3,4","markdown":"textomais:true","chained":true,"#,
                 r#""severity":"Hint","kind":"Function:Snippet"}"#,
             ))
         );

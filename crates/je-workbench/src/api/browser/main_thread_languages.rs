@@ -5,7 +5,10 @@
 //! Divergências:
 //! - `@extHostNamedCustomer(MainContext.MainThreadLanguages)` e o `IExtHostContext` do construtor: o construtor recebe o
 //!   [`IMainContext`] e pede o proxy de `ExtHostLanguages`.
-//! - `ILanguageStatusService` (`addStatus`) não está portado: fica como o trait estreito [`ILanguageStatusRegistry`].
+//! - `ILanguageStatusService` é o do módulo `services::language_status` (uma definição só). O que chega por RPC é o
+//!   [`ILanguageStatus`] do protocolo (o DTO de fio, com `label` em texto, `selector` opcional e o `command` como
+//!   `ICommandDto`); [`to_language_status`] o converte no `ILanguageStatus` do serviço antes de `addStatus`. Um `selector`
+//!   ausente vira o seletor vazio, que não casa com modelo nenhum (a pontuação de `undefined` é 0).
 //! - O que o original faz com o `IModelService` (os tokens de uma linha, `tokenizeIfCheap`, o tipo padrão de token) e com o
 //!   `ITextMateTokenizationService` e o `TokenizationRegistry` (`$computeFullSyntaxHighlighting`) depende de partes de tokenização que
 //!   o porte expõe por outro caminho: ficam atrás do trait [`ILanguageTokens`], que o aplicativo implementa sobre o modelo de texto e a
@@ -22,18 +25,32 @@ use je_base::errors::{self, Error};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable};
 use je_base::promise::Promise;
 use je_base::uri::URI;
+use je_editor::code_action::languages::Command;
 use je_editor::language_service::ILanguageService;
+use je_editor::language_selector::LanguageSelector;
 use je_editor::position::Position as EditorPosition;
 use je_editor::services::theme_service::IThemeService;
 
 use crate::api::common::ext_host_protocol::{
     ExtHostContext, ExtHostLanguagesShape, ILanguageStatus, IMainContext, ISyntaxHighlightingResultDto, MainThreadLanguagesShape, TokenAtPositionDto,
 };
+use crate::services::language_status::language_status_service::{ILanguageStatus as LanguageStatus, ILanguageStatusService, LanguageStatusLabel};
 use crate::services::textmodel_resolver::resolver_service::ITextModelService;
 
-/// `ILanguageStatusService.addStatus(status)`: o registro devolve o descartável que retira o status.
-pub trait ILanguageStatusRegistry {
-    fn add_status(&self, status: ILanguageStatus) -> DisposableRef;
+/// O `ILanguageStatus` que chega por RPC no `ILanguageStatus` do serviço (ver as divergências do módulo).
+fn to_language_status(status: ILanguageStatus) -> LanguageStatus {
+    LanguageStatus {
+        id: status.id,
+        name: status.name,
+        selector: status.selector.unwrap_or_else(|| LanguageSelector::array([])),
+        severity: status.severity,
+        label: LanguageStatusLabel::Text(status.label),
+        detail: status.detail,
+        busy: status.busy,
+        source: status.source,
+        command: status.command.map(|command| Command { id: command.id, title: command.title, tooltip: command.tooltip, arguments: command.arguments }),
+        accessibility_info: status.accessibility_info,
+    }
 }
 
 /// A tokenização que o original lê do modelo de texto e da gramática (ver as divergências do módulo).
@@ -50,7 +67,7 @@ pub struct MainThreadLanguages {
     base: Rc<Disposable>,
     language_service: Rc<dyn ILanguageService>,
     resolver_service: Rc<dyn ITextModelService>,
-    language_status_service: Rc<dyn ILanguageStatusRegistry>,
+    language_status_service: Rc<dyn ILanguageStatusService>,
     tokens: Rc<dyn ILanguageTokens>,
     status: RefCell<HashMap<u32, DisposableRef>>,
 }
@@ -60,7 +77,7 @@ impl MainThreadLanguages {
         ext_host_context: &dyn IMainContext,
         language_service: Rc<dyn ILanguageService>,
         resolver_service: Rc<dyn ITextModelService>,
-        language_status_service: Rc<dyn ILanguageStatusRegistry>,
+        language_status_service: Rc<dyn ILanguageStatusService>,
         tokens: Rc<dyn ILanguageTokens>,
         theme_service: Rc<dyn IThemeService>,
     ) -> Rc<Self> {
@@ -123,7 +140,7 @@ impl MainThreadLanguagesShape for MainThreadLanguages {
     // --- language status
 
     fn rpc_set_language_status(&self, handle: u32, status: ILanguageStatus) {
-        let registered = self.language_status_service.add_status(status);
+        let registered = self.language_status_service.add_status(to_language_status(status));
         // `DisposableMap.set` descarta o anterior do mesmo handle
         if let Some(previous) = self.status.borrow_mut().insert(handle, registered) {
             previous.dispose();

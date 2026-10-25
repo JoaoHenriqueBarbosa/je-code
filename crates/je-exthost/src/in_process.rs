@@ -61,7 +61,7 @@ use je_workbench::api::common::ext_host_protocol::{
 };
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
-use je_workbench::api::common::ext_host_protocol::{
+use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};use je_workbench::api::common::ext_host_protocol::{
     ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
     INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
 };
@@ -77,13 +77,16 @@ use je_workbench::contrib::debug::debug::{
 use je_workbench::contrib::debug::debug_protocol::ProtocolMessage;
 use je_workbench::api::common::ext_host_protocol::{
     DocumentsAndEditorsDelta, EditorPropertiesChangeData, ExtHostConfigurationShape, ExtHostContext, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
+    ExtHostEditorsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostStatusBarShape, ExtHostWorkspaceShape, IConfigurationInitData,
     FileSystemEvents, IMainContext, IRawFileMatch2, ITextEditorDiffInformation, IWillRunFileOperationParticipation, IWorkspaceData, SerializedModelContentChangedEvent,
     SourceTargetPair, StatusBarItemDto, TextEditorPositionData,
 };
-use je_platform::files::files::FileOperation;
+use je_platform::files::files::{FileDeleteOptions, FileOpenOptions, FileOperation, FileOverwriteOptions, FileType, FileWriteOptions, Stat, WatchOptions};
+
+use je_workbench::api::common::ext_host_telemetry::ExtHostTelemetry;
 
 use crate::api::env::HostEnvironment;
+use crate::extension_storage_paths::ExtensionStorageEnvironment;
 use crate::local_context::LocalContext;
 
 /// O que o host precisa do lado do processo dele para criar canais de saída: no original o `ExtHostOutputService` usa o `ILoggerService`
@@ -120,8 +123,21 @@ pub trait IMainThreadBinder {
         None
     }
 
+    /// O `ExtHostTelemetry` do host (`isTelemetryEnabled`, `onDidChangeTelemetryEnabled` e `createTelemetryLogger`). Quem o cria também
+    /// registra o encaminhador `ExtHostTelemetryShape` no contexto, para o nível de telemetria chegar a ele. Sem ele esses membros não
+    /// existem em `vscode.env`.
+    fn telemetry(&self) -> Option<Rc<ExtHostTelemetry>> {
+        None
+    }
+
     /// O `IClipboardService` do workbench, que `vscode.env.clipboard` usa. Sem ele o membro não existe.
     fn clipboard_service(&self) -> Option<Rc<dyn IClipboardService>> {
+        None
+    }
+
+    /// Os diretórios de log e de armazenamento que o `ExtensionContext` expõe (`logUri`, `storageUri`, `globalStorageUri` e os caminhos
+    /// equivalentes). Sem eles esses membros ficam de fora do contexto.
+    fn extension_storage_environment(&self) -> Option<ExtensionStorageEnvironment> {
         None
     }
 }
@@ -294,6 +310,70 @@ pub struct LateExtHostProgress(pub Late<dyn ExtHostProgressShape>);
 impl ExtHostProgressShape for LateExtHostProgress {
     fn rpc_accept_progress_canceled(&self, handle: u32) {
         self.0.call_void(move |target| target.rpc_accept_progress_canceled(handle));
+    }
+}
+
+/// O `ExtHostFileSystemShape` que ainda não existe quando `MainThreadFileSystem` nasce (o `ExtHostFileSystem` só nasce no primeiro
+/// `registerFileSystemProvider`, e o cliente só o chama depois do registro).
+#[derive(Default)]
+pub struct LateExtHostFileSystem(pub Late<dyn ExtHostFileSystemShape>);
+
+impl ExtHostFileSystemShape for LateExtHostFileSystem {
+    fn rpc_stat(&self, handle: u32, resource: &URI) -> Promise<Stat> {
+        self.0.bound().rpc_stat(handle, resource)
+    }
+
+    fn rpc_readdir(&self, handle: u32, resource: &URI) -> Promise<Vec<(String, FileType)>> {
+        self.0.bound().rpc_readdir(handle, resource)
+    }
+
+    fn rpc_read_file(&self, handle: u32, resource: &URI) -> Promise<VSBuffer> {
+        self.0.bound().rpc_read_file(handle, resource)
+    }
+
+    fn rpc_write_file(&self, handle: u32, resource: &URI, content: VSBuffer, opts: FileWriteOptions) -> Promise<()> {
+        self.0.bound().rpc_write_file(handle, resource, content, opts)
+    }
+
+    fn rpc_rename(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()> {
+        self.0.bound().rpc_rename(handle, resource, target, opts)
+    }
+
+    fn rpc_copy(&self, handle: u32, resource: &URI, target: &URI, opts: FileOverwriteOptions) -> Promise<()> {
+        self.0.bound().rpc_copy(handle, resource, target, opts)
+    }
+
+    fn rpc_mkdir(&self, handle: u32, resource: &URI) -> Promise<()> {
+        self.0.bound().rpc_mkdir(handle, resource)
+    }
+
+    fn rpc_delete(&self, handle: u32, resource: &URI, opts: FileDeleteOptions) -> Promise<()> {
+        self.0.bound().rpc_delete(handle, resource, opts)
+    }
+
+    fn rpc_watch(&self, handle: u32, session: u32, resource: &URI, opts: WatchOptions) {
+        let resource = resource.clone();
+        self.0.call_void(move |target| target.rpc_watch(handle, session, &resource, opts));
+    }
+
+    fn rpc_unwatch(&self, handle: u32, session: u32) {
+        self.0.call_void(move |target| target.rpc_unwatch(handle, session));
+    }
+
+    fn rpc_open(&self, handle: u32, resource: &URI, opts: FileOpenOptions) -> Promise<u32> {
+        self.0.bound().rpc_open(handle, resource, opts)
+    }
+
+    fn rpc_close(&self, handle: u32, fd: u32) -> Promise<()> {
+        self.0.bound().rpc_close(handle, fd)
+    }
+
+    fn rpc_read(&self, handle: u32, fd: u32, pos: u64, length: usize) -> Promise<VSBuffer> {
+        self.0.bound().rpc_read(handle, fd, pos, length)
+    }
+
+    fn rpc_write(&self, handle: u32, fd: u32, pos: u64, data: VSBuffer) -> Promise<usize> {
+        self.0.bound().rpc_write(handle, fd, pos, data)
     }
 }
 
@@ -910,6 +990,25 @@ impl ExtHostCommentsShape for LateExtHostComments {
     }
 }
 
+/// O `ExtHostEditorTabsShape` que ainda não existe quando o cliente `MainThreadEditorTabs` do workbench nasce (ele empurra o modelo de
+/// abas inicial ao subir). As três chamadas são sem retorno e ficam na fila até o `bind`.
+#[derive(Default)]
+pub struct LateExtHostEditorTabs(pub Late<dyn je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape>);
+
+impl je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape for LateExtHostEditorTabs {
+    fn rpc_accept_editor_tab_model(&self, tab_groups: Vec<je_workbench::api::common::ext_host_protocol::EditorTabGroupDto>) {
+        self.0.call_void(move |target| target.rpc_accept_editor_tab_model(tab_groups));
+    }
+
+    fn rpc_accept_tab_group_update(&self, group_dto: je_workbench::api::common::ext_host_protocol::EditorTabGroupDto) {
+        self.0.call_void(move |target| target.rpc_accept_tab_group_update(group_dto));
+    }
+
+    fn rpc_accept_tab_operation(&self, operation: je_workbench::api::common::ext_host_protocol::TabOperation) {
+        self.0.call_void(move |target| target.rpc_accept_tab_operation(operation));
+    }
+}
+
 /// O `ExtHostAuthenticationShape` que ainda não existe quando o cliente `MainThreadAuthentication` do workbench nasce. Todas as chamadas
 /// têm retorno, então só acontecem depois de montado o host.
 #[derive(Default)]
@@ -1153,8 +1252,32 @@ impl ExtHostDebugServiceShape for LateExtHostDebugService {
     }
 }
 
+/// O `ExtHostStorageShape` que ainda não existe quando o `MainThreadStorage` do workbench nasce.
+#[derive(Default)]
+pub struct LateExtHostStorage(pub Late<dyn ExtHostStorageShape>);
+
+impl ExtHostStorageShape for LateExtHostStorage {
+    fn rpc_accept_value(&self, shared: bool, extension_id: &str, value: &str) {
+        let (extension_id, value) = (extension_id.to_owned(), value.to_owned());
+        self.0.call_void(move |target| target.rpc_accept_value(shared, &extension_id, &value));
+    }
+}
+
+/// O `ExtHostSecretStateShape` que ainda não existe quando o `MainThreadSecretState` do workbench nasce.
+#[derive(Default)]
+pub struct LateExtHostSecretState(pub Late<dyn ExtHostSecretStateShape>);
+
+impl ExtHostSecretStateShape for LateExtHostSecretState {
+    fn rpc_on_did_change_password(&self, extension_id: &str, key: &str) -> Promise<()> {
+        self.0.bound().rpc_on_did_change_password(extension_id, key)
+    }
+}
+
 /// Os encaminhadores `Late*` registrados no contexto em processo, para o host ligar os serviços reais depois.
 pub struct LateForwarders {
+    pub storage: Rc<LateExtHostStorage>,
+    pub secret_state: Rc<LateExtHostSecretState>,
+    pub editor_tabs: Rc<LateExtHostEditorTabs>,
     pub scm: Rc<LateExtHostSCM>,
     pub comments: Rc<LateExtHostComments>,
     pub authentication: Rc<LateExtHostAuthentication>,
@@ -1171,6 +1294,7 @@ pub struct LateForwarders {
     pub output: Rc<LateExtHostOutputService>,
     pub progress: Rc<LateExtHostProgress>,
     pub file_system_events: Rc<LateExtHostFileSystemEventService>,
+    pub file_system: Rc<LateExtHostFileSystem>,
     pub documents_and_editors: Rc<LateExtHostDocumentsAndEditors>,
     pub documents: Rc<LateExtHostDocuments>,
     pub editors: Rc<LateExtHostEditors>,
@@ -1182,6 +1306,12 @@ pub struct LateForwarders {
 impl LateForwarders {
     /// Cria os encaminhadores e os registra em `local` (onde os clientes do workbench os encontram com `get_proxy`).
     pub fn register(local: &LocalContext) -> LateForwarders {
+        let storage = Rc::new(LateExtHostStorage::default());
+        let as_storage: Rc<dyn ExtHostStorageShape> = storage.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_STORAGE.sid, Rc::new(as_storage));
+        let secret_state = Rc::new(LateExtHostSecretState::default());
+        let as_secret_state: Rc<dyn ExtHostSecretStateShape> = secret_state.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_SECRET_STATE.sid, Rc::new(as_secret_state));
         let workspace = Rc::new(LateExtHostWorkspace::default());
         let configuration = Rc::new(LateExtHostConfiguration::default());
         let status_bar = Rc::new(LateExtHostStatusBar::default());
@@ -1189,6 +1319,9 @@ impl LateForwarders {
         let output = Rc::new(LateExtHostOutputService::default());
         let progress = Rc::new(LateExtHostProgress::default());
         let file_system_events = Rc::new(LateExtHostFileSystemEventService::default());
+        let file_system = Rc::new(LateExtHostFileSystem::default());
+        let as_file_system: Rc<dyn ExtHostFileSystemShape> = file_system.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_FILE_SYSTEM.sid, Rc::new(as_file_system));
         let documents_and_editors = Rc::new(LateExtHostDocumentsAndEditors::default());
         let documents = Rc::new(LateExtHostDocuments::default());
         let editors = Rc::new(LateExtHostEditors::default());
@@ -1206,6 +1339,9 @@ impl LateForwarders {
         let comments = Rc::new(LateExtHostComments::default());
         let as_comments: Rc<dyn ExtHostCommentsShape> = comments.clone();
         local.set_erased(ExtHostContext::EXT_HOST_COMMENTS.sid, Rc::new(as_comments));
+        let editor_tabs = Rc::new(LateExtHostEditorTabs::default());
+        let as_editor_tabs: Rc<dyn je_workbench::api::common::ext_host_protocol::ExtHostEditorTabsShape> = editor_tabs.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_EDITOR_TABS.sid, Rc::new(as_editor_tabs));
         let authentication = Rc::new(LateExtHostAuthentication::default());
         let as_authentication: Rc<dyn ExtHostAuthenticationShape> = authentication.clone();
         local.set_erased(ExtHostContext::EXT_HOST_AUTHENTICATION.sid, Rc::new(as_authentication));
@@ -1248,7 +1384,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

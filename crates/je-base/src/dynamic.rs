@@ -226,6 +226,12 @@ impl ArrayRef {
         self.0.items.borrow_mut().push(value);
     }
 
+    /// `array.length = 0`: esvazia o array mantendo a identidade dele.
+    pub fn clear(&self) {
+        self.check_writable("length");
+        self.0.items.borrow_mut().clear();
+    }
+
     /// `array[index] = value`, preenchendo com `undefined` o que faltar até o índice.
     pub fn set(&self, index: usize, value: Dynamic) {
         self.check_writable(&index.to_string());

@@ -176,6 +176,9 @@ pub mod editor_theme;
 pub mod screen_reader_simple_model;
 pub mod minimap_tokens_color_tracker;
 pub mod view_context;
+pub mod rendering_context;
+pub mod dynamic_view_overlay;
+pub mod word_wrap_indicator;
 pub mod view_model_impl_support;
 pub mod gpu;
 
@@ -236,6 +239,9 @@ pub mod bulk_edit_service;
 pub mod editor_state;
 
 pub mod editor_web_worker;
+pub mod inplace_replace_support;
+pub mod in_place_replace;
+pub mod in_place_replace_command;
 pub mod editor_worker;
 
 pub mod parameter_hints;
@@ -249,7 +255,14 @@ pub mod get_icon_classes;
 pub mod codelens;
 pub mod color;
 pub mod format;
+pub mod formatting_edit;
+pub mod editor_context_keys;
+pub mod keybinding_cancellation;
 pub mod get_links;
 pub mod inlay_hints;
 pub mod goto_symbol;
 pub mod rename;
+pub mod semantic_tokens;
+pub mod semantic_tokens_provider_styling;
+pub mod semantic_tokens_styling;
+pub mod semantic_tokens_styling_service;

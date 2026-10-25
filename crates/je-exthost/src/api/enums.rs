@@ -11,13 +11,15 @@
 //!   botão com `QuickInputButtons.Back` por identidade (`button === QuickInputButtons.Back`) falha, comparar por `iconPath.id` funciona.
 
 use je_base::themables::ThemeIcon;
+use je_platform::files::files::FileType;
 use je_platform::log::LogLevel;
 use je_workbench::api::common::ext_host_debug_types::DebugConsoleMode;
+use je_workbench::api::common::ext_host_file_system_consumer::ApiFilePermission;
 use je_workbench::contrib::debug::debug::DebugConfigurationProviderTriggerKind;
 use je_workbench::api::common::ext_host_types::{
     CodeActionTriggerKind, CommentMode, CommentState, CommentThreadApplicability, CommentThreadCollapsibleState, CommentThreadFocus, CommentThreadState,
     CompletionItemKind, CompletionItemTag, CompletionTriggerKind, ConfigurationTarget, DiagnosticSeverity, DiagnosticTag, DocumentHighlightKind, ExtensionKind,
-    FoldingRangeKind, InlayHintKind, InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment,
+    FileChangeType, FoldingRangeKind, InlayHintKind, InputBoxValidationSeverity, NotebookCellExecutionState, NotebookCellKind, NotebookCellStatusBarAlignment,
     NotebookControllerAffinity, NotebookEditorRevealType, ProgressLocation, QuickPickItemKind, SignatureHelpTriggerKind, StatusBarAlignment, SymbolKind, SymbolTag,
 };
 use zjsc::api::embed_node::JsData;
@@ -206,6 +208,21 @@ pub fn enums() -> Vec<(String, JsData)> {
         ("TreeItemCheckboxState".to_owned(), enum_object(&[("Unchecked", 0), ("Checked", 1)])),
         ("TerminalExitReason".to_owned(), enum_object(&[("Unknown", 0), ("Shutdown", 1), ("Process", 2), ("User", 3), ("Extension", 4)])),
         ("TerminalLocation".to_owned(), enum_object(&[("Panel", 1), ("Editor", 2)])),
+        // Os enums de arquivo (`extHostTypes.ts` e `vscode.d.ts`): `FileType`, `FileChangeType` e `FilePermission`.
+        (
+            "FileType".to_owned(),
+            enum_object(&[
+                ("Unknown", FileType::UNKNOWN.bits() as i32),
+                ("File", FileType::FILE.bits() as i32),
+                ("Directory", FileType::DIRECTORY.bits() as i32),
+                ("SymbolicLink", FileType::SYMBOLIC_LINK.bits() as i32),
+            ]),
+        ),
+        (
+            "FileChangeType".to_owned(),
+            enum_object(&[("Changed", FileChangeType::Changed.value()), ("Created", FileChangeType::Created.value()), ("Deleted", FileChangeType::Deleted.value())]),
+        ),
+        ("FilePermission".to_owned(), enum_object(&[("Readonly", ApiFilePermission::Readonly as i32)])),
         // Os enums de comentários (`extHostTypes.ts`): `CommentThreadCollapsibleState`, `CommentMode`, `CommentState`,
         // `CommentThreadState`, `CommentThreadApplicability` e `CommentThreadFocus`.
         (

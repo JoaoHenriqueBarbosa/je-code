@@ -336,6 +336,8 @@ pub mod watcher;
 
 pub mod user_data_sync_client;
 
+pub mod headless_xterm;
+
 // ---- Auxiliares dos testes de sincronização de arquivos (keybindings, tasks) ----
 
 /// `fileService.writeFile(resource, VSBuffer.fromString(text))`. Sem `await`, a promessa roda até o primeiro

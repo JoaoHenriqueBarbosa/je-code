@@ -1,20 +1,46 @@
 //! Porte parcial de `src/vs/workbench/contrib/files/common/files.ts`: o `UndoConfirmLevel`, os valores de
 //! `explorer.incrementalNaming`, `VIEW_ID`, `SESSIONS_FILES_VIEW_ID`, `SortOrder`, `LexicographicOptions` e
-//! `ISortOrderConfiguration`, que o explorador lê da configuração.
+//! `ISortOrderConfiguration`, que o explorador lê da configuração, e o `TextFileContentProvider`.
 //!
 //! O resto do módulo (`VIEWLET_ID`, `IFilesConfiguration` e as chaves de contexto) entra com
 //! os consumidores que o leem. O [`OpenEditor`] já está aqui.
+//!
+//! Divergências do `TextFileContentProvider`:
+//! - **Injeção.** `@ITextFileService`, `@IFileService`, `@ILanguageService` e `@IModelService` são parâmetros de
+//!   [`TextFileContentProvider::new`]. Como as promessas de `provideTextContent` e o ouvinte de mudança de arquivos
+//!   não podem emprestar `self`, os quatro serviços ficam num `Rc` compartilhado e `resolveEditorModel` é uma função livre
+//!   sobre ele.
+//! - **`MutableDisposable` do `fileWatcherDisposable`.** O ouvinte `Event.once(onWillDispose)` guarda um `Weak` dele, porque o
+//!   store que ele limpa é o próprio dono do ouvinte.
+//! - **`ITextModel`.** É o [`TextModel`] concreto; `ITextModel | null` é `Option`. `content.value` é o `TextBufferFactoryRef`,
+//!   consumido uma vez.
+//! - **`JSON.stringify` e `JSON.parse`.** São os do `serde_json`; o texto do `query` guarda `{"scheme":...,"query":...}` na
+//!   mesma ordem do original, e `JSON.parse` inválido rejeita com `SyntaxError`.
+//! - **`async provideTextContent`.** É o [`MaybePromise`] do contrato; sem `query` devolve `null` já resolvido.
+//! - **`resolveEditorModel` sem aguardar.** O ouvinte de mudança descarta a promessa, como o original (não há `await`).
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use je_base::uri::URI;
+use je_base::async_::async_fn;
+use je_base::errors::Error;
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, MutableDisposable};
+use je_base::promise::{MaybePromise, Promise};
+use je_base::uri::{URI, UriChange};
+use je_editor::language_service::{ILanguageSelection, ILanguageService};
+use je_editor::services_model::IModelService;
+use je_editor::text_model::{TextModel, TextSource};
+use je_platform::files::files::FileChangeType;
+use je_platform::files::i_file_service::IFileService;
 
 use crate::common::editor::{
-    EditorInputOrUntyped, EditorInputRef, EditorResourceAccessor, EditorResourceAccessorOptions, GroupIdentifier, SideBySideEditor,
+    EditorInputOrUntyped, EditorInputRef, EditorResourceAccessor, EditorResourceAccessorOptions, GroupIdentifier, SideBySideEditor, TextEditorOptions, UntypedEditorInput,
 };
 use crate::common::editor::editor_group_model::EditorOrIndex;
 use crate::services::editor::editor_groups_service::IEditorGroup;
+use crate::services::editor::editor_service::IEditorService;
+use crate::services::textfile::textfiles::ITextFileService;
+use crate::services::textmodel_resolver::resolver_service::ITextModelContentProvider;
 
 /// `TEXT_FILE_EDITOR_ID`: id of the text file editor pane.
 pub const TEXT_FILE_EDITOR_ID: &str = "workbench.editors.files.textFileEditor";
@@ -167,6 +193,158 @@ pub struct SortOrderConfiguration {
     pub sort_order: SortOrder,
     pub lexicographic_options: LexicographicOptions,
     pub reverse: bool,
+}
+
+/// Os serviços que o `TextFileContentProvider` injeta.
+struct TextFileContentProviderServices {
+    text_file_service: Rc<dyn ITextFileService>,
+    file_service: Rc<dyn IFileService>,
+    language_service: Rc<dyn ILanguageService>,
+    model_service: Rc<dyn IModelService>,
+}
+
+/// `TextFileContentProvider`.
+pub struct TextFileContentProvider {
+    base: Rc<Disposable>,
+    file_watcher_disposable: Rc<MutableDisposable<dyn IDisposable>>,
+    services: Rc<TextFileContentProviderServices>,
+}
+
+/// `JSON.parse` com o erro do motor.
+fn parse_query(resource: &URI) -> Result<serde_json::Value, Error> {
+    serde_json::from_str(&resource.query().to_string_lossy()).map_err(|error| Error::named("SyntaxError", error.to_string()))
+}
+
+impl TextFileContentProvider {
+    pub fn new(
+        text_file_service: Rc<dyn ITextFileService>,
+        file_service: Rc<dyn IFileService>,
+        language_service: Rc<dyn ILanguageService>,
+        model_service: Rc<dyn IModelService>,
+    ) -> Rc<Self> {
+        let base = Disposable::new();
+        let file_watcher_disposable = MutableDisposable::<dyn IDisposable>::new();
+        base.register(file_watcher_disposable.clone());
+        Rc::new(Self {
+            base,
+            file_watcher_disposable,
+            services: Rc::new(TextFileContentProviderServices { text_file_service, file_service, language_service, model_service }),
+        })
+    }
+
+    /// `open(resource, scheme, label, editorService, options?)`.
+    pub fn open(resource: &URI, scheme: &str, label: &str, editor_service: &dyn IEditorService, options: Option<TextEditorOptions>) -> Promise<()> {
+        let side = |resource: URI| Some(Box::new(UntypedEditorInput { resource: Some(resource), ..UntypedEditorInput::default() }));
+        let editor = UntypedEditorInput {
+            original: side(Self::resource_to_text_file(scheme, resource)),
+            modified: side(resource.clone()),
+            label: Some(label.to_string()),
+            options,
+            ..UntypedEditorInput::default()
+        };
+        editor_service.open_editor(editor).then(|_| ())
+    }
+
+    /// `resourceToTextFile(scheme, resource)` (private static).
+    fn resource_to_text_file(scheme: &str, resource: &URI) -> URI {
+        let query = serde_json::json!({ "scheme": resource.scheme().to_string_lossy(), "query": resource.query().to_string_lossy() }).to_string();
+        resource.with(&UriChange { scheme: scheme.into(), query: query.as_str().into(), ..UriChange::default() })
+    }
+
+    /// `textFileToResource(resource)` (private static).
+    fn text_file_to_resource(resource: &URI) -> Result<URI, Error> {
+        let parsed = parse_query(resource)?;
+        let Some(object) = parsed.as_object() else {
+            return Err(Error::type_error("Cannot destructure the query of a text file resource"));
+        };
+        let mut change = UriChange::default();
+        if let Some(scheme) = object.get("scheme").and_then(serde_json::Value::as_str) {
+            change.scheme = scheme.into();
+        }
+        if let Some(query) = object.get("query").and_then(serde_json::Value::as_str) {
+            change.query = query.into();
+        }
+        Ok(resource.with(&change))
+    }
+
+    /// `provideTextContent(resource)`.
+    fn provide_text_content_async(&self, resource: URI) -> Promise<Option<Rc<TextModel>>> {
+        let services = self.services.clone();
+        let file_watcher_disposable = self.file_watcher_disposable.clone();
+        async_fn(async move {
+            let saved_file_resource = Self::text_file_to_resource(&resource)?;
+
+            // Make sure our text file is resolved up to date
+            let code_editor_model = Self::resolve_editor_model(&services, &resource, true).await?;
+
+            // Make sure to keep contents up to date when it changes
+            if file_watcher_disposable.value().is_none() {
+                let disposables = DisposableStore::new();
+                file_watcher_disposable.set(Some(disposables.clone() as DisposableRef));
+                disposables.add(services.file_service.on_did_files_change().listen({
+                    let (services, resource) = (services.clone(), resource.clone());
+                    move |changes| {
+                        if changes.contains(&saved_file_resource, &[FileChangeType::Updated]) {
+                            // update model when resource changes (do not create if missing)
+                            Self::resolve_editor_model(&services, &resource, false);
+                        }
+                    }
+                }));
+
+                if let Some(code_editor_model) = &code_editor_model {
+                    let watcher = Rc::downgrade(&file_watcher_disposable);
+                    disposables.add(code_editor_model.on_will_dispose().once().listen(move |_| {
+                        if let Some(watcher) = watcher.upgrade() {
+                            watcher.clear();
+                        }
+                    }));
+                }
+            }
+
+            Ok(code_editor_model)
+        })
+    }
+
+    /// `resolveEditorModel(resource, createAsNeeded = true)` (private).
+    fn resolve_editor_model(services: &Rc<TextFileContentProviderServices>, resource: &URI, create_as_needed: bool) -> Promise<Option<Rc<TextModel>>> {
+        let (services, resource) = (services.clone(), resource.clone());
+        async_fn(async move {
+            let saved_file_resource = Self::text_file_to_resource(&resource)?;
+
+            let content = services.text_file_service.read_stream(&saved_file_resource, None).await?;
+            let value = || content.value.take().expect("a fábrica de buffer é consumida uma única vez");
+
+            let mut code_editor_model = services.model_service.get_model(&resource);
+            if let Some(model) = &code_editor_model {
+                services.model_service.update_model(model, TextSource::Factory(value()), None);
+            } else if create_as_needed {
+                let language_selector: Rc<dyn ILanguageSelection> = match services.model_service.get_model(&saved_file_resource) {
+                    Some(text_file_model) => services.language_service.create_by_id(Some(&text_file_model.get_language_id())),
+                    None => services.language_service.create_by_filepath_or_first_line(Some(&saved_file_resource), None),
+                };
+                code_editor_model = Some(services.model_service.create_model(TextSource::Factory(value()), Some(&*language_selector), Some(&resource), false));
+            }
+
+            Ok(code_editor_model)
+        })
+    }
+}
+
+impl ITextModelContentProvider for TextFileContentProvider {
+    fn provide_text_content(&self, resource: &URI) -> MaybePromise<Option<Rc<TextModel>>> {
+        if resource.query().is_empty() {
+            // We require the URI to use the `query` to transport the original scheme and query
+            // as done by `resourceToTextFile`
+            return MaybePromise::Value(None);
+        }
+        MaybePromise::Promise(self.provide_text_content_async(resource.clone()))
+    }
+}
+
+impl IDisposable for TextFileContentProvider {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
 }
 
 /// `OpenEditor.COUNTER`: o contador estático que numera cada `OpenEditor` criado.

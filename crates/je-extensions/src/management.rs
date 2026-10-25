@@ -49,6 +49,16 @@ pub enum ExtensionInstallSource {
     SettingsSync,
 }
 
+impl ExtensionInstallSource {
+    /// O valor do enum no original (`'command'`, `'settingsSync'`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Command => "command",
+            Self::SettingsSync => "settingsSync",
+        }
+    }
+}
+
 /// `IProductVersion`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductVersion {
@@ -659,6 +669,8 @@ pub struct InstallOptions {
     pub profile_location: Option<String>,
     pub product_version: Option<ProductVersion>,
     pub keep_existing: bool,
+    /// `context`: dicas que o pedido leva ao instalador e aos participantes (as chaves `EXTENSION_INSTALL_*_CONTEXT`).
+    pub context: IndexMap<String, Value>,
 }
 
 /// `UninstallOptions`.

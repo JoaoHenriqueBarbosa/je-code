@@ -15,8 +15,7 @@
 //!   `BrowserViewEvent`, `serializeBrowserViewInfo`, `reviveBrowserViewInfo` e o método
 //!   `onDynamicBrowserViewEvent` do serviço descrevem a serialização do IPC e ficam fora de [`BrowserViewService`].
 //! - `IBrowserViewWindowConfiguration` perde `proxyInfo` (`ITunnelProxyInfo`, de `tunnelProxy.ts`, não portado).
-//! - `isBrowserViewAssociatedResourceNavigation` depende de `extUriBiasedIgnorePathCase` (que no porte carrega o
-//!   ambiente) e acompanha o `BrowserEditorInput`, que também ainda não existe.
+//! - `isBrowserViewAssociatedResourceNavigation` usa o `extUriBiasedIgnorePathCase` do ambiente hospedeiro.
 //! - `IBrowserViewState`, `IBrowserViewInfo` e o resto de dados puros derivam `Clone` (e `PartialEq` quando não
 //!   carregam `VSBuffer`), porque o original os copia livremente por referência.
 
@@ -24,11 +23,12 @@ use indexmap::IndexMap;
 use je_base::buffer::VSBuffer;
 use je_base::nls::localize;
 use je_base::promise::Promise;
-use je_base::uri::URI;
+use je_base::uri::{Field, URI, UriChange};
 
 use super::browser_permissions::{
     BrowserDeviceCandidate, BrowserDeviceType, PermissionCategory, PermissionCategoryState, SerializedBrowserPermissionsSnapshot,
 };
+use crate::resources::ext_uri_biased_ignore_path_case;
 use crate::sandbox::sandbox_settings_resolution_helper::SandboxNetworkRestrictions;
 
 /// `BrowserViewCommandId`: os ids de comando do navegador integrado (`workbench.action.browser.*`).
@@ -317,6 +317,17 @@ pub fn equals_browser_view_audience(first: &BrowserViewAudience, second: &Browse
 pub fn matches_browser_view_audience(candidate: &BrowserViewAudience, pattern: &BrowserViewAudience) -> bool {
     let (BrowserViewAudience::Agent { session_id: candidate_session }, BrowserViewAudience::Agent { session_id: pattern_session }) = (candidate, pattern);
     pattern_session.is_none() || pattern_session == candidate_session
+}
+
+/// `isBrowserViewAssociatedResourceNavigation`: se o alvo é o recurso associado, ignorando consulta e fragmento.
+pub fn is_browser_view_associated_resource_navigation(associated_resource: &URI, target: &str) -> bool {
+    let target_resource = URI::parse(target, false);
+    let without_query_and_fragment = UriChange { query: Field::Clear, fragment: Field::Clear, ..UriChange::default() };
+    ext_uri_biased_ignore_path_case().is_equal(
+        Some(&associated_resource.with(&without_query_and_fragment)),
+        Some(&target_resource.with(&without_query_and_fragment)),
+        false,
+    )
 }
 
 /// `IBrowserViewHost`: identifica a janela do workbench e a sessão opcional da Agents Window que hospedam

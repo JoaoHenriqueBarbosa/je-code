@@ -1574,6 +1574,10 @@ impl IQuickAccessProvider<IAnythingQuickAccessProviderRunOptions> for AnythingQu
         AnythingQuickAccessProvider::default_filter_value(self)
     }
 
+    fn as_disposable(&self) -> Option<&dyn IDisposable> {
+        Some(self)
+    }
+
     fn provide(&self, picker: Rc<dyn IQuickPick>, token: CancellationToken, options: Option<Rc<IAnythingQuickAccessProviderRunOptions>>) -> DisposableRef {
         AnythingQuickAccessProvider::provide(self, picker, token, options)
     }

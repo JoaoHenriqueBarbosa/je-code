@@ -991,7 +991,8 @@ impl UnifiedEnvironmentVariableCollection {
                 value: value.to_owned(),
                 mutator_type,
                 scope: scope.cloned(),
-                options: Some(new_options),
+                // o original guarda `...mutator`, as opções como vieram; o `newOptions` normalizado só serve à comparação
+                options: Some(options),
             };
             self.map.borrow_mut().insert(key, mutator);
             self.on_did_change_collection_emitter.fire(());

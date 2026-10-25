@@ -3,12 +3,13 @@
 //!
 //! Entregue: `name`, `rootPath`, `workspaceFolders`, `workspaceFile`, `isTrusted`, `getWorkspaceFolder`, `asRelativePath`,
 //! `getConfiguration` (`get`, `has`, `update`, `inspect` e os valores como propriedades), `findFiles`,
-//! `onDidChangeConfiguration`, `onDidChangeWorkspaceFolders`, `onDidGrantWorkspaceTrust`, e, quando o binder registrou
+//! `onDidChangeConfiguration`, `onDidChangeWorkspaceFolders`, `onDidGrantWorkspaceTrust`, `fs` e `registerFileSystemProvider` (módulo
+//! `file_system`, quando o binder registrou `MainThreadFileSystem`; o registro pede também os clientes de linguagem) e, quando o binder
+//! registrou
 //! `MainThreadDocuments` e `MainThreadTextEditors`, `textDocuments`, `openTextDocument`, `onDidOpenTextDocument`,
 //! `onDidCloseTextDocument`, `onDidChangeTextDocument` e `onDidSaveTextDocument` (módulo `text_editors`).
 //!
 //! Falta (cada um depende de um serviço do host ainda não portado, e não é preenchido com fachada):
-//! - `fs` e `registerFileSystemProvider`: pedem o `ExtHostConsumerFileSystem` e o `MainThreadFileSystem`;
 //! - `createFileSystemWatcher` e `onDid/WillCreate/Delete/RenameFiles` existem (módulo `file_system_events`) quando o host tem o
 //!   cliente `MainThreadFileSystemEventService` (o watcher pede também os clientes de workspace e configuração);
 //! - `applyEdit` existe (módulo `workspace_edit`, com a classe `WorkspaceEdit`) quando o host tem o cliente `MainThreadBulkEdits`;
@@ -51,6 +52,7 @@ use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, EventTables};
 use crate::api::accessor_namespace;
 use crate::api::text_editors::{self, TextEditorApi};
+use crate::api::file_system::{self, FileSystemApi};
 use crate::api::file_system_events::{self, FileSystemEventsApi};
 use crate::api::notebooks::{self, NotebookApi};
 use crate::api::workspace_edit::{self, WorkspaceEditObjects};
@@ -73,6 +75,8 @@ pub struct WorkspaceServices {
     pub file_system_events: Option<FileSystemEventsApi>,
     /// Sem os clientes `MainThreadNotebook*` não há `notebookDocuments`, `openNotebookDocument` nem os eventos de notebook.
     pub notebooks: Option<NotebookApi>,
+    /// Sem o cliente `MainThreadFileSystem` não há `fs` nem `registerFileSystemProvider`.
+    pub file_system: Option<FileSystemApi>,
 }
 
 /// Uma pasta como o objeto `vscode.WorkspaceFolder` (ver as divergências do módulo).
@@ -356,7 +360,20 @@ pub fn namespace(runner: &NodeRunner, services: &WorkspaceServices, table: &Rc<D
         methods.extend(notebook_methods);
         getters.extend(notebook_getters);
     }
-    accessor_namespace(runner, "workspace", methods, getters)
+    // `registerFileSystemProvider` recebe o provedor da extensão: uma função por referência, própria do namespace.
+    let mut references: Vec<(String, JsData)> = Vec::new();
+    if let Some(api) = &services.file_system {
+        let members = file_system::workspace_members(runner, api);
+        getters.extend(members.getters);
+        references.extend(members.references);
+    }
+    match accessor_namespace(runner, "workspace", methods, getters) {
+        JsData::Object(mut fields) => {
+            fields.extend(references);
+            JsData::Object(fields)
+        }
+        other => other,
+    }
 }
 
 /// `vscode.RelativePattern`: `new RelativePattern(base, pattern)` com `base` sendo `WorkspaceFolder`, `Uri` ou texto.

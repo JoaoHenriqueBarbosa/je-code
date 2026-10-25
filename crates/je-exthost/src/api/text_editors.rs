@@ -8,10 +8,11 @@
 //! `extHostTextEditors.ts`, `extHostTextEditor.ts`, `extHostDocumentData.ts`). Os três só existem quando o binder registrou os clientes
 //! `MainThreadDocuments` e `MainThreadTextEditors` (o `MainThreadDocumentsAndEditors` registra os dois).
 //!
-//! Falta (o serviço do host tem, falta só a ponte): `TextEditor#insertSnippet` (pede a classe `SnippetString`), `setDecorations` e
-//! `createTextEditorDecorationType` (pedem `DecorationRenderOptions` e `ThemeColor` de ponta a ponta), `TextEditor#options` com
-//! `cursorStyle` e `lineNumbers`, `diffInformation`, `workspace.onWillSaveTextDocument`, `registerTextDocumentContentProvider`
-//! (`workspace.notebookDocuments` e os membros de notebook estão em `notebooks`).
+//! `window.createTextEditorDecorationType`, `TextEditor#setDecorations` e `TextEditor#insertSnippet` também estão aqui.
+//!
+//! Falta (o serviço do host tem, falta só a ponte): `TextEditor#options` com `cursorStyle` e `lineNumbers`, `diffInformation`,
+//! `workspace.onWillSaveTextDocument`, `registerTextDocumentContentProvider` (`workspace.notebookDocuments` e os membros de notebook
+//! estão em `notebooks`).
 //!
 //! Divergências:
 //! - O motor entrega objeto comum por cópia e só função, promessa e instância de classe nativa por identidade, então `TextDocument`,
@@ -24,7 +25,10 @@
 //!   depois de o documento fechar continua legível (`isClosed` vale `true`), como no original, ao custo de a memória do espelho do
 //!   documento só ser liberada com o host.
 //! - `TextEditor#options` devolve um objeto copiado com `tabSize`, `indentSize` e `insertSpaces`: `editor.options.tabSize = 2` não tem
-//!   efeito, e `editor.options = { tabSize: 2 }` (o `assign` do original) tem. `insertSnippet` e as decorações estão na lista acima.
+//!   efeito, e `editor.options = { tabSize: 2 }` (o `assign` do original) tem.
+//! - `createTextEditorDecorationType` devolve um objeto com `key` e `dispose` (a classe `Disposable`); a extensão chamadora é `je.exthost`.
+//!   `insertSnippet` e `setDecorations` aceitam um literal `{ value }` onde o original pede a `SnippetString`, e o `setDecorations` sem
+//!   lista de intervalos lança em vez de falhar adiante.
 //! - `TextEditor#edit`: se o `callback` lança, a exceção sobe por `edit` (como no original), mas as edições que ele já coletou seguem
 //!   para o editor, porque o porte aplica no mesmo passo em que chama o `callback`.
 //! - `TextDocument#getWordRangeAtPosition` não aceita o argumento `regexp` (o motor entrega a `RegExp` como objeto opaco, e o
@@ -47,15 +51,25 @@ use je_workbench::api::common::ext_host_editors::{
     ExtHostEditors, ShowTextDocumentArgument, TextEditorOptionsChangeEvent, TextEditorSelectionChangeEvent, TextEditorViewColumnChangeEvent,
     TextEditorVisibleRangesChangeEvent,
 };
-use je_workbench::api::common::ext_host_protocol::{CreateDocumentOptions, OpenDocumentOptions, UndoStopOptions};
-use je_workbench::api::common::ext_host_text_editor::{EditLocation, RangeOrSelection, TextEditor, TextEditorEdit, TextEditorOptionsInput};
-use je_workbench::api::common::ext_host_types::{EndOfLine, Selection, TextDocumentChangeReason, TextEditorRevealType, TextEditorSelectionChangeKind};
+use je_workbench::api::common::ext_host_protocol::{CreateDocumentOptions, OpenDocumentOptions, SnippetOptions, UndoStopOptions};
+use je_workbench::api::common::ext_host_text_editor::{
+    DecorationTypeHandle, EditLocation, RangeOrSelection, SnippetLocation, TextEditor, TextEditorEdit, TextEditorOptionsInput,
+};
+use je_workbench::api::common::ext_host_types::{
+    ColorValue, DecorationInstanceRenderOptions, DecorationOptions, DecorationRangeBehavior, DecorationRanges, DecorationRenderOptions, EndOfLine, HoverMessage,
+    PathOrUri, RangeOrPosition, Selection, SnippetString, TextDocumentChangeReason, TextEditorRevealType, TextEditorSelectionChangeKind,
+    ThemableDecorationAttachmentRenderOptions, ThemableDecorationInstanceRenderOptions, ThemableDecorationRenderOptions,
+};
+use je_editor::model::OverviewRulerLane;
 use zjsc::api::embed_node::{ClassSpec, JsData, MethodCallback, NodeRunner, CLASS_KEY};
 
 use crate::api::commands::promise_to_js;
 use crate::api::disposable::DisposableTable;
 use crate::api::events::event_function;
+use crate::api::language_types::marked_string_from_js;
+use crate::api::languages::host_extension;
 use crate::api::types::{position_data, range_data, selection_data, to_position, to_range, to_selection};
+use crate::api::window::theme_color_of;
 use crate::convert::{class_name, field, js_to_dynamic, js_to_error, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
 /// Os serviços do host que a ponte usa.
@@ -82,6 +96,7 @@ pub struct TextObjects {
     editors: RefCell<HashMap<String, TextEditor>>,
     edits: RefCell<HashMap<u64, Rc<TextEditorEdit>>>,
     finished_edits: RefCell<HashSet<u64>>,
+    decoration_types: RefCell<HashMap<String, DecorationTypeHandle>>,
 }
 
 fn instance(class: &str, id: JsData) -> JsData {
@@ -164,6 +179,181 @@ impl TextObjects {
             return Err("Edit is only valid while callback runs".to_owned());
         }
         Err("TextEditorEdit: construtor desconhecido".to_owned())
+    }
+
+    fn decoration_type_of(&self, value: &JsData) -> Result<DecorationTypeHandle, String> {
+        match field(value, "key") {
+            Some(JsData::Str(key)) => self.decoration_types.borrow().get(key).cloned().ok_or_else(|| "TextEditorDecorationType: tipo de decoração desconhecido".to_owned()),
+            _ => Err("esperava um TextEditorDecorationType".to_owned()),
+        }
+    }
+}
+
+// --- decorações e snippets
+
+fn color_value(value: Option<&JsData>) -> Result<Option<ColorValue>, String> {
+    match value {
+        Some(JsData::Str(text)) => Ok(Some(ColorValue::Text(text.clone()))),
+        Some(color @ JsData::Object(_)) => Ok(Some(ColorValue::Theme(theme_color_of(color)?))),
+        _ => Ok(None),
+    }
+}
+
+fn path_or_uri(value: Option<&JsData>) -> Result<Option<PathOrUri>, String> {
+    match value {
+        Some(JsData::Str(path)) => Ok(Some(PathOrUri::Path(path.clone()))),
+        Some(uri @ JsData::Object(_)) => Ok(Some(PathOrUri::Uri(uri_from_js(uri)?))),
+        _ => Ok(None),
+    }
+}
+
+/// O objeto de `name` em `value`, convertido por `convert`; ausente ou não objeto vale `None`.
+fn nested<T>(value: &JsData, name: &str, convert: impl Fn(&JsData) -> Result<T, String>) -> Result<Option<T>, String> {
+    match field(value, name) {
+        Some(inner @ JsData::Object(_)) => convert(inner).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn attachment_options(value: &JsData) -> Result<ThemableDecorationAttachmentRenderOptions, String> {
+    let text = |name: &str| opt_string(field(value, name));
+    let color = |name: &str| color_value(field(value, name));
+    Ok(ThemableDecorationAttachmentRenderOptions {
+        content_text: text("contentText"),
+        content_icon_path: path_or_uri(field(value, "contentIconPath"))?,
+        border: text("border"),
+        border_color: color("borderColor")?,
+        font_style: text("fontStyle"),
+        font_weight: text("fontWeight"),
+        text_decoration: text("textDecoration"),
+        color: color("color")?,
+        background_color: color("backgroundColor")?,
+        margin: text("margin"),
+        width: text("width"),
+        height: text("height"),
+    })
+}
+
+fn themable_options(value: &JsData) -> Result<ThemableDecorationRenderOptions, String> {
+    let text = |name: &str| opt_string(field(value, name));
+    let color = |name: &str| color_value(field(value, name));
+    Ok(ThemableDecorationRenderOptions {
+        background_color: color("backgroundColor")?,
+        outline: text("outline"),
+        outline_color: color("outlineColor")?,
+        outline_style: text("outlineStyle"),
+        outline_width: text("outlineWidth"),
+        border: text("border"),
+        border_color: color("borderColor")?,
+        border_radius: text("borderRadius"),
+        border_spacing: text("borderSpacing"),
+        border_style: text("borderStyle"),
+        border_width: text("borderWidth"),
+        font_style: text("fontStyle"),
+        font_weight: text("fontWeight"),
+        text_decoration: text("textDecoration"),
+        cursor: text("cursor"),
+        color: color("color")?,
+        opacity: text("opacity"),
+        letter_spacing: text("letterSpacing"),
+        gutter_icon_path: path_or_uri(field(value, "gutterIconPath"))?,
+        gutter_icon_size: text("gutterIconSize"),
+        overview_ruler_color: color("overviewRulerColor")?,
+        before: nested(value, "before", attachment_options)?,
+        after: nested(value, "after", attachment_options)?,
+    })
+}
+
+fn overview_ruler_lane(value: Option<&JsData>) -> Option<OverviewRulerLane> {
+    match opt_number(value)? as i64 {
+        1 => Some(OverviewRulerLane::Left),
+        2 => Some(OverviewRulerLane::Center),
+        4 => Some(OverviewRulerLane::Right),
+        7 => Some(OverviewRulerLane::Full),
+        _ => None,
+    }
+}
+
+/// `DecorationRenderOptions`: as opções comuns, `isWholeLine`, `rangeBehavior`, `overviewRulerLane`, `light` e `dark`.
+fn decoration_render_options(value: &JsData) -> Result<DecorationRenderOptions, String> {
+    Ok(DecorationRenderOptions {
+        base: themable_options(value)?,
+        is_whole_line: opt_bool(field(value, "isWholeLine")),
+        range_behavior: opt_number(field(value, "rangeBehavior")).and_then(|behavior| DecorationRangeBehavior::from_value(behavior as i32)),
+        overview_ruler_lane: overview_ruler_lane(field(value, "overviewRulerLane")),
+        light: nested(value, "light", themable_options)?,
+        dark: nested(value, "dark", themable_options)?,
+    })
+}
+
+fn instance_themable_options(value: &JsData) -> Result<ThemableDecorationInstanceRenderOptions, String> {
+    Ok(ThemableDecorationInstanceRenderOptions { before: nested(value, "before", attachment_options)?, after: nested(value, "after", attachment_options)? })
+}
+
+fn decoration_instance_options(value: &JsData) -> Result<DecorationInstanceRenderOptions, String> {
+    Ok(DecorationInstanceRenderOptions {
+        base: instance_themable_options(value)?,
+        light: nested(value, "light", instance_themable_options)?,
+        dark: nested(value, "dark", instance_themable_options)?,
+    })
+}
+
+fn hover_message(value: Option<&JsData>) -> Result<Option<HoverMessage>, String> {
+    let marked = |item: &JsData| marked_string_from_js(item).map_err(|error| error.message);
+    match value {
+        Some(JsData::Array(items)) => items.iter().map(marked).collect::<Result<Vec<_>, _>>().map(|items| Some(HoverMessage::Many(items))),
+        Some(JsData::Undefined | JsData::Null) | None => Ok(None),
+        Some(item) => marked(item).map(|item| Some(HoverMessage::One(item))),
+    }
+}
+
+/// `DecorationOptions`: `range`, `hoverMessage` e `renderOptions`.
+fn decoration_options(value: &JsData) -> Result<DecorationOptions, String> {
+    Ok(DecorationOptions {
+        range: to_range(field(value, "range").ok_or_else(|| "DecorationOptions.range é obrigatório".to_owned())?)?,
+        hover_message: hover_message(field(value, "hoverMessage"))?,
+        render_options: nested(value, "renderOptions", decoration_instance_options)?,
+    })
+}
+
+/// `Range[] | DecorationOptions[]`: a lista é de `DecorationOptions` quando algum item tem `range`.
+fn decoration_ranges(value: Option<&JsData>) -> Result<DecorationRanges, String> {
+    let Some(JsData::Array(items)) = value else { return Err("setDecorations: a lista de intervalos é obrigatória".to_owned()) };
+    if items.iter().any(|item| field(item, "range").is_some()) {
+        items.iter().map(decoration_options).collect::<Result<Vec<_>, _>>().map(DecorationRanges::Options)
+    } else {
+        items.iter().map(to_range).collect::<Result<Vec<_>, _>>().map(DecorationRanges::Ranges)
+    }
+}
+
+/// `Range | Position` pelo formato do valor (o `Range` tem `start`).
+fn range_or_position(value: &JsData) -> Result<RangeOrPosition, String> {
+    if field(value, "start").is_some() {
+        Ok(RangeOrPosition::Range(to_range(value)?))
+    } else {
+        Ok(RangeOrPosition::Position(to_position(value)?))
+    }
+}
+
+/// `Position | Range | readonly Position[] | readonly Range[] | undefined`: o `location` de `insertSnippet`.
+fn snippet_location(value: Option<&JsData>) -> Result<Option<SnippetLocation>, String> {
+    match value {
+        None | Some(JsData::Undefined | JsData::Null) => Ok(None),
+        Some(JsData::Array(items)) => items.iter().map(range_or_position).collect::<Result<Vec<_>, _>>().map(|items| Some(SnippetLocation::Many(items))),
+        Some(item) => Ok(Some(match range_or_position(item)? {
+            RangeOrPosition::Range(range) => SnippetLocation::Range(range),
+            RangeOrPosition::Position(position) => SnippetLocation::Position(position),
+        })),
+    }
+}
+
+/// O padrão `{ undoStopBefore: true, undoStopAfter: true }` só vale sem objeto: um objeto parcial deixa o campo ausente `undefined`.
+fn snippet_options(value: Option<&JsData>) -> SnippetOptions {
+    let Some(options @ JsData::Object(_)) = value else { return SnippetOptions::default() };
+    SnippetOptions {
+        undo_stop_before: opt_bool(field(options, "undoStopBefore")).unwrap_or(false),
+        undo_stop_after: opt_bool(field(options, "undoStopAfter")).unwrap_or(false),
+        keep_whitespace: opt_bool(field(options, "keepWhitespace")),
     }
 }
 
@@ -401,7 +591,21 @@ fn define_editor_class(runner: &NodeRunner, objects: &Rc<TextObjects>) {
     ];
 
     let (edit_runner, edit_objects) = (runner.clone(), objects.clone());
+    let (snippet_runner, decoration_objects) = (runner.clone(), objects.clone());
     let methods = vec![
+        editor_method(objects, "insertSnippet", 3, move |editor, args| {
+            let snippet = match require_arg(args, 0, "insertSnippet: o snippet")? {
+                snippet @ JsData::Object(_) => SnippetString::new(Some(&string_arg(std::slice::from_ref(field(snippet, "value").unwrap_or(&JsData::Undefined)), 0, "SnippetString.value")?)),
+                _ => return Err("insertSnippet: esperava um SnippetString".to_owned()),
+            };
+            let inserted = editor.insert_snippet(&snippet, snippet_location(args.get(1))?, Some(snippet_options(args.get(2))));
+            Ok(promise_to_js(&snippet_runner, inserted, |inserted| JsData::Bool(*inserted)))
+        }),
+        editor_method(objects, "setDecorations", 2, move |editor, args| {
+            let decoration_type = decoration_objects.decoration_type_of(require_arg(args, 0, "setDecorations: o tipo de decoração")?)?;
+            editor.set_decorations(&decoration_type, &decoration_ranges(args.get(1))?);
+            Ok(JsData::Undefined)
+        }),
         editor_method(objects, "edit", 2, move |editor, args| {
             let Some(JsData::Handle(callback)) = args.first().cloned() else { return Err("TextEditor#edit: o callback precisa ser função".to_owned()) };
             let options = match args.get(1) {
@@ -665,7 +869,29 @@ pub fn window_members(runner: &NodeRunner, api: &TextEditorApi, table: &Rc<Dispo
     }
 
     let (show_runner, show_api) = (runner.clone(), api.clone());
-    let methods: Methods = vec![("showTextDocument".to_owned(), 3, Rc::new(move |_, args| show_text_document(&show_runner, &show_api, args)))];
+    let (decoration_editors, decoration_objects, decoration_table) = (services.editors.clone(), objects.clone(), table.clone());
+    let methods: Methods = vec![
+        ("showTextDocument".to_owned(), 3, Rc::new(move |_, args| show_text_document(&show_runner, &show_api, args))),
+        (
+            "createTextEditorDecorationType".to_owned(),
+            1,
+            Rc::new(move |_, args| {
+                let options = match args.first() {
+                    Some(options @ JsData::Object(_)) => decoration_render_options(options)?,
+                    _ => DecorationRenderOptions::default(),
+                };
+                let handle = decoration_editors.create_text_editor_decoration_type(&host_extension(), &options);
+                let key = handle.key().to_owned();
+                decoration_objects.decoration_types.borrow_mut().insert(key.clone(), handle.clone());
+                let id = decoration_table.add(Rc::new(handle));
+                Ok(JsData::Object(vec![
+                    (CLASS_KEY.to_owned(), JsData::Str("Disposable".to_owned())),
+                    ("_id".to_owned(), JsData::Num(id as f64)),
+                    ("key".to_owned(), JsData::Str(key)),
+                ]))
+            }),
+        ),
+    ];
     (methods, getters)
 }
 

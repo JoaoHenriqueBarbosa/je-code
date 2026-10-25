@@ -16,6 +16,7 @@ pub mod user_attention;
 pub mod extensions;
 pub mod statusbar;
 pub mod output;
+pub mod log;
 pub mod layout;
 pub mod accounts;
 
@@ -26,6 +27,7 @@ pub mod host;
 // Contratos de serviço que os dublês de `test::common::workbench_test_services` implementam.
 pub mod lifecycle;
 pub mod user_data_profile;
+pub mod user_data_sync;
 pub mod working_copy;
 pub mod files_configuration;
 
@@ -43,6 +45,8 @@ pub mod history;
 
 // `ILanguageDetectionService` e o `ITextEditorModel`/`ITextModelService` que os modelos de texto do workbench leem.
 pub mod language_detection;
+// `ILanguageStatusService` (`languageStatus/common/languageStatusService.ts`), que o `MainThreadLanguages` lê.
+pub mod language_status;
 pub mod textmodel_resolver;
 
 // `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
@@ -89,3 +93,6 @@ pub mod commands;
 pub mod storage;
 
 pub mod themes;
+
+// Diálogos do workbench (`dialogs/browser/simpleFileDialog.ts`).
+pub mod dialogs;

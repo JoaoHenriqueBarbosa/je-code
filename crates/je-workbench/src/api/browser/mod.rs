@@ -24,6 +24,9 @@ pub mod main_thread_tree_views;
 pub mod main_thread_message_service;
 pub mod main_thread_output_service;
 pub mod main_thread_languages;
+// Estado das extensões: `mainThreadStorage.ts` e `mainThreadSecretState.ts`.
+pub mod main_thread_secret_state;
+pub mod main_thread_storage;
 
 // Diagnostics, DocumentContentProviders, EditorTabs, Telemetry e Authentication (parcial): `mainThreadDiagnostics.ts`,
 // `mainThreadDocumentContentProviders.ts`, `mainThreadEditorTabs.ts`, `mainThreadTelemetry.ts`, `mainThreadAuthentication.ts`.

@@ -33,6 +33,11 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tz-syste
 je-widgets = { path = "../je-widgets" }
 # O nó (`NodeId`) e a árvore (`Ui`) em que o `EditorPart` e o `EditorGroupView` se apoiam para o grid e o layout centralizado.
 je-ui = { path = "../je-ui" }
+# Cor, retângulo e estilo de texto (`Rgba`, `kurbo::Rect`, `TextStyle`) dos renderers nativos do workbench, como o das notificações.
+je-render = { path = "../je-render" }
+# A medição de texto dos renderers nativos (a quebra da mensagem da notificação) e o medidor de caractere do terminal: o
+# mesmo sistema de texto nativo que desenha a UI, no lugar do `getBoundingClientRect` do DOM.
+je-text = { path = "../je-text" }
 # `new URL(...)` (WHATWG) do `UrlFinder`: valida cada trecho que parece uma URL de servidor local.
 url = "2"
 
@@ -49,11 +54,6 @@ indexmap = "2"
 tempfile = "3"
 # O `crypto.createHash('sha256')` do `workspaceTags.test.ts` (o mesmo `sha2` do je-base).
 sha2 = "0.10"
-# A cor do texto (`Rgba`) do estilo do rótulo de `settings_editor_setting_indicators` nos testes.
-je-render = { path = "../je-render" }
-# O medidor de caractere do terminal nos testes (`terminalConfigurationService.test.ts`) mede com o mesmo sistema de texto
-# nativo que desenha a UI, no lugar do `getBoundingClientRect` do DOM.
-je-text = { path = "../je-text" }
 # O host de extensões real (zjsc rodando o código das extensões) para o teste de integração `extension_host_manager`; o `je-exthost`
 # depende do `je-workbench`, e uma dependência de desenvolvimento circular é aceita pelo Cargo (só os testes de integração a usam).
 je-exthost = { path = "../je-exthost" }

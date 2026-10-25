@@ -67,7 +67,7 @@ use crate::api::languages::host_extension;
 use crate::api::text_editors::TextObjects;
 use crate::api::types::marked;
 use crate::api::{getter, handle_field, handle_object, setter};
-use crate::convert::{class_name, dynamic_to_js, exported, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
+use crate::convert::{bytes_of, bytes_to_js, class_name, dynamic_to_js, exported, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
 
 /// Os serviços do host que os membros de notebook usam.
 #[derive(Clone)]
@@ -173,27 +173,6 @@ impl NotebookObjects {
 
 // ---- os valores de saída e de dados
 
-fn byte_of(item: &JsData) -> Result<u8, String> {
-    match item {
-        JsData::Num(number) if number.fract() == 0.0 && (0.0..256.0).contains(number) => Ok(*number as u8),
-        _ => Err("NotebookCellOutputItem: os bytes precisam ser números inteiros entre 0 e 255".to_owned()),
-    }
-}
-
-/// Os bytes de `data`: uma lista de números, um texto (os bytes UTF-8) ou um `Uint8Array` copiado como objeto de índices.
-fn bytes_of(value: Option<&JsData>) -> Result<Vec<u8>, String> {
-    match value {
-        Some(JsData::Str(text)) => Ok(text.clone().into_bytes()),
-        Some(JsData::Array(items)) => items.iter().map(byte_of).collect(),
-        Some(JsData::Object(fields)) => {
-            let mut indexed: Vec<(usize, &JsData)> = fields.iter().filter_map(|(key, item)| key.parse::<usize>().ok().map(|index| (index, item))).collect();
-            indexed.sort_by_key(|(index, _)| *index);
-            indexed.into_iter().map(|(_, item)| byte_of(item)).collect()
-        }
-        _ => Err("NotebookCellOutputItem.data precisa ser uma lista de bytes".to_owned()),
-    }
-}
-
 fn output_item_of(value: &JsData) -> Result<NotebookCellOutputItem, String> {
     let mime = opt_string(field(value, "mime")).ok_or("NotebookCellOutputItem.mime precisa ser texto")?;
     NotebookCellOutputItem::new(bytes_of(field(value, "data"))?, &mime).map_err(|error| error.message)
@@ -202,7 +181,7 @@ fn output_item_of(value: &JsData) -> Result<NotebookCellOutputItem, String> {
 fn output_item_fields(item: &NotebookCellOutputItem) -> Vec<(String, JsData)> {
     vec![
         ("mime".to_owned(), JsData::Str(item.mime().to_owned())),
-        ("data".to_owned(), JsData::Array(item.data.iter().map(|byte| JsData::Num(f64::from(*byte))).collect())),
+        ("data".to_owned(), bytes_to_js(&item.data)),
     ]
 }
 

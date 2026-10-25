@@ -68,6 +68,7 @@ use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
 use crate::api::quick_session::{self, QuickSessions};
 use crate::api::terminal::{self, TerminalObjects};
+use crate::api::tabs::{self, TabsApi};
 use crate::api::text_editors::{self, TextEditorApi, TextObjects};
 use crate::api::tree_views::{self, TreeViewObjects};
 use crate::api::accessor_namespace;
@@ -94,6 +95,8 @@ pub struct WindowServices {
     /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `activeTextEditor`, `visibleTextEditors`,
     /// `showTextDocument` nem os eventos de editor.
     pub text_editors: Option<TextEditorApi>,
+    /// Sem o cliente `MainThreadEditorTabs` não há `tabGroups`.
+    pub tabs: Option<TabsApi>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -448,6 +451,9 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
     if let Some(views) = &services.tree_views {
         references.extend(tree_views::window_members(runner, &js, views, &state.tree_view_objects, table, events));
     }
+    if let Some(tabs) = &services.tabs {
+        references.push(tabs::window_member(runner, tabs, table));
+    }
     match accessor_namespace(runner, "window", methods, getters) {
         JsData::Object(mut fields) => {
             fields.extend(references);
@@ -465,7 +471,7 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
     progress::define_class(runner, &state.progress_reporters);
     text_editors::define_classes(runner, &state.text_objects);
     terminal::define_classes(runner, &state.terminal_objects);
-    tree_views::define_classes(runner, &state.tree_view_objects, table);
+    let tree_view_classes = tree_views::define_classes(runner, &state.tree_view_objects, table);
     quick_session::define_classes(runner, &state.quick_sessions, table);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
@@ -479,9 +485,12 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
         statics: vec![],
         parent: None,
     });
-    vec![
+    let mut classes = vec![
         ("ThemeColor".to_owned(), JsData::Handle(Rc::new(theme_color))),
         ("TerminalProfile".to_owned(), terminal::terminal_profile_class(runner)),
+        ("TerminalLink".to_owned(), terminal::terminal_link_class(runner)),
         ("TreeItem".to_owned(), tree_views::tree_item_class(runner)),
-    ]
+    ];
+    classes.extend(tree_view_classes);
+    classes
 }

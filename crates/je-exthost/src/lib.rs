@@ -24,5 +24,6 @@ pub mod local_context;
 // de módulos em disco, que não existem no alvo web). O `ext_host_extension_service` não depende deles (só do `NodeRunner` e do
 // `require` publicado em `globalThis.__jeRequire`) e `vscode.extensions` o lê, então fica fora do filtro do alvo web.
 pub mod ext_host_extension_service;
+pub mod extension_storage_paths;
 #[cfg(not(target_family = "wasm"))]
 pub mod local_extension_host;

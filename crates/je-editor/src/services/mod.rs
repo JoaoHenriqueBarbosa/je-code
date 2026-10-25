@@ -5,4 +5,6 @@ pub mod abstract_code_editor_service;
 pub mod clipboard_service;
 pub mod css_value;
 pub mod decoration_render_options;
+pub mod marker_decorations;
+pub mod marker_decorations_service;
 pub mod theme_service;
