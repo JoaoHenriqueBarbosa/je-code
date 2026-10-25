@@ -100,7 +100,7 @@ use crate::selection::Selection;
 use crate::snippet::snippet_controller2::{PartialSnippetInsertOptions, SnippetController2};
 use crate::text::abstract_text::AbstractText;
 use crate::text_model::TextModel;
-use crate::text_model_edit_source::{InlineCompletionAcceptData, InlineCompletionPartialAcceptData, TextModelEditSource};
+use crate::text_model_edit_source::{EditSources, InlineCompletionAcceptData, InlineCompletionPartialAcceptData, TextModelEditSource};
 use crate::text_model_events::ModelContentChangedEvent;
 use crate::text_model_text::TextModelText;
 
@@ -1719,7 +1719,7 @@ impl InlineCompletionsModel {
         let provider_id = source.provider.provider_id().cloned();
         let correlation_id = completion.get_source_completion().correlation_id.clone();
         match kind {
-            Some(kind) => TextModelEditSource::inline_completion_partial_accept(&InlineCompletionPartialAcceptData {
+            Some(kind) => EditSources::inline_completion_partial_accept(&InlineCompletionPartialAcceptData {
                 nes: completion.is_inline_edit(),
                 request_uuid: completion.request_uuid(),
                 provider_id,
@@ -1727,7 +1727,7 @@ impl InlineCompletionsModel {
                 kind: kind.to_owned(),
                 correlation_id,
             }),
-            None => TextModelEditSource::inline_completion_accept(&InlineCompletionAcceptData {
+            None => EditSources::inline_completion_accept(&InlineCompletionAcceptData {
                 nes: completion.is_inline_edit(),
                 request_uuid: completion.request_uuid(),
                 correlation_id,
@@ -1903,9 +1903,10 @@ impl InlineCompletionsModel {
                 word_reg_exp.set_last_index(0);
 
                 let m1 = word_reg_exp.exec(text);
-                let mut accept_until_index_exclusive = match &m1 {
-                    Some(m1) if m1.index() == 0 => m1.whole().len(),
-                    Some(m1) => m1.index(),
+                let whole = m1.as_ref().and_then(|m1| m1.captures[0].clone());
+                let mut accept_until_index_exclusive = match whole {
+                    Some(range) if range.start == 0 => range.len(),
+                    Some(range) => range.start,
                     None => text.len(),
                 };
                 word_reg_exp.set_last_index(0);
