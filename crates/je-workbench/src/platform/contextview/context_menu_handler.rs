@@ -226,7 +226,10 @@ impl IContextViewDelegate for MenuViewDelegate {
 
         let action_runner: Rc<dyn IActionRunner> = match self.delegate.action_runner() {
             Some(runner) => runner,
-            None => menu_disposables.add_rc(ActionRunner::new()),
+            None => {
+                let runner = menu_disposables.add_rc(ActionRunner::new());
+                runner
+            }
         };
         let log_telemetry = !self.delegate.skip_telemetry();
         {

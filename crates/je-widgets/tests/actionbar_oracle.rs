@@ -28,7 +28,8 @@ use support::{LeakGuard, create_container, ensure_no_disposables_are_leaked_in_t
 
 /// `store.add(new Action(id, label))`.
 fn action(store: &LeakGuard, id: &str, label: &str) -> ActionRef {
-    store.add_rc(Action::new(id, label, "", true, None))
+    let action = store.add_rc(Action::new(id, label, "", true, None));
+    action
 }
 
 fn same(a: &ActionRef, b: &ActionRef) -> bool {

@@ -180,7 +180,7 @@ fn html_context_menus_retain_the_modifier_at_opening_and_update_without_hover() 
             context_view_service.clone(),
             Rc::new(MockKeybindingService),
             Rc::new(UnusedMenuService),
-            disposables.add_rc(MockContextKeyService::new()),
+            { let context_key_service = disposables.add_rc(MockContextKeyService::new()); context_key_service },
             Rc::new(unthemed_menu_styles()),
         ));
         service.configure(IContextMenuHandlerOptions { block_mouse: false });
@@ -214,7 +214,7 @@ fn alt_at_open_and_alt_at_activation() {
             let ui = Ui::new();
             let modifiers = ModifierKeyEmitter::get_instance(&ui);
             let commands = Rc::new(RecordingCommandService::default());
-            let context_key_service = disposables.add_rc(MockContextKeyService::new());
+            let context_key_service = { let context_key_service = disposables.add_rc(MockContextKeyService::new()); context_key_service };
             let action = MenuItemAction::new(
                 CommandAction::new("primary", "Primary"),
                 Some(CommandAction::new("alternative", "Alternative")),

@@ -47,12 +47,13 @@ fn logs_telemetry_before_an_action_disposes_the_toolbar() {
     };
 
     let telemetry_service = Rc::new(TestTelemetryService::default());
+    let context_key_service = disposables.add_rc(MockContextKeyService::new());
     let tool_bar = disposables.add_rc(WorkbenchToolBar::new(
         &ui,
         container,
         Some(IWorkbenchToolBarOptions { telemetry_source: Some("testToolBar".to_owned()), ..IWorkbenchToolBarOptions::default() }),
         Rc::new(UnusedMenuService),
-        disposables.add_rc(MockContextKeyService::new()),
+        context_key_service,
         Rc::new(NoopContextMenuService),
         Rc::new(MockKeybindingService),
         Rc::new(UnusedCommandService),
