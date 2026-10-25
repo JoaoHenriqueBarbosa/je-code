@@ -419,7 +419,7 @@ pub fn register_notification_commands(center: Rc<dyn INotificationsCenterControl
     ));
 
     // Configure Do Not Disturb by Source
-    registrations.add(register_command(TOGGLE_DO_NOT_DISTURB_MODE_BY_SOURCE, Rc::new(|accessor, _| toggle_do_not_disturb_by_source(&*accessor.get(I_NOTIFICATION_SERVICE), &*accessor.get(I_QUICK_INPUT_SERVICE)))));
+    registrations.add(register_command(TOGGLE_DO_NOT_DISTURB_MODE_BY_SOURCE, Rc::new(|accessor, _| toggle_do_not_disturb_by_source(&accessor.get(I_NOTIFICATION_SERVICE), &accessor.get(I_QUICK_INPUT_SERVICE)))));
 
     // Commands for Command Palette
     let category = Category::Localized(localize2("notifications", "Notifications"));
