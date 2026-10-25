@@ -383,8 +383,8 @@ fn a_plain_channel_registers_in_the_workbench_and_writes_through_the_logger() {
         assert_eq!(descriptor.language_id, None);
         assert_eq!(descriptor.extension_id.as_deref(), Some("je.exthost"));
         assert!(descriptor.id.starts_with("extension-output-je.exthost-#") && descriptor.id.ends_with("-Meu Canal"), "id inesperado: {}", descriptor.id);
-        let source = descriptor.source.expect("o canal comum tem o arquivo de saída como fonte");
-        assert!(source[0].resource.path().to_string_lossy().ends_with("/1-Meu Canal.log"));
+        let source = descriptor.single_source().expect("o canal comum tem o arquivo de saída como fonte");
+        assert!(source.resource.path().to_string_lossy().ends_with("/1-Meu Canal.log"));
 
         let directories = observed.directories.created.borrow();
         assert_eq!(directories.len(), 1, "a pasta de saídas é criada uma vez");
