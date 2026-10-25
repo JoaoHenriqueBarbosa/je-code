@@ -3394,6 +3394,7 @@ const ACTION_ICON_SIZE: f64 = 16.0;
 pub struct ModernSpacing {
     pub size20: f64,
     pub size40: f64,
+    pub size60: f64,
     pub size160: f64,
     pub size200: f64,
     pub size240: f64,
@@ -3406,7 +3407,7 @@ pub struct ModernSpacing {
 
 impl Default for ModernSpacing {
     fn default() -> Self {
-        Self { size20: 2.0, size40: 4.0, size160: 16.0, size200: 20.0, size240: 24.0, size280: 28.0, stroke: 1.0, corner_small: 4.0, corner_medium: 6.0 }
+        Self { size20: 2.0, size40: 4.0, size60: 6.0, size160: 16.0, size200: 20.0, size240: 24.0, size280: 28.0, stroke: 1.0, corner_small: 4.0, corner_medium: 6.0 }
     }
 }
 
@@ -3470,6 +3471,11 @@ pub struct TabBoxContext {
     pub starts_row: bool,
     /// `.editor-group-container.active`: o `.action-label.codicon` só tem 2px de recuo no grupo ativo.
     pub group_active: bool,
+    /// `.modern-ui-tabs` na raiz: a `.tab` ganha o `border-block` transparente de `tabs.css` ([`TabBoxContext::pill_border_block`]).
+    pub modern_ui_tabs: bool,
+    /// `.title.two-tab-bars` e `.tabs-and-actions-container:first-child` (a barra das abas fixadas).
+    pub two_tab_bars: bool,
+    pub first_tab_bar: bool,
     /// `getBoundingClientRect()` da aba, em px de layout.
     pub tab_width: f64,
     pub tab_height: f64,
@@ -3489,6 +3495,9 @@ impl Default for TabBoxContext {
             hovered: false,
             starts_row: false,
             group_active: true,
+            modern_ui_tabs: false,
+            two_tab_bars: false,
+            first_tab_bar: false,
             tab_width: 0.0,
             tab_height: 0.0,
         }
@@ -3496,6 +3505,25 @@ impl Default for TabBoxContext {
 }
 
 impl TabBoxContext {
+    /// `border-block-width` (cima, baixo) da `.tab` do Modern UI: `border-block: size20` na quebra (`tabs.css` L130 a L133, onze
+    /// classes, que vence as regras de duas barras de dez), `size60 size20` na barra fixada e `size20 size60` na outra com duas
+    /// barras (L359 a L365), `size40` na linha única (L331 a L333) e zero no estilo conectado (`connectedEditorTabs.css` L215).
+    /// Sem o Modern UI a `.tab` não tem esse recuo.
+    pub fn pill_border_block(&self) -> (f64, f64) {
+        let s = &self.spacing;
+        if !self.modern_ui_tabs || self.connected {
+            return (0.0, 0.0);
+        }
+        if self.wrapping {
+            return (s.size20, s.size20);
+        }
+        if self.two_tab_bars {
+            return if self.first_tab_bar { (s.size60, s.size20) } else { (s.size20, s.size60) };
+        }
+
+        (s.size40, s.size40)
+    }
+
     /// `--modern-ui-connected-tab-row-height`: `tab-height + size40` e, na linha única fora da barra superior,
     /// `tab-height + size40 * 2 - strokeThickness` (`connectedEditorTabs.css` L119 e L158). É também a altura da aba.
     pub fn connected_row_height(&self) -> f64 {
@@ -3601,8 +3629,9 @@ pub fn tab_action_geometry(classes: &TabCssClasses, ctx: &TabBoxContext) -> Opti
         // `right: 0` com `margin: 0 size20` e `border-right` (tabs.css L521)
         (false, false) => (ctx.tab_width - s.size20 - TAB_ACTIONS_OVERLAY_WIDTH, 0.0, s.stroke),
     };
-    let top = if !ctx.connected && classes.dirty_border_top { s.size20 } else { 0.0 };
-    let actions = BoxRect { left: box_left, top, right: box_left + TAB_ACTIONS_OVERLAY_WIDTH, bottom: ctx.tab_height };
+    let (border_top, border_bottom) = ctx.pill_border_block();
+    let top = border_top + if !ctx.connected && classes.dirty_border_top { s.size20 } else { 0.0 };
+    let actions = BoxRect { left: box_left, top, right: box_left + TAB_ACTIONS_OVERLAY_WIDTH, bottom: ctx.tab_height - border_bottom };
 
     let padding = if ctx.group_active { 2.0 } else { 3.0 };
     let size = ACTION_ICON_SIZE + padding * 2.0;
@@ -3620,7 +3649,9 @@ pub fn tab_action_geometry(classes: &TabCssClasses, ctx: &TabBoxContext) -> Opti
 pub fn tab_fill_rect(ctx: &TabBoxContext) -> BoxRect {
     let s = &ctx.spacing;
     if !ctx.connected {
-        return BoxRect { left: s.size20, top: 0.0, right: ctx.tab_width - s.size20, bottom: ctx.tab_height };
+        // `inset: 0 size20` relativo à caixa de preenchimento da `.tab`, depois do `border-block` do Modern UI.
+        let (border_top, border_bottom) = ctx.pill_border_block();
+        return BoxRect { left: s.size20, top: border_top, right: ctx.tab_width - s.size20, bottom: ctx.tab_height - border_bottom };
     }
 
     let inline_inset = if ctx.upper_row || !ctx.active { s.size20 } else { 0.0 };
@@ -3833,6 +3864,18 @@ pub fn high_contrast_connected_tab_fill_stroke<'a>(input: &TabFillStrokeInput<'a
     }
 }
 
+/// `height: 2px` do `.tab-border-top-container` do estilo Pill (`tabs.css` L756 a L768).
+const PILL_TOP_INDICATOR_HEIGHT: f64 = 2.0;
+
+/// O realce de topo que uma aba com `dirty-border-top` recebe. No estilo conectado é o gradiente `linear-gradient(accent size20,
+/// transparent size20)` do `.tab-fill` (`connectedEditorTabs.css` L771 a L776) ou, na aba ativa fora da linha de cima, o do
+/// `.tab-connected-edge` (L785 a L791), sempre colado ao topo; no Pill é o `.tab-border-top-container` de `height: 2px` e
+/// `top: 0`, que acompanha o preenchimento (`tabs.css` L756 a L768, e `inset: 0` do `.tab-fill` na mesma caixa de preenchimento
+/// da `.tab`).
+pub fn dirty_top_accent<'a>(connected: bool, dirty_border_top_color: Option<&'a str>, spacing: &ModernSpacing) -> TabTopAccent<'a> {
+    TabTopAccent { color: TabStrokeColor::of(dirty_border_top_color), height: if connected { spacing.size20 } else { PILL_TOP_INDICATOR_HEIGHT }, top_offset: 0.0 }
+}
+
 //#endregion
 
 //#region Divisor entre abas e pintura do corte da aba conectada ativa
@@ -3911,6 +3954,12 @@ pub struct ConnectedTabColors {
     pub custom_unfocused_active_hover_background: Option<Color>,
     /// `--modern-ui-editor-tab-custom-border`.
     pub custom_border: Option<Color>,
+    /// `--modern-ui-editor-tab-custom-inactive-background` e `--modern-ui-editor-tab-custom-unfocused-inactive-background`.
+    pub custom_inactive_background: Option<Color>,
+    pub custom_unfocused_inactive_background: Option<Color>,
+    /// `--modern-ui-connected-tab-strip-background` e `--vscode-editorGroupHeader-tabsBackground`.
+    pub strip_background: Option<Color>,
+    pub tabs_background: Option<Color>,
     /// `--vscode-editorGroupHeader-tabsBorder`, `--vscode-tab-border`, `--vscode-contrastBorder`, `--vscode-focusBorder` e
     /// `--vscode-contrastActiveBorder`.
     pub tabs_border: Option<Color>,
@@ -4030,6 +4079,8 @@ pub fn connected_active_tab_paint(input: &ConnectedTabPaintInput, colors: &Conne
     // L330 e L331 na aba da coluna do documento; L706 e L746 na linha de cima (borda de `strokeThickness` nos quatro lados, com a cor
     // do traço só em alto contraste).
     let fill_border_color = if i.upper_row && i.high_contrast && i.active { border.clone() } else { transparent() };
+    let cap_radius = spacing.cap_radius(i.wrapping, i.upper_bar);
+    let shape = tab_fill_shape(true, i.active, i.upper_row, cap_radius, spacing);
 
     ConnectedActiveTabPaint {
         edge_border_left_color: if i.starts_row { transparent() } else { border.clone() },
@@ -4037,14 +4088,100 @@ pub fn connected_active_tab_paint(input: &ConnectedTabPaintInput, colors: &Conne
         background,
         fill_border_color,
         fill_border_bottom_width: if i.upper_row { spacing.stroke } else { 0.0 },
-        fill_bottom_radius: if i.upper_row { spacing.corner_small } else { 0.0 },
-        cap_radius: spacing.cap_radius(i.wrapping, i.upper_bar),
+        fill_bottom_radius: shape.border_radius[2],
+        cap_radius,
         edge_border_bottom_width: 0.0,
         edge_clip_bottom_inset: shoulder,
         before,
         after,
         straight_masks: false,
     }
+}
+
+/// `background-color` do `.tab-fill` de uma aba inativa do estilo conectado: `--modern-ui-editor-tab-inactive-background` (L106) ou a
+/// variante do grupo sem foco (L107), que valem `custom-inactive-background` e, sem ele, o fundo da faixa
+/// (`--modern-ui-connected-tab-strip-background`, depois `--vscode-editorGroupHeader-tabsBackground`). `tabs.css` L377 a L385 aplica
+/// a variável do grupo ativo ou do sem foco nas abas sem `selected` nem `active`; uma variável indefinida deixa a cor no valor inicial,
+/// que a pintura nativa trata como transparente.
+pub fn connected_inactive_tab_background(colors: &ConnectedTabColors, group_active: bool) -> Color {
+    let custom = if group_active { &colors.custom_inactive_background } else { &colors.custom_unfocused_inactive_background };
+
+    custom.clone().or_else(|| colors.strip_background.clone()).or_else(|| colors.tabs_background.clone()).unwrap_or_else(Color::transparent_color)
+}
+
+/// O contorno do `.tab-fill`: o raio de cada canto (`[topo-esquerda, topo-direita, base-direita, base-esquerda]`), a largura da borda
+/// esquerda e se o conteúdo é cortado (`overflow: hidden`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabFillShape {
+    pub border_radius: [f64; 4],
+    pub border_left_width: f64,
+    pub overflow_hidden: bool,
+}
+
+/// A cascata do contorno do `.tab-fill`: `tabs.css` L148 a L158 dá `border-radius: small` e `border: stroke` (o estilo Pill, `connected`
+/// falso); no estilo conectado a aba ativa fora da linha de cima troca o raio por `cap-radius cap-radius 0 0` e zera a borda de baixo
+/// (`connectedEditorTabs.css` L322 a L335), sem cortar o conteúdo (os ombros `::before` e `::after` saem do preenchimento); a linha de
+/// cima volta ao raio `small` com borda de `stroke` e `overflow: hidden` (L706 a L711, de mesma especificidade e depois da regra da
+/// aba ativa), e a inativa fora da linha de cima também corta o conteúdo (L230 a L234).
+pub fn tab_fill_shape(connected: bool, active: bool, upper_row: bool, cap_radius: f64, spacing: &ModernSpacing) -> TabFillShape {
+    let (border_radius, overflow_hidden) = if !connected {
+        ([spacing.corner_small; 4], false)
+    } else if upper_row || !active {
+        ([spacing.corner_small; 4], true)
+    } else {
+        ([cap_radius, cap_radius, 0.0, 0.0], false)
+    };
+
+    TabFillShape { border_radius, border_left_width: spacing.stroke, overflow_hidden }
+}
+
+/// Um valor de `overflow` de um eixo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverflowMode {
+    Visible,
+    Hidden,
+    Clip,
+}
+
+/// `overflow-x` e `overflow-y` do `.title.tabs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TitleOverflow {
+    pub horizontal: OverflowMode,
+    pub vertical: OverflowMode,
+}
+
+/// O `overflow` computado do `.title.tabs`: `editorgroupview.css` L194 a L197 dá `overflow: hidden`, e no estilo conectado com as abas
+/// quebradas (`connected-tabs-wrapping`) `connectedEditorTabs.css` L307 a L309 troca por `overflow: clip visible`: o ombro pode
+/// passar na vertical e nunca invade o grupo vizinho na horizontal.
+pub fn connected_title_overflow(connected: bool, connected_tabs_wrapping: bool) -> TitleOverflow {
+    if connected && connected_tabs_wrapping {
+        TitleOverflow { horizontal: OverflowMode::Clip, vertical: OverflowMode::Visible }
+    } else {
+        TitleOverflow { horizontal: OverflowMode::Hidden, vertical: OverflowMode::Hidden }
+    }
+}
+
+/// O recuo do botão de nova aba (`.tabs-bar-add-tab`) no estilo conectado: o `margin-inline-start` do `.action-label` e o
+/// `inset-inline-start` do `::before` que serve de fundo dele.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AddTabButtonInsets {
+    pub margin_start: f64,
+    pub backplate_inset_start: f64,
+}
+
+/// A cascata do recuo do botão de nova aba (`connectedEditorTabs.css` L572 a L616): `margin-inline` e `inset-inline` de `size20`; fora da
+/// quebra e fora da barra superior o início recua `size20 - shoulder-radius - strokeThickness` (L589 a L596) e, na quebra fora da
+/// barra superior, `size20 - shoulder-radius` (L610 a L616). A barra superior fica com `size20`.
+pub fn connected_add_tab_button_insets(wrapping: bool, upper_bar: bool, spacing: &ModernSpacing) -> AddTabButtonInsets {
+    let inset = if upper_bar {
+        spacing.size20
+    } else if wrapping {
+        spacing.size20 - spacing.shoulder_radius()
+    } else {
+        spacing.size20 - spacing.shoulder_radius() - spacing.stroke
+    };
+
+    AddTabButtonInsets { margin_start: inset, backplate_inset_start: inset }
 }
 
 //#endregion
