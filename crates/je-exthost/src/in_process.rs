@@ -62,8 +62,8 @@ use je_workbench::api::common::ext_host_protocol::{
 use je_workbench::api::common::ext_host_debug_protocol::{ExtHostDebugServiceShape, IBreakpointsDeltaDto, IDebugSessionDto, StackFocusDto};
 use je_workbench::api::common::ext_host_protocol::ExtHostAuthenticationShape;
 use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};use je_workbench::api::common::ext_host_protocol::{
-    ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, INotebookCellStatusBarListDto,
-    INotebookDocumentsAndEditorsDelta, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
+    ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsAndEditorsShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape,
+    INotebookCellStatusBarListDto, INotebookDocumentsAndEditorsDelta, INotebookEditorPropertiesChangeData, INotebookEditorViewColumnInfo, NotebookCellsChangedEventDto, NotebookDataDto, NotebookSaveResult, SerializableObjectWithBuffers, VariablesRequestKindDto,
 };
 use je_workbench::contrib::notebook::common::notebook_common::INotebookKernelSourceAction;
 use je_platform::files::files::WriteFileOptions;
@@ -1078,6 +1078,22 @@ impl ExtHostNotebookShape for LateExtHostNotebook {
     }
 }
 
+/// O `ExtHostNotebookEditorsShape` que ainda não existe quando o cliente `MainThreadNotebookEditors` do workbench nasce. As duas chamadas são
+/// sem retorno e ficam na fila se chegarem antes do `bind`.
+#[derive(Default)]
+pub struct LateExtHostNotebookEditors(pub Late<dyn ExtHostNotebookEditorsShape>);
+
+impl ExtHostNotebookEditorsShape for LateExtHostNotebookEditors {
+    fn rpc_accept_editor_properties_changed(&self, id: &str, data: INotebookEditorPropertiesChangeData) {
+        let id = id.to_owned();
+        self.0.call_void(move |target| target.rpc_accept_editor_properties_changed(&id, data));
+    }
+
+    fn rpc_accept_editor_view_columns(&self, data: INotebookEditorViewColumnInfo) {
+        self.0.call_void(move |target| target.rpc_accept_editor_view_columns(data));
+    }
+}
+
 /// O `ExtHostNotebookDocumentsShape` que ainda não existe quando o cliente `MainThreadNotebookDocuments` do workbench nasce. As três chamadas
 /// são sem retorno e ficam na fila se chegarem antes do `bind`.
 #[derive(Default)]
@@ -1294,6 +1310,7 @@ pub struct LateForwarders {
     pub authentication: Rc<LateExtHostAuthentication>,
     pub notebook: Rc<LateExtHostNotebook>,
     pub notebook_documents: Rc<LateExtHostNotebookDocuments>,
+    pub notebook_editors: Rc<LateExtHostNotebookEditors>,
     pub notebook_save_participant: Rc<LateExtHostNotebookDocumentSaveParticipant>,
     pub notebook_kernels: Rc<LateExtHostNotebookKernels>,
     pub debug_service: Rc<LateExtHostDebugService>,
@@ -1363,6 +1380,9 @@ impl LateForwarders {
         let notebook_documents = Rc::new(LateExtHostNotebookDocuments::default());
         let as_notebook_documents: Rc<dyn ExtHostNotebookDocumentsShape> = notebook_documents.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENTS.sid, Rc::new(as_notebook_documents));
+        let notebook_editors = Rc::new(LateExtHostNotebookEditors::default());
+        let as_notebook_editors: Rc<dyn ExtHostNotebookEditorsShape> = notebook_editors.clone();
+        local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_EDITORS.sid, Rc::new(as_notebook_editors));
         let notebook_save_participant = Rc::new(LateExtHostNotebookDocumentSaveParticipant::default());
         let as_notebook_save_participant: Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> = notebook_save_participant.clone();
         local.set_erased(ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENT_SAVE_PARTICIPANT.sid, Rc::new(as_notebook_save_participant));
@@ -1399,7 +1419,7 @@ impl LateForwarders {
         local.set_erased(ExtHostContext::EXT_HOST_DIAGNOSTICS.sid, Rc::new(as_diagnostics));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGES.sid, Rc::new(as_languages));
         local.set_erased(ExtHostContext::EXT_HOST_LANGUAGE_FEATURES.sid, Rc::new(as_language_features));
-        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_save_participant, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
+        LateForwarders { storage, secret_state, editor_tabs, scm, comments, authentication, notebook, notebook_documents, notebook_editors, notebook_save_participant, notebook_kernels, debug_service, workspace, configuration, status_bar, quick_open, output, progress, file_system_events, file_system, documents_and_editors, documents, editors, diagnostics, languages, language_features, terminal_service, tree_views }
     }
 }
 

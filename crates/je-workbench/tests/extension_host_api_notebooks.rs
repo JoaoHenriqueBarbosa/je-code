@@ -64,9 +64,10 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_exthost::in_process::IMainThreadBinder;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostContext, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, ICellExecuteUpdateDto,
-    ICellExecutionCompleteDto, IMainContext, INotebookDocumentShowOptions, INotebookDocumentsAndEditorsDelta, INotebookEditorAddData, INotebookKernelDto2,
-    INotebookModelAddedData, IWorkspaceEditDto, MainContext, MainThreadBulkEditsShape, MainThreadNotebookDocumentsShape, MainThreadNotebookEditorsShape,
+    ExtHostContext, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookEditorsShape, ExtHostNotebookKernelsShape, ExtHostNotebookShape, ICellExecuteUpdateDto,
+    ICellExecutionCompleteDto, IMainContext, INotebookDocumentShowOptions, INotebookDocumentsAndEditorsDelta, INotebookEditorAddData, INotebookEditorPropertiesChangeData,
+    INotebookEditorViewColumnInfo, INotebookKernelDto2, INotebookModelAddedData, INotebookSelectionChangeEvent, INotebookVisibleRangesEvent, IWorkspaceEditDto, MainContext, MainThreadBulkEditsShape,
+    MainThreadNotebookDocumentsShape, MainThreadNotebookEditorsShape,
     MainThreadNotebookKernelsShape, MainThreadNotebookShape, NotebookCellDataDto, NotebookCellsChangedEventDto, NotebookCreateOptions, NotebookDataDto, NotebookOutputItemDto,
     NotebookRawContentEventDto, SerializableObjectWithBuffers, VariablesResult,
 };
@@ -263,6 +264,42 @@ exports.activate = (context) => {
       visible: vscode.window.visibleNotebookEditors.length,
     });
   });
+
+  command('t.editorProperties', () => {
+    const describe = (ranges) => ranges.map((range) => range.start + '-' + range.end).join(',');
+    context.subscriptions.push(vscode.window.onDidChangeNotebookEditorSelection((event) => log('selection:' + event.notebookEditor.notebook.uri.path + ':' + describe(event.selections))));
+    context.subscriptions.push(vscode.window.onDidChangeNotebookEditorVisibleRanges((event) => log('visibleRanges:' + event.notebookEditor.notebook.uri.path + ':' + describe(event.visibleRanges))));
+    return 'ok';
+  });
+
+  command('t.editorState', () => {
+    const editor = vscode.window.activeNotebookEditor;
+    const describe = (ranges) => ranges.map((range) => range.start + '-' + range.end).join(',');
+    return JSON.stringify({ selections: describe(editor.selections), visibleRanges: describe(editor.visibleRanges), viewColumn: editor.viewColumn });
+  });
+
+  command('t.notebookEdit', async () => {
+    const insert = vscode.NotebookEdit.insertCells(1, [new vscode.NotebookCellData(vscode.NotebookCellKind.Code, 'x', 'javascript')]);
+    const edit = new vscode.WorkspaceEdit();
+    edit.set(globalThis.__doc.uri, [
+      insert,
+      [vscode.NotebookEdit.updateNotebookMetadata({ a: 1 }), { label: 'meta', needsConfirmation: false }],
+      vscode.NotebookEdit.deleteCells(new vscode.NotebookRange(0, 1)),
+    ]);
+    const applied = await vscode.workspace.applyEdit(edit);
+    const created = new vscode.NotebookEdit(new vscode.NotebookRange(2, 3), []);
+    return JSON.stringify({
+      applied,
+      insertRange: insert.range.start + '-' + insert.range.end,
+      cells: insert.newCells.length,
+      isEdit: vscode.NotebookEdit.isNotebookCellEdit(insert),
+      plain: vscode.NotebookEdit.isNotebookCellEdit({ range: new vscode.NotebookRange(0, 0), newCells: [] }),
+      notEdit: vscode.NotebookEdit.isNotebookCellEdit({ range: new vscode.NotebookRange(0, 0) }),
+      cellMetadata: vscode.NotebookEdit.updateCellMetadata(2, { k: 'v' }).newCellMetadata.k,
+      notebookMetadata: vscode.NotebookEdit.updateNotebookMetadata({ a: 1 }).newNotebookMetadata.a,
+      created: created.range.start + '-' + created.range.end,
+    });
+  });
 };
 "#;
 
@@ -290,6 +327,7 @@ struct Panel {
     ext_host: RefCell<Option<Rc<dyn ExtHostNotebookShape>>>,
     ext_kernels: RefCell<Option<Rc<dyn ExtHostNotebookKernelsShape>>>,
     ext_documents: RefCell<Option<Rc<dyn ExtHostNotebookDocumentsShape>>>,
+    ext_editors: RefCell<Option<Rc<dyn ExtHostNotebookEditorsShape>>>,
     ext_save: RefCell<Option<Rc<dyn ExtHostNotebookDocumentSaveParticipantShape>>>,
     log: RefCell<Vec<String>>,
     /// O `handle` do controlador registrado.
@@ -306,6 +344,7 @@ impl Panel {
             ext_host: RefCell::new(None),
             ext_kernels: RefCell::new(None),
             ext_documents: RefCell::new(None),
+            ext_editors: RefCell::new(None),
             ext_save: RefCell::new(None),
             log: RefCell::new(Vec::new()),
             kernel_handle: RefCell::new(None),
@@ -320,6 +359,10 @@ impl Panel {
 
     fn ext_documents(&self) -> Rc<dyn ExtHostNotebookDocumentsShape> {
         self.ext_documents.borrow().clone().expect("o host já subiu e ligou o dublê")
+    }
+
+    fn ext_editors(&self) -> Rc<dyn ExtHostNotebookEditorsShape> {
+        self.ext_editors.borrow().clone().expect("o host já subiu e ligou o dublê")
     }
 
     fn ext_save(&self) -> Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> {
@@ -445,7 +488,7 @@ impl MainThreadNotebookEditorsShape for Panel {
                 document_uri: uri.clone(),
                 selections: vec![CellRange { start: 0.0, end: 1.0 }],
                 visible_ranges: Vec::new(),
-                view_column: Some(2.0),
+                view_column: Some(1.0), // o main thread manda o EditorGroupColumn de base 0; ViewColumn.to soma 1
                 view_type: view_type.to_owned(),
             }]),
             ..INotebookDocumentsAndEditorsDelta::default()
@@ -576,6 +619,7 @@ impl IMainThreadBinder for Binder {
         *self.panel.ext_host.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_NOTEBOOK));
         *self.panel.ext_kernels.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_NOTEBOOK_KERNELS));
         *self.panel.ext_documents.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENTS));
+        *self.panel.ext_editors.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_NOTEBOOK_EDITORS));
         *self.panel.ext_save.borrow_mut() = Some(context.get_proxy(&ExtHostContext::EXT_HOST_NOTEBOOK_DOCUMENT_SAVE_PARTICIPANT));
         let bulk_edits: Rc<dyn MainThreadBulkEditsShape> = self.panel.clone();
         context.set(&MainContext::MAIN_THREAD_BULK_EDITS, bulk_edits);
@@ -825,5 +869,49 @@ fn notebook_editors_follow_the_main_thread_and_show_notebook_document_opens_one(
             ])
         );
         assert_eq!(sorted_events(workbench), r#"["active:/proj/a.ipynb","visible:1"]"#, "os eventos de editor ativo e visível disparam com o editor novo");
+    });
+}
+
+#[test]
+fn notebook_editor_selection_visible_ranges_and_view_column_follow_the_main_thread() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, (_observed, panel)| {
+        run(workbench, "t.open");
+        run(workbench, "t.editors");
+        run(workbench, "t.editorProperties");
+        workbench.pump();
+
+        let data = INotebookEditorPropertiesChangeData {
+            visible_ranges: Some(INotebookVisibleRangesEvent { ranges: vec![CellRange { start: 0.0, end: 2.0 }] }),
+            selections: Some(INotebookSelectionChangeEvent { selections: vec![CellRange { start: 1.0, end: 2.0 }, CellRange { start: 3.0, end: 4.0 }] }),
+        };
+        panel.ext_editors().rpc_accept_editor_properties_changed("editor-1", data);
+        let mut columns = INotebookEditorViewColumnInfo::new();
+        columns.insert("editor-1".to_owned(), 2.0);
+        panel.ext_editors().rpc_accept_editor_view_columns(columns);
+        workbench.pump();
+
+        let logged = events(workbench);
+        assert!(logged.contains(r#""visibleRanges:/proj/a.ipynb:0-2","selection:/proj/a.ipynb:1-2,3-4""#), "visibleRanges dispara antes de selection, com o editor e os intervalos novos: {logged}");
+        assert_eq!(
+            run(workbench, "t.editorState"),
+            Dynamic::string(r#"{"selections":"1-2,3-4","visibleRanges":"0-2","viewColumn":3}"#),
+            "a coluna de base 0 do main thread vira a de base 1 da API uma única vez"
+        );
+    });
+}
+
+#[test]
+fn notebook_edit_in_workspace_edit_set_reaches_the_bulk_edits_client() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, (_observed, panel)| {
+        run(workbench, "t.open");
+        assert_eq!(
+            run(workbench, "t.notebookEdit"),
+            Dynamic::string(concat!(
+                r#"{"applied":true,"insertRange":"1-1","cells":1,"isEdit":true,"plain":true,"notEdit":false,"#,
+                r#""cellMetadata":"v","notebookMetadata":1,"created":"2-3"}"#
+            ))
+        );
+        workbench.pump();
+        assert_eq!(panel.lines().last().map(String::as_str), Some("bulkEdits:3"), "inserir, metadados do notebook e apagar viram três entradas do DTO");
     });
 }
