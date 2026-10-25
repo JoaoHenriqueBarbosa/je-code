@@ -2876,7 +2876,7 @@ pub struct ConnectedClippingMeasure {
 /// classes e variáveis que o controle já escreveu), como as leituras de `offsetWidth` e `getBoundingClientRect` do original.
 pub trait TabsMeasurer {
     /// `getFitTabWidths`: as medidas de cada aba pedida, com o `max-width` solto e a classe `tab-action-sizing-rest` do estado.
-    fn measure_fit_tabs(&self, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics>;
+    fn measure_fit_tabs(&self, container: &TabsContainerView, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics>;
     /// As leituras de `doLayoutTabsNonWrapping`.
     fn measure_tabs(&self, container: &TabsContainerView, tabs: &[Tab]) -> TabsMetrics;
     /// As leituras de `doLayoutTabsWrapping` e de `computeHeight`.
@@ -3783,7 +3783,7 @@ pub fn tab_action_label_opacity(context: &TabActionLabelContext) -> f64 {
 impl MultiEditorTabsControlState {
     /// `getFitTabWidths`.
     fn fit_tab_widths(&self, indexes: &[usize], measurer: &dyn TabsMeasurer) -> Vec<f64> {
-        measurer.measure_fit_tabs(&self.tabs, indexes).iter().zip(indexes).map(|(metrics, &index)| get_fit_tab_width(&self.tabs[index].state, metrics)).collect()
+        measurer.measure_fit_tabs(&self.container, &self.tabs, indexes).iter().zip(indexes).map(|(metrics, &index)| get_fit_tab_width(&self.tabs[index].state, metrics)).collect()
     }
 
     /// `layoutFitTabsWithoutReservedActions`.
