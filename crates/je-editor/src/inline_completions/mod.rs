@@ -58,17 +58,23 @@
 //!     `InlineEditsViewAndDiffProducer`, que cria o `ModelPerInlineEdit` observável que a view lê). A inserção e a dica de
 //!     longa distância são criadas direto, como no original; o `InlineEditsViewServices` leva os serviços que as views pedem
 //!     e a `IPreviewTextModelFactory` (o `TextModel` de prévia, que o `IInstantiationService` criava);
-//!   - 4c-5 (em andamento): a `InlineSuggestionsView` (`view/inline_suggestions_view`: junta o `GhostTextView`, o
+//!   - 4c-5 (pronta, menos uma peça): a `InlineSuggestionsView` (`view/inline_suggestions_view`: junta o `GhostTextView`, o
 //!     `InlineEditsViewAndDiffProducer`, o indicador da margem e o hints widget) está pronta. O hints widget
 //!     (`hints_widget/`: `InlineCompletionsHintsWidget`, `InlineSuggestionHintsContentWidget`, `StatusBarViewItem`, o modelo da
 //!     `CustomizedMenuWorkbenchToolBar` sobre o `IMenuService` e `get_action_bar_actions` do `je-platform`, e o
 //!     `InlineCompletionsHoverParticipant`) é criado direto pela view, com os serviços de `InlineEditsViewServices`
 //!     (acrescidos de `command_service` e `menu_service`). Falta, ligada por contrato anotado no `//!` da view, a
-//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que depende do armazenamento e da configuração do usuário;
-//!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
-//!     injetados, e os traits que o hover participant pede (`IInlineCompletionsHoverController` e
-//!     `IInlineCompletionsHoverHost`);
-//! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
+//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que depende do armazenamento e da configuração do usuário
+//!     (o controller não a cria: é a view que a cria, ao fim do construtor);
+//!   - 4c-6 (pronta): o controller (`controller/inline_completions_controller`: `InlineCompletionsController`, que cria o
+//!     modelo e a view, registra os disparos, o foco, o sinal de acessibilidade e as chaves de contexto, e se registra como
+//!     contribuição do editor em `register_inline_completions_controller`). Implementa o `InlineCompletionsEditorHost` do
+//!     modelo (`InlineCompletionsControllerHost`, que entrega o serviço de editores ao `IInlineCompletionsCodeEditorService`
+//!     injetado), o `IInlineCompletionsHoverController` do participante de hover, e o `IInlineCompletionsController` e o
+//!     `IInlineCompletionsHost` do `SuggestModel`. Ficam para quem pinta e para o registro da contribuição: o
+//!     `IInlineCompletionsHoverHost` do participante (o `getWarningWidgetContext` é do pintor), o `FadeoutDecoration`, a
+//!     lista de editores de diff, o `HoverParticipantRegistry.register` e as ações de `controller/commands.ts`;
+//! - fatia 4d (próxima): os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
 //!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
 

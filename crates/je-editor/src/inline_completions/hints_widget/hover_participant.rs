@@ -42,7 +42,6 @@ use crate::config::editor_options::registry::SCREEN_READER_ANNOUNCE_INLINE_SUGGE
 use crate::cursor_common::CursorSimpleModel;
 use crate::editor_browser::{EditorMouseEvent, ElementId, MouseTarget, MouseTargetType};
 use crate::hover::hover_types::{HoverAnchor, HoverAnchorType, HoverForeignElementAnchor, IEditorHoverParticipant, IHoverPart};
-use crate::inline_completions::ghost_text::GhostTextOrReplacement;
 use crate::inline_completions::inline_completions_model::InlineCompletionsModel;
 use crate::model::ModelDecoration;
 use crate::range::Range;
@@ -152,14 +151,6 @@ fn markdown_dto(markdown: MarkdownString) -> IMarkdownString {
     }
 }
 
-/// `ghostText.renderForScreenReader(lineText)` das duas formas do texto fantasma.
-fn render_for_screen_reader(ghost_text: &GhostTextOrReplacement, line_text: &[u16]) -> je_base::JsString {
-    match ghost_text {
-        GhostTextOrReplacement::GhostText(ghost_text) => ghost_text.render_for_screen_reader(line_text),
-        GhostTextOrReplacement::Replacement(replacement) => replacement.render_for_screen_reader(line_text),
-    }
-}
-
 impl InlineCompletionsHoverParticipant {
     pub fn new(
         editor: Rc<CodeEditorWidget>,
@@ -255,7 +246,7 @@ impl InlineCompletionsHoverParticipant {
 
                 let text_model = editor.get_model().expect("o hover só é calculado com um modelo no editor");
                 let line_text = CursorSimpleModel::get_line_content(&*text_model, ghost_text.line_number());
-                let code = render_for_screen_reader(&ghost_text, line_text.units());
+                let code = ghost_text.render_for_screen_reader(line_text.units());
 
                 let inline_suggestion_available = localize("inlineSuggestionFollows", "Suggestion:", &[]);
                 let mut markdown = MarkdownString::new(None, TrustedOrOptions::default());

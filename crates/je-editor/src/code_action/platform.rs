@@ -159,8 +159,8 @@ je_instantiation::delayed_proxy!(pub BulkEditServiceProxy for dyn IBulkEditServi
 
 je_instantiation::service_id!(pub I_BULK_EDIT_SERVICE: dyn IBulkEditService = "IWorkspaceEditService", proxy BulkEditServiceProxy);
 
-/// Os sinais de `AccessibilitySignal` que o `codeAction`, o serviço de estado de execução dos notebooks e o status de terminal
-/// das tarefas tocam.
+/// Os sinais de `AccessibilitySignal` que o `codeAction`, o serviço de estado de execução dos notebooks, o status de terminal
+/// das tarefas e o controller de sugestões em linha tocam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccessibilitySignal {
     CodeActionTriggered,
@@ -176,6 +176,10 @@ pub enum AccessibilitySignal {
     DiffLineInserted,
     /// `AccessibilitySignal.diffLineDeleted`: o cursor da visão acessível parou numa linha removida do diff.
     DiffLineDeleted,
+    /// `AccessibilitySignal.inlineSuggestion`: uma sugestão em linha (texto fantasma) apareceu.
+    InlineSuggestion,
+    /// `AccessibilitySignal.nextEditSuggestion`: uma sugestão da próxima edição (NES) apareceu.
+    NextEditSuggestion,
 }
 
 /// `IAccessbilitySignalOptions`, só com o `userGesture` (para ações como salvar e formatar, o sinal só toca quando o
