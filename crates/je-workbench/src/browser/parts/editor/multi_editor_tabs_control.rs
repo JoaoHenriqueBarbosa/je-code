@@ -1858,6 +1858,16 @@ impl MultiEditorTabsControlState {
         }
     }
 
+    /// `hostService.onDidChangeFocus`: o Alt pode ficar preso quando o foco sai da janela com ele segurado (Alt+Tab para outro
+    /// aplicativo), porque o `keyup` nunca chega aqui. Desiste da troca por completo, para que uma aba ainda sob o mouse não
+    /// mantenha a ação "Close Others" (https://github.com/microsoft/vscode/issues/331979).
+    pub fn handle_window_focus_change(&mut self, has_focus: bool) {
+        if !has_focus {
+            self.set_alt_pressed(false);
+            self.set_hovered_tab(None);
+        }
+    }
+
     /// `setHoveredTab`.
     pub fn set_hovered_tab(&mut self, tab_index: Option<usize>) {
         if self.hover_alt.hovered_tab_index == tab_index {
