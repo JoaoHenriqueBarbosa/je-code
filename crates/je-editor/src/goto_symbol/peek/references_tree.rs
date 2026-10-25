@@ -22,9 +22,8 @@
 //!   tem fundo de realce).
 //! - `StringRepresentationProvider.mightProducePrintableCharacter` e o `@IKeybindingService` dele não existem: o
 //!   `IKeyboardNavigationLabelProvider` do `je-widgets` só tem `getKeyboardNavigationLabel`.
-//! - `AccessibilityProvider` é o `IListAccessibilityProvider` do `je-widgets`; as opções da árvore de dados assíncrona
-//!   ainda não têm o campo `accessibilityProvider` (`// TODO(integração)`), então o provedor fica pronto para quando elas
-//!   o tiverem.
+//! - `AccessibilityProvider` é o `IListAccessibilityProvider` do `je-widgets` e entra em
+//!   `AsyncDataTreeOptions::accessibility_provider` (o papel `tree`/`treeitem` e o rótulo `aria-label` que ele dá).
 //! - `DataSource.getChildren` de um `FileReferences` é o `resolve` do modelo (uma [`Promise`]); `throw new Error('bad
 //!   tree')` de uma referência é o `throw` de `je_base::errors`.
 

@@ -13,8 +13,10 @@
 //! - O `DefaultStyleController` gera CSS de texto e não existe: [`List::style`] guarda os [`IListStyles`] e
 //!   pinta as linhas (fundo, texto, outline de foco, raio) com a cascata de [`IListStyles::row_paint`], a cada
 //!   mudança de `focused`/`selected`, de hover (`PointerEnter`/`PointerLeave` na linha) e de foco da lista.
-//!   TypeNavigationController (digitar para achar) e a arrastar e soltar ficam de fora
-//!   (`// TODO(integração)` quando o `je-ui` tiver entrada de texto).
+//!   TypeNavigationController (digitar para achar) fica de fora (`// TODO(integração)` quando o `je-ui` tiver
+//!   entrada de texto). A arrastar e soltar (`dnd`) é a do original: o `ListViewDragAndDrop` entrega os elementos
+//!   da seleção à [`ListView`], e as linhas com `drop-target*` são pintadas por [`List::paint_row`] (fundo de soltar
+//!   e a linha de 1 px entre linhas).
 //! - `aria-*` não existem no `je-ui` (só `role` e `label`); o `getActiveDescendantId` fica por [`List::get_element_id`]. O
 //!   `accessibilityProvider` ([`IListAccessibilityProvider`]) dá o papel e o rótulo da lista e de cada linha.
 
@@ -24,16 +26,24 @@ use std::rc::{Rc, Weak};
 
 use je_base::event::{Emitter, Event as BaseEvent, EventBufferer};
 use je_base::key_codes::KeyCode;
-use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::lifecycle::{Disposable, IDisposable, to_disposable};
 use je_base::runtime;
 use je_render::Rgba;
 use je_ui::{Border, Content, EventKind, KeyData, NodeId, PointerButton, Role, Ui};
 
 use crate::common::{registered_emitter, throw};
+use crate::dnd::{DragEvent, IDragAndDropData};
+use crate::drag_image::DragImageStyle;
 use crate::sash::is_macintosh;
+use crate::list::list_dnd::{IListDragAndDrop, IListViewDragAndDrop, ListDragOverEffectPosition, ListDragOverResult, ListViewTargetSector};
 use crate::list::list_types::{BrowserEvent, ElementFilter, GroupId, IIdentityProvider, IListAccessibilityProvider, IListRenderer, IListVirtualDelegate, ListEvent, ListMouseEvent, list_error};
 use crate::list::list_styles::{IListStyles, RowState};
 use crate::list::list_view::{ListView, ListViewOptions};
+
+/// A largura da borda de cima: a linha do `.drop-target-before::before`.
+const DROP_LINE_BEFORE: [f64; 4] = [1.0, 0.0, 0.0, 0.0];
+/// A largura da borda de baixo: a linha do `.drop-target-after::after`.
+const DROP_LINE_AFTER: [f64; 4] = [0.0, 0.0, 1.0, 0.0];
 
 /// `getContiguousRangeContaining`.
 fn get_contiguous_range_containing(range: &[usize], value: usize) -> Vec<usize> {
@@ -241,7 +251,7 @@ pub trait ListOverrides<T: Clone + 'static> {
     }
 }
 
-/// `IListOptions<T>` (os campos que a lista usa; os de DnD, tipo-para-navegar e estilo não existem).
+/// `IListOptions<T>` (os campos que a lista usa; os de tipo-para-navegar e estilo não existem).
 #[derive(Clone)]
 pub struct ListOptions<T> {
     pub view: ListViewOptions,
@@ -252,11 +262,13 @@ pub struct ListOptions<T> {
     pub overrides: Option<Rc<dyn ListOverrides<T>>>,
     /// `accessibilityProvider`: o papel e o rótulo da lista e das linhas.
     pub accessibility_provider: Option<Rc<dyn IListAccessibilityProvider<T>>>,
+    /// `dnd`: "Once passed to a list, that list takes up the responsibility of disposing it".
+    pub dnd: Option<Rc<dyn IListDragAndDrop<T>>>,
 }
 
 impl<T> Default for ListOptions<T> {
     fn default() -> Self {
-        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None, accessibility_provider: None }
+        Self { view: ListViewOptions::default(), identity_provider: None, multiple_selection_support: None, keyboard_support: None, overrides: None, accessibility_provider: None, dnd: None }
     }
 }
 
@@ -285,6 +297,56 @@ pub struct List<T: Clone + 'static> {
     hovered: RefCell<HashSet<NodeId>>,
     /// Os nós de texto e de codicon que a cor da linha tomou: (cor original, cor aplicada).
     overridden_colors: RefCell<HashMap<NodeId, (Rgba, Rgba)>>,
+}
+
+/// `ListViewDragAndDrop<T>`: o `IListDragAndDrop` do usuário como o `IListViewDragAndDrop` da `ListView`, com os
+/// elementos arrastados vindos da seleção da lista.
+struct ListViewDragAndDrop<T: Clone + 'static> {
+    list: Weak<List<T>>,
+    dnd: Rc<dyn IListDragAndDrop<T>>,
+}
+
+impl<T: Clone + 'static> IListDragAndDrop<T> for ListViewDragAndDrop<T> {
+    fn get_drag_uri(&self, element: &T) -> Option<String> {
+        self.dnd.get_drag_uri(element)
+    }
+
+    fn get_drag_label(&self, elements: &[T], original_event: &DragEvent) -> Option<String> {
+        self.dnd.get_drag_label(elements, original_event)
+    }
+
+    fn on_drag_start(&self, data: &Rc<dyn IDragAndDropData>, original_event: &DragEvent) {
+        self.dnd.on_drag_start(data, original_event);
+    }
+
+    fn on_drag_over(&self, data: &Rc<dyn IDragAndDropData>, target_element: Option<&T>, target_index: Option<usize>, target_sector: Option<ListViewTargetSector>, original_event: &DragEvent) -> ListDragOverResult {
+        self.dnd.on_drag_over(data, target_element, target_index, target_sector, original_event)
+    }
+
+    fn on_drag_leave(&self, data: &Rc<dyn IDragAndDropData>, target_element: Option<&T>, target_index: Option<usize>, original_event: &DragEvent) {
+        self.dnd.on_drag_leave(data, target_element, target_index, original_event);
+    }
+
+    fn on_drag_end(&self, original_event: &DragEvent) {
+        self.dnd.on_drag_end(original_event);
+    }
+
+    fn drop(&self, data: &Rc<dyn IDragAndDropData>, target_element: Option<&T>, target_index: Option<usize>, target_sector: Option<ListViewTargetSector>, original_event: &DragEvent) {
+        self.dnd.drop(data, target_element, target_index, target_sector, original_event);
+    }
+
+    fn dispose(&self) {
+        self.dnd.dispose();
+    }
+}
+
+impl<T: Clone + 'static> IListViewDragAndDrop<T> for ListViewDragAndDrop<T> {
+    fn get_drag_elements(&self, element: &T, index: usize) -> Vec<T> {
+        match self.list.upgrade() {
+            Some(list) if list.get_selection().contains(&index) => list.get_selected_elements(),
+            _ => vec![element.clone()],
+        }
+    }
 }
 
 /// O renderer que aplica as classes dos traits (`focused`, `selected`, `anchor`) à linha e guarda o
@@ -364,6 +426,18 @@ impl<T: Clone + 'static> List<T> {
         for renderer in &wrapped {
             *renderer.list.borrow_mut() = Rc::downgrade(&this);
         }
+        if let Some(dnd) = &options.dnd {
+            // `dnd: options.dnd && new ListViewDragAndDrop(this, options.dnd)`
+            this.view.set_dnd(Rc::new(ListViewDragAndDrop { list: this.weak_self.clone(), dnd: dnd.clone() }));
+            let dnd = dnd.clone();
+            base.register(to_disposable(move || dnd.dispose()));
+        }
+        let weak = this.weak_self.clone();
+        base.register(this.view.on_did_change_drag_feedback().listen(move |_| {
+            if let Some(list) = weak.upgrade() {
+                list.repaint_rows();
+            }
+        }));
         if let Some(provider) = &options.accessibility_provider {
             // `setAttribute('role', ...)` e `setAttribute('aria-label', ...)` do `domNode` da lista.
             let (role, label) = (provider.get_widget_role().unwrap_or(Role::List), provider.get_widget_aria_label());
@@ -443,14 +517,30 @@ impl<T: Clone + 'static> List<T> {
     /// `style(styles)` do `DefaultStyleController`: guarda os estilos e repinta as linhas renderizadas.
     pub fn style(&self, styles: &IListStyles) {
         *self.styles.borrow_mut() = Some(styles.clone());
-        self.ui.tree_mut().style_mut(self.view.rows_container).background = styles.list_background;
+        self.view.set_drag_image_style(DragImageStyle {
+            background: styles.list_active_selection_background,
+            foreground: styles.list_active_selection_foreground,
+            outline: styles.list_focus_outline,
+        });
         self.repaint_rows();
     }
 
     fn repaint_rows(&self) {
+        self.paint_rows_container();
         for row in self.view.rendered_dom_nodes() {
             self.paint_row(row);
         }
+    }
+
+    /// O fundo do `.monaco-list-rows`: o da lista, ou o de soltar quando a lista inteira é o alvo
+    /// (`.monaco-list .monaco-list-rows.drop-target { background-color: listDropOverBackground }`).
+    fn paint_rows_container(&self) {
+        let styles = self.styles.borrow();
+        let Some(styles) = styles.as_ref() else { return };
+        let rows = self.view.rows_container;
+        let mut tree = self.ui.tree_mut();
+        let drop_target = tree.has_class(rows, ListDragOverEffectPosition::Over.class_name());
+        tree.style_mut(rows).background = if drop_target { styles.list_drop_over_background.or(styles.list_background) } else { styles.list_background };
     }
 
     /// Acompanha o ponteiro sobre a linha (o `:hover` do CSS).
@@ -483,11 +573,46 @@ impl<T: Clone + 'static> List<T> {
         }
 
         let state = RowState { list_focused: self.list_focused.get(), focused: tree.has_class(row, "focused"), selected: tree.has_class(row, "selected"), hovered: self.hovered.borrow().contains(&row) };
-        let paint = styles.row_paint(state);
+        let mut paint = styles.row_paint(state);
+
+        // `.monaco-list-row.drop-target { background-color: listDropOverBackground !important; color: inherit !important }`
+        if let Some(background) = styles.list_drop_over_background
+            && tree.has_class(row, ListDragOverEffectPosition::Over.class_name())
+        {
+            paint.background = Some(background);
+            paint.foreground = None;
+            paint.icon_foreground = None;
+        }
+
+        // `.drop-target-before::before` e `.drop-target-after::after`: a linha de 1 px de `listDropBetweenBackground` no
+        // topo ou no pé da linha (a da lista inteira vale para a primeira e a última linha). O `::before` do original
+        // fica por cima do outline; aqui a linha ocupa o lugar da borda.
+        let rows_container = self.view.rows_container;
+        let (is_first, is_last) = (tree.children(rows_container).first() == Some(&row), tree.children(rows_container).last() == Some(&row));
+        let drop_line = styles.list_drop_between_background.and_then(|color| {
+            if tree.has_class(row, ListDragOverEffectPosition::Before.class_name()) || (is_first && tree.has_class(rows_container, ListDragOverEffectPosition::Before.class_name())) {
+                Some((color, DROP_LINE_BEFORE))
+            } else if tree.has_class(row, ListDragOverEffectPosition::After.class_name()) || (is_last && tree.has_class(rows_container, ListDragOverEffectPosition::After.class_name())) {
+                Some((color, DROP_LINE_AFTER))
+            } else {
+                None
+            }
+        });
 
         let row_style = tree.style_mut(row);
         row_style.background = paint.background;
-        row_style.border = paint.outline.map(|color| Border { width: 1.0, color });
+        match drop_line {
+            Some((color, widths)) => {
+                row_style.border = Some(Border { width: 1.0, color });
+                row_style.border_widths = Some(widths);
+            }
+            None => {
+                row_style.border = paint.outline.map(|color| Border { width: 1.0, color });
+                if row_style.border_widths == Some(DROP_LINE_BEFORE) || row_style.border_widths == Some(DROP_LINE_AFTER) {
+                    row_style.border_widths = None;
+                }
+            }
+        }
         row_style.radius = styles.row_radius;
 
         let mut overridden = self.overridden_colors.borrow_mut();

@@ -13,10 +13,15 @@
 //! - Os eventos de mouse vêm dos ouvintes de ponteiro do [`Ui`] no `domNode`.
 //!
 //! Fica de fora, por falta do que o `je-ui` ainda não tem (cada item é marcado `// TODO(integração)` onde
-//! entra): arrastar e soltar (`dnd`), toque, seleção de texto do usuário (`userSelection`), rolagem
+//! entra): toque, seleção de texto do usuário (`userSelection`), rolagem
 //! horizontal (`horizontalScrolling`, que mede a largura de conteúdo dos nós) e a medição de altura
 //! dinâmica pela caixa da linha (`offsetHeight`). A altura dinâmica fornecida pelo delegate
 //! (`getDynamicHeight`) funciona, com o mesmo `_rerender` do original.
+//!
+//! A arrastar e soltar (`dnd`) está em `list_view/dnd.rs`: a lógica é a do original, e os eventos `drag*` entram
+//! pelo `je-ui` (ver `crate::dnd::listen_drag_event`).
+
+mod dnd;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -35,6 +40,7 @@ use crate::list::range_map::{IItem, IRangeMap, RangeMap, shift};
 use crate::list::row_cache::{Row, RowCache};
 use crate::scrollbar::scrollable_element::AbstractScrollableElement;
 use crate::scrollbar::scrollable_element_options::{ScrollableElementChangeOptions, ScrollableElementCreationOptions};
+use dnd::ListViewDragState;
 
 struct Item<T> {
     #[allow(dead_code)]
@@ -46,6 +52,10 @@ struct Item<T> {
     has_dynamic_height: bool,
     last_dynamic_height_width: Option<f64>,
     stale: bool,
+    /// `dropTarget`: a linha tem o feedback de soltar (a classe `drop-target`).
+    drop_target: bool,
+    /// `dragStartDisposable`: o ouvinte de `dragstart` da linha.
+    drag_start_disposable: Option<DisposableRef>,
 }
 
 /// `IListViewOptionsUpdate`.
@@ -59,8 +69,9 @@ pub struct ListViewOptionsUpdate {
     pub padding_bottom: Option<f64>,
 }
 
-/// `IListViewOptions<T>`. O `dnd`, `userSelection`, `horizontalScrolling` e `transformOptimization` (que é
-/// só um truque de composição do navegador) não existem aqui; `useShadows`, `verticalScrollMode`,
+/// `IListViewOptions<T>`. O `userSelection`, `horizontalScrolling` e `transformOptimization` (que é
+/// só um truque de composição do navegador) não existem aqui; o `dnd` é [`ListView::set_dnd`] (a opção não
+/// tem o tipo do elemento); `useShadows`, `verticalScrollMode`,
 /// `setRowLineHeight`, `setRowHeight`, `supportDynamicHeights`, `mouseSupport`, `alwaysConsumeMouseWheel`,
 /// `initialSize` e `scrollToActiveElement` têm os padrões do original.
 #[derive(Clone)]
@@ -132,6 +143,8 @@ pub struct ListView<T: Clone + 'static> {
     on_mouse_up: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_down: Rc<Emitter<ListMouseEvent<T>>>,
     on_mouse_move: Rc<Emitter<ListMouseEvent<T>>>,
+    /// O estado da arrastar e soltar (ver `dnd.rs`).
+    drag: ListViewDragState<T>,
     disposed: Cell<bool>,
 }
 
@@ -226,6 +239,7 @@ impl<T: Clone + 'static> ListView<T> {
             on_mouse_up: registered_emitter(&base),
             on_mouse_down: registered_emitter(&base),
             on_mouse_move: registered_emitter(&base),
+            drag: ListViewDragState::new(&base),
             disposed: Cell::new(false),
         });
 
@@ -251,6 +265,7 @@ impl<T: Clone + 'static> ListView<T> {
             }));
         }
 
+        this.install_drag_listeners();
         this.layout(options.initial_size.map(|s| s.1), options.initial_size.map(|s| s.0));
         this
     }
@@ -444,13 +459,16 @@ impl<T: Clone + 'static> ListView<T> {
         let mut i = remove_range.end as i64 - 1;
         while i >= remove_range.start as i64 {
             let idx = i as usize;
-            let (row, template_id, element, size) = {
+            let (row, template_id, element, size, drag_start) = {
                 let mut items = self.items.borrow_mut();
                 let item = &mut items[idx];
                 let row = item.row.take();
                 item.stale = true;
-                (row, item.template_id.clone(), item.element.clone(), item.size)
+                (row, item.template_id.clone(), item.element.clone(), item.size, item.drag_start_disposable.take())
             };
+            if let Some(drag_start) = drag_start {
+                drag_start.dispose();
+            }
             if let Some(row) = row {
                 if let Some(renderer) = self.renderer(&template_id) {
                     renderer.dispose_element(&element, idx as i64, &row.template_data, Some(&ListElementRenderDetails { height: Some(size), on_scroll: None }));
@@ -481,6 +499,8 @@ impl<T: Clone + 'static> ListView<T> {
                     last_dynamic_height_width: None,
                     row: None,
                     stale: false,
+                    drop_target: false,
+                    drag_start_disposable: None,
                 }
             })
             .collect();
@@ -795,19 +815,22 @@ impl<T: Clone + 'static> ListView<T> {
             (item.element.clone(), item.row.as_ref().expect("linha presente").template_data.clone(), item.size)
         };
         renderer.render_element(&element, index, &template_data, Some(&ListElementRenderDetails { height: Some(size), on_scroll: None }));
+
+        self.update_drag_source(index);
     }
 
     fn update_item_in_dom(&self, index: usize) {
-        let (dom_node, size) = {
+        let (dom_node, size, drop_target) = {
             let items = self.items.borrow();
             let item = &items[index];
-            (item.row.as_ref().expect("a linha existe").dom_node, item.size)
+            (item.row.as_ref().expect("a linha existe").dom_node, item.size, item.drop_target)
         };
         let top = self.element_top(index);
         let mut tree = self.ui.tree_mut();
         let height = if self.set_row_height { size } else { tree.bounds(dom_node).height() };
         tree.set_bounds(dom_node, Rect::new(0.0, top, 0.0, top + height));
         tree.set_fill(dom_node, true, false);
+        tree.toggle_class(dom_node, "drop-target", drop_target);
         drop(tree);
         // `setRowLineHeight` é só estilo de texto: a linha de texto do `je-ui` centra no próprio nó.
         let _ = self.set_row_line_height;
@@ -815,11 +838,15 @@ impl<T: Clone + 'static> ListView<T> {
     }
 
     fn remove_item_from_dom(&self, index: usize, on_scroll: Option<bool>) {
-        let (row, template_id, element, size) = {
+        let (row, template_id, element, size, drag_start) = {
             let mut items = self.items.borrow_mut();
             let item = &mut items[index];
-            (item.row.take(), item.template_id.clone(), item.element.clone(), item.size)
+            (item.row.take(), item.template_id.clone(), item.element.clone(), item.size, item.drag_start_disposable.take())
         };
+
+        if let Some(drag_start) = drag_start {
+            drag_start.dispose();
+        }
 
         if let Some(row) = row {
             if let Some(renderer) = self.renderer(&template_id) {
@@ -1100,6 +1127,9 @@ impl<T: Clone + 'static> IDisposable for ListView<T> {
         }
         let items = std::mem::take(&mut *self.items.borrow_mut());
         for item in items {
+            if let Some(drag_start) = item.drag_start_disposable {
+                drag_start.dispose();
+            }
             if let Some(row) = item.row
                 && let Some(renderer) = self.renderer(&row.template_id)
             {
@@ -1107,6 +1137,7 @@ impl<T: Clone + 'static> IDisposable for ListView<T> {
                 renderer.dispose_template(&row.template_data);
             }
         }
+        self.dispose_drag();
         if let Some(disposable) = self.scrollable_element_update_disposable.borrow_mut().take() {
             disposable.dispose();
         }

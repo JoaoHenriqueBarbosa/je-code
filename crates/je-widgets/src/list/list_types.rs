@@ -5,8 +5,8 @@
 //! que o renderer converte de volta com `downcast_ref`), porque a lista guarda renderers de vários tipos de
 //! template ao mesmo tempo (o `IListRenderer<any, any>` do original). O `HTMLElement` do contêiner é o
 //! [`NodeId`] do `je-ui`. O `UIEvent` do `browserEvent` é o [`BrowserEvent`].
-//! `IListDragAndDrop`, `IListTouchEvent`, `IListGestureEvent` e `IListContextMenuEvent` ficam de fora até
-//! o `je-ui` ter arrastar e soltar, toque e menu de contexto.
+//! `IListDragAndDrop` e `IListDragOverReaction` estão em [`crate::list::list_dnd`]. `IListTouchEvent`,
+//! `IListGestureEvent` e `IListContextMenuEvent` ficam de fora até o `je-ui` ter toque e menu de contexto.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};

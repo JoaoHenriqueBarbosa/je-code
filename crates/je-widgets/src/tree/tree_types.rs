@@ -1,10 +1,13 @@
 //! Porte de `src/vs/base/browser/ui/tree/tree.ts` (a parte de modelo): visibilidade, filtro, elemento,
-//! eventos do modelo e o erro. Os tipos de renderer, mouse e arrastar ficam com os widgets.
+//! eventos do modelo e o erro, mais os tipos de arrastar e soltar (`ITreeDragAndDrop`, `ITreeDragOverReaction` e
+//! `TreeDragOverReactions`). Os tipos de renderer e de mouse ficam com os widgets.
 
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use je_base::event::Event as BaseEvent;
+
+use crate::list::list_dnd::{IListDragAndDrop, IListDragOverReaction, ListDragOverEffect, ListDragOverEffectPosition, ListDragOverEffectType, ListDragOverReactions};
 
 /// `TreeVisibility`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -396,3 +399,81 @@ pub trait IAsyncDataSource<TInput, T: Clone + 'static> {
         None
     }
 }
+
+/// `TreeDragOverBubble`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeDragOverBubble {
+    Down,
+    Up,
+}
+
+/// `ITreeDragOverReaction`: a reação da lista mais o `bubble` e o `autoExpand`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ITreeDragOverReaction {
+    pub reaction: IListDragOverReaction,
+    pub bubble: Option<TreeDragOverBubble>,
+    pub auto_expand: Option<bool>,
+}
+
+/// `TreeDragOverReactions`.
+pub struct TreeDragOverReactions;
+
+impl TreeDragOverReactions {
+    /// `acceptBubbleUp()`.
+    pub fn accept_bubble_up() -> ITreeDragOverReaction {
+        ITreeDragOverReaction { reaction: ListDragOverReactions::accept(), bubble: Some(TreeDragOverBubble::Up), auto_expand: None }
+    }
+
+    /// `acceptBubbleDown(autoExpand = false)`.
+    pub fn accept_bubble_down(auto_expand: bool) -> ITreeDragOverReaction {
+        ITreeDragOverReaction { reaction: ListDragOverReactions::accept(), bubble: Some(TreeDragOverBubble::Down), auto_expand: Some(auto_expand) }
+    }
+
+    /// `acceptCopyBubbleUp()`.
+    pub fn accept_copy_bubble_up() -> ITreeDragOverReaction {
+        ITreeDragOverReaction {
+            reaction: IListDragOverReaction { effect: Some(Self::copy_over_effect()), ..ListDragOverReactions::accept() },
+            bubble: Some(TreeDragOverBubble::Up),
+            auto_expand: None,
+        }
+    }
+
+    /// `acceptCopyBubbleDown(autoExpand = false)`.
+    pub fn accept_copy_bubble_down(auto_expand: bool) -> ITreeDragOverReaction {
+        ITreeDragOverReaction {
+            reaction: IListDragOverReaction { effect: Some(Self::copy_over_effect()), ..ListDragOverReactions::accept() },
+            bubble: Some(TreeDragOverBubble::Down),
+            auto_expand: Some(auto_expand),
+        }
+    }
+
+    /// `{ type: ListDragOverEffectType.Copy, position: ListDragOverEffectPosition.Over }`.
+    fn copy_over_effect() -> ListDragOverEffect {
+        ListDragOverEffect { kind: ListDragOverEffectType::Copy, position: Some(ListDragOverEffectPosition::Over) }
+    }
+}
+
+/// `boolean | ITreeDragOverReaction`: o resultado de `onDragOver` da árvore.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeDragOverResult {
+    Bool(bool),
+    Reaction(ITreeDragOverReaction),
+}
+
+impl From<bool> for TreeDragOverResult {
+    fn from(accept: bool) -> Self {
+        Self::Bool(accept)
+    }
+}
+
+impl From<ITreeDragOverReaction> for TreeDragOverResult {
+    fn from(reaction: ITreeDragOverReaction) -> Self {
+        Self::Reaction(reaction)
+    }
+}
+
+/// `ITreeDragAndDrop<T>`: o `IListDragAndDrop<T>` cujo `onDragOver` devolve `boolean | ITreeDragOverReaction`.
+/// Quem a implementa implementa `IListDragAndDrop<T, TreeDragOverResult>`.
+pub trait ITreeDragAndDrop<T>: IListDragAndDrop<T, TreeDragOverResult> {}
+
+impl<T, X: IListDragAndDrop<T, TreeDragOverResult>> ITreeDragAndDrop<T> for X {}

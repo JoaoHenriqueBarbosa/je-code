@@ -10,8 +10,8 @@
 //!   (`outline-offset: -1px`); o `je-ui` não tem traço pontilhado nem tracejado.
 //! - O `color` do CSS herda; os nós do `je-ui` não herdam. A lista aplica a cor da linha ao texto e aos
 //!   codicons de todos os descendentes (ver `List::paint_row`).
-//! - Fora daqui, sem efeito ainda: `listDropOverBackground`, `listDropBetweenBackground` (arrastar e soltar
-//!   não existe) e as cores de tabela.
+//! - `listDropOverBackground` e `listDropBetweenBackground` pintam as linhas com a classe `drop-target*` (ver
+//!   `List::paint_row`); as cores de tabela ainda não têm efeito.
 
 use je_render::Rgba;
 use je_theme::ColorTheme;

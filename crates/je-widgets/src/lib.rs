@@ -8,6 +8,8 @@
 pub(crate) mod common;
 pub mod context_view_api;
 pub mod dom;
+pub mod dnd;
+pub mod drag_image;
 pub mod hover_api;
 pub mod text;
 pub mod global_pointer_move_monitor;
