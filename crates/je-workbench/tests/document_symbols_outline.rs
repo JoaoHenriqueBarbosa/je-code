@@ -64,7 +64,7 @@ use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_editor::code_editor_widget::ICodeEditor;
 use je_editor::cursor_common::CursorSimpleModel;
-use je_editor::edit_operation::EditOperation;
+use je_editor::edit_operation::{EditOperation, SingleEditOperation};
 use je_editor::language_feature_debounce::LanguageFeatureDebounceService;
 use je_editor::language_feature_registry::LanguageFeatureRegistry;
 use je_editor::language_providers::{DocumentSymbol, DocumentSymbolProvider, ProviderResult, SymbolKind};
@@ -427,7 +427,7 @@ fn editor_options(preserve_focus: Option<bool>, pinned: Option<bool>) -> EditorO
 }
 
 /// `{ range, text }` de `model.applyEdits`.
-fn replace(range: Range, text: &str) -> EditOperation {
+fn replace(range: Range, text: &str) -> SingleEditOperation {
     EditOperation::replace(range, Some(JsString::from(text)))
 }
 
@@ -548,8 +548,24 @@ struct RecordingCodeEditorService {
 }
 
 impl ICodeEditorService for RecordingCodeEditorService {
+    fn on_code_editor_add(&self) -> Event<CodeEditorHandle> {
+        not_defined("onCodeEditorAdd")
+    }
+
+    fn on_code_editor_remove(&self) -> Event<CodeEditorHandle> {
+        not_defined("onCodeEditorRemove")
+    }
+
+    fn list_code_editors(&self) -> Vec<CodeEditorHandle> {
+        not_defined("listCodeEditors")
+    }
+
     fn get_focused_code_editor(&self) -> Option<CodeEditorHandle> {
         not_defined("getFocusedCodeEditor")
+    }
+
+    fn get_active_code_editor(&self) -> Option<CodeEditorHandle> {
+        not_defined("getActiveCodeEditor")
     }
 
     fn open_code_editor(&self, input: TextResourceEditorInput, source: Option<CodeEditorHandle>, side_by_side: Option<bool>) -> Promise<Option<CodeEditorHandle>> {
