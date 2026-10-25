@@ -236,8 +236,9 @@ fn create_service(guard: &LeakGuard, telemetry_service: Rc<dyn ITelemetryService
     let configuration_service: Rc<dyn IConfigurationService> = configuration.clone();
     let storage_service: Rc<dyn StorageService> = Rc::new(guard.add_rc(InMemoryStorageService::new()));
     let environment_service: Rc<dyn IWorkbenchEnvironmentService> = TestEnvironmentService::new();
-    let default_account_service: Rc<dyn IDefaultAccountService> =
+    let default_account_service =
         guard.add_rc(DefaultAccountService::new(IChatProvider { id: "github".to_owned(), name: "GitHub".to_owned(), extra: Default::default() }));
+    let default_account_service: Rc<dyn IDefaultAccountService> = default_account_service;
     let service = guard.add_rc(WorkbenchAssignmentService::new(WorkbenchAssignmentServiceServices {
         telemetry_service,
         storage_service,

@@ -348,7 +348,7 @@ fn workspace_symbol_provider_converts_both_constructor_forms_and_resolves_the_sy
         assert_eq!(result.symbols[0].name, "alfa");
         assert_eq!(result.symbols[0].container_name.as_deref(), Some("modulo"));
         assert_eq!(result.symbols[1].name, "beta");
-        assert_eq!(result.symbols[1].location.range, EditorRange::new(3, 1, 3, 5), "o construtor com intervalo e uri");
+        assert_eq!(result.symbols[1].location.range, Some(EditorRange::new(3, 1, 3, 5)), "o construtor com intervalo e uri");
 
         let symbol = result.symbols.into_iter().nth(1).expect("o segundo símbolo");
         let pending = observed.features_proxy().rpc_resolve_workspace_symbol(handle, symbol, CancellationToken::None);
@@ -368,7 +368,7 @@ fn value_classes_build_the_objects_of_the_original() {
         assert_eq!(
             workbench.execute("t.valueClasses", Vec::new()),
             Dynamic::string(concat!(
-                r#"{"link":"0,1-0,4:/proj/a.txt","color":"1,0.5,0,1","information":"1,0-1,3:0.5","presentation":"#ff8000:undefined","#,
+                r##"{"link":"0,1-0,4:/proj/a.txt","color":"1,0.5,0,1","information":"1,0-1,3:0.5","presentation":"#ff8000:undefined","##,
                 r#""callItem":"f:11:0,0-2,0:0,0-0,1","incoming":"f:1","outgoing":"f:0","typeItem":"C:d:4","#,
                 r#""byLocation":"s:c:0,0-0,1","byRange":"r:k:1,0-1,2:/proj/a.txt","emptyLink":"erro"}"#,
             ))
