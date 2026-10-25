@@ -176,6 +176,9 @@ pub mod editor_theme;
 pub mod screen_reader_simple_model;
 pub mod minimap_tokens_color_tracker;
 pub mod view_context;
+pub mod rendering_context;
+pub mod dynamic_view_overlay;
+pub mod word_wrap_indicator;
 pub mod view_model_impl_support;
 pub mod gpu;
 
