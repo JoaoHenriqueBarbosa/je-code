@@ -9,10 +9,12 @@
 //! Decisões de tradução:
 //! - **`ILifecycleMainService` e `IWindowsMainService`** (ainda sem porte: dependem de `BrowserWindow`) são os contratos
 //!   [`LifecycleMainService`] e [`WindowsMainService`], só com o que os consumidores portados leem: `onWillLoadWindow`,
-//!   `onBeforeCloseWindow` e `getWindows()` (o `handler`), `onWillShutdown` e `when(phase)` (o `StorageMainService`).
+//!   `onBeforeCloseWindow` e `getWindows()` (o `handler`), `onWillShutdown` e `when(phase)` (o `StorageMainService`),
+//!   `onBeforeShutdown`, `quitRequested`, `wasRestarted`, `getLastActiveWindow()`, `getWindowCount()`,
+//!   `onDidChangeWindowsCount` e `onDidDestroyWindow` (o `WindowsStateHandler`).
 //!   `ShutdownReason`, `ShutdownEvent` e `LifecycleMainPhase` são os de `lifecycleMainService.ts`.
 //! - **`ICodeWindow`** é [`CodeWindow`] mais [`ProfilesWindow`]: o contrato do porte dos workspaces tem `openedWorkspace`,
-//!   e o `handler` lê também `backupPath` e `isExtensionDevelopmentHost`, que [`ProfilesWindow`] acrescenta.
+//!   `backupPath` e `isExtensionDevelopmentHost` entre outros, e [`ProfilesWindow`] acrescenta o `profile`.
 //! - **`LoadReason`** (de `window.ts` de `electron-main`) é [`LoadReason`], com os mesmos três valores.
 //! - **`IUserDataProfilesMainService`** é o [`UserDataProfilesMainService`] (ver a decisão no arquivo dele).
 //! - **`unsetProfileForWorkspace`** é `async` no original, mas só espera `cleanUpTransientProfiles()` no fim: devolve a
@@ -46,12 +48,6 @@ pub enum LoadReason {
 
 /// O que o `handler` lê de `ICodeWindow` além do [`CodeWindow`].
 pub trait ProfilesWindow: CodeWindow {
-    /// `backupPath`.
-    fn backup_path(&self) -> Option<String>;
-
-    /// `isExtensionDevelopmentHost`.
-    fn is_extension_development_host(&self) -> bool;
-
     /// `profile`: o perfil da janela (o `StorageMainService` esquenta o armazém dele quando a janela carrega).
     fn profile(&self) -> Option<UserDataProfile>;
 }
@@ -121,6 +117,15 @@ pub trait LifecycleMainService {
     /// `onWillShutdown`.
     fn on_will_shutdown(&self) -> Event<ShutdownEvent>;
 
+    /// `onBeforeShutdown`.
+    fn on_before_shutdown(&self) -> Event<()>;
+
+    /// `quitRequested`: o encerramento do aplicativo foi pedido.
+    fn quit_requested(&self) -> bool;
+
+    /// `wasRestarted`: o aplicativo foi reiniciado (por uma atualização, por exemplo).
+    fn was_restarted(&self) -> bool;
+
     /// `when(phase)`: assenta quando o ciclo de vida chega à fase (ou já passou dela).
     fn when(&self, phase: LifecycleMainPhase) -> Promise<()>;
 
@@ -128,10 +133,29 @@ pub trait LifecycleMainService {
     fn quit(&self, will_restart: bool) -> Promise<bool>;
 }
 
-/// `IWindowsMainService`, com o que o `handler` lê.
+/// `IWindowsCountChangedEvent`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowsCountChangedEvent {
+    pub old_count: usize,
+    pub new_count: usize,
+}
+
+/// `IWindowsMainService`, com o que o `handler` e o `WindowsStateHandler` leem.
 pub trait WindowsMainService {
     /// `getWindows()`.
     fn get_windows(&self) -> Vec<Rc<dyn ProfilesWindow>>;
+
+    /// `getLastActiveWindow()`.
+    fn get_last_active_window(&self) -> Option<Rc<dyn ProfilesWindow>>;
+
+    /// `getWindowCount()`.
+    fn get_window_count(&self) -> usize;
+
+    /// `onDidChangeWindowsCount`.
+    fn on_did_change_windows_count(&self) -> Event<WindowsCountChangedEvent>;
+
+    /// `onDidDestroyWindow`.
+    fn on_did_destroy_window(&self) -> Event<Rc<dyn ProfilesWindow>>;
 }
 
 /// `UserDataProfilesHandler`.
