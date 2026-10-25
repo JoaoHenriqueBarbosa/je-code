@@ -4,7 +4,7 @@
 //!
 //! Divergências:
 //! - O `IProductService` que o original passa ao construtor não existe no `RemoteTunnelService` do porte (o serviço nunca o
-//!   lê), e o `INativeEnvironmentService` é o `RemoteTunnelEnvironment`, com os mesmos valores do original.
+//!   lê), e o `INativeEnvironmentService` é o `AbstractNativeEnvironmentService` real com os mesmos valores do original.
 //! - O `sinon.spy(telemetryService, 'publicLog2')` é o `RecordingTelemetryService`; `Event.None` do
 //!   `ISharedProcessLifecycleService` é `Event::none()`.
 //! - `ensureNoDisposablesAreLeakedInTestSuite()` é o `LeakGuard` criado no começo de cada caso; os casos rodam em
@@ -24,20 +24,18 @@ use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
-use je_base::uri::URI;
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
+use je_platform::lifecycle::shared_process_lifecycle_service::ISharedProcessLifecycleService;
 use je_platform::log::{LogLevel, LoggerService, null_logger_service};
 use je_platform::remote_tunnel::remote_tunnel::{ActiveTunnelMode, ConnectionInfo, IRemoteTunnelService, IRemoteTunnelSession, TunnelMode, TunnelStatus, tunnel_states};
-use je_platform::remote_tunnel::remote_tunnel_environment::RemoteTunnelEnvironment;
-use je_platform::remote_tunnel::remote_tunnel_service::{ISharedProcessLifecycleService, RemoteTunnelService};
+use je_platform::remote_tunnel::remote_tunnel_service::RemoteTunnelService;
 use je_platform::remote_tunnel::tunnel_machine_status::{IConnectedTunnelMachineStatus, ITokenErrorTunnelMachineStatus, TunnelMachineStatus};
 use je_platform::remote_tunnel::tunnel_process_coordinator::{
     ITunnelProcessCoordinator, ITunnelProcessMachineStatus, ITunnelProcessOutput, ITunnelProcessStatus, TunnelProcessConnectionState, TunnelProcessMode,
 };
 use je_platform::remote_tunnel::tunnel_service_headers::ITunnelServiceCorrelation;
-use je_platform::resources::uri_file;
 use je_platform::storage::storage::{InMemoryStorageService, StorageService};
-use remote_tunnel_support::RecordingTelemetryService;
+use remote_tunnel_support::{RecordingTelemetryService, test_native_environment};
 
 struct TestTunnelProcessCoordinator {
     on_did_change_status: Rc<Emitter<ITunnelProcessStatus>>,
@@ -133,26 +131,6 @@ impl IDisposable for TestTunnelProcessCoordinator {
     }
 }
 
-struct TestEnvironment;
-
-impl RemoteTunnelEnvironment for TestEnvironment {
-    fn app_root(&self) -> String {
-        "installation".to_owned()
-    }
-
-    fn is_built(&self) -> bool {
-        true
-    }
-
-    fn user_data_path(&self) -> String {
-        "custom-user-data".to_owned()
-    }
-
-    fn logs_home(&self) -> URI {
-        uri_file("logs")
-    }
-}
-
 /// `{ _serviceBrand: undefined, onWillShutdown: Event.None }`.
 struct TestSharedProcessLifecycleService;
 
@@ -179,7 +157,7 @@ impl Harness {
         let logger: Rc<dyn LoggerService> = logger_service.clone();
         let service = RemoteTunnelService::new(
             telemetry,
-            Rc::new(TestEnvironment),
+            test_native_environment(),
             logger,
             Rc::new(TestSharedProcessLifecycleService),
             TestConfigurationService::new(None),

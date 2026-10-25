@@ -19,3 +19,6 @@ Removidos da cópia: `tests/`, `Cargo.lock`, `Cargo.toml.orig` e `CHANGELOG.md`.
 - `src/lib.rs`: os módulos `event_loop`, `thread` e `tty` (os únicos que usam essas dependências, o pty, o `polling`
   e as threads) ficam sob `#[cfg(not(target_arch = "wasm32"))]`. O emulador (`term`, `grid`, `index`, `selection`,
   `vi_mode`, `event`, `sync`, `vte`) não toca nelas e compila no wasm.
+- `src/tty/unix.rs`: o `Pty` ganhou `child_mut`, `set_blocking`, `send_signal` e `foreground_process_group`, a API segura
+  que o pty cru do `je-terminal` (`pty.rs`, o papel do `node-pty` sob o `TerminalProcess`) usa sem o laço de eventos
+  (o crate `je-terminal` proíbe `unsafe`, então os `fcntl`, `kill` e `tcgetpgrp` ficam aqui).

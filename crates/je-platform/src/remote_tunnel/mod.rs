@@ -10,7 +10,6 @@
 pub mod code_tunnel_cli_process;
 #[allow(clippy::module_inception)] // `remote_tunnel.rs` é o porte de `remoteTunnel.ts`, como no original
 pub mod remote_tunnel;
-pub mod remote_tunnel_environment;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod remote_tunnel_service;
 pub mod tunnel_machine_status;

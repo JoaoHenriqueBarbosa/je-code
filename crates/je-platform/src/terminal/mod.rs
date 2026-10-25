@@ -45,3 +45,5 @@ pub mod pty_host;
 pub mod pty_host_service;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod terminal_auto_responder;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod terminal_process;

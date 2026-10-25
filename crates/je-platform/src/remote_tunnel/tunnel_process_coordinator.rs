@@ -9,9 +9,7 @@
 //!   `_serviceBrand`); os eventos são [`Event`]s e os métodos assíncronos devolvem [`Promise`]. Os literais de texto
 //!   (`'none' | 'remoteAccess' | 'service'` e `'disconnected' | 'connecting' | 'connected'`) são enums.
 //! - Os serviços injetados (`IConfigurationService`, `INativeEnvironmentService`, `IProductService`,
-//!   `ITelemetryService`) entram pelo construtor. O ambiente é o trait reduzido [`RemoteTunnelEnvironment`], e o produto
-//!   é o [`TunnelProduct`], porque o [`IProductService`](crate::product::IProductService) do porte não carrega
-//!   `tunnelApplicationName` nem `win32VersionedUpdate` (os dois únicos campos que este serviço lê).
+//!   `ITelemetryService`) entram pelo construtor, como os traits do porte.
 //! - As funções `async` são [`async_fn`] sobre um estado compartilhado (`Rc`); o estado mutável do original (`this._x`) é
 //!   um `RefCell`, e nenhum empréstimo fica aberto quando um evento é disparado ou uma promessa é aguardada.
 //! - `process.pid` é `std::process::id()`; `os.hostname()` lê o nome da máquina do sistema (`/proc`, `/etc/hostname`,
@@ -36,24 +34,16 @@ use super::code_tunnel_cli_process::{CodeTunnelCli, CodeTunnelCliOptions, CodeTu
 use super::remote_tunnel::{
     CONFIGURATION_KEY_HOST_NAME, CONFIGURATION_KEY_PREVENT_SLEEP, TunnelMode, TunnelStatus, normalize_tunnel_name, tunnel_name_from_hostname,
 };
-use super::remote_tunnel_environment::RemoteTunnelEnvironment;
 use super::tunnel_machine_status::{TunnelMachineStatus, parse_tunnel_machine_status};
 use super::tunnel_service_headers::{ITunnelServiceCorrelation, TunnelServiceOperation, create_tunnel_service_correlation};
 use crate::configuration::service::IConfigurationService;
+use crate::environment::environment::{EnvironmentService, NativeEnvironmentServiceApi};
 use crate::log::{LogLevel, log_level_to_string};
+use crate::product::IProductService;
 use crate::telemetry::telemetry::ITelemetryService;
 
 /// `TunnelCliFactory`: recebe o `onLog` e devolve a CLI.
 pub type TunnelCliFactory = Box<dyn Fn(CodeTunnelLog) -> CodeTunnelCli>;
-
-/// O que o coordenador lê do `IProductService`.
-#[derive(Clone, Debug, Default)]
-pub struct TunnelProduct {
-    /// `tunnelApplicationName`.
-    pub tunnel_application_name: Option<String>,
-    /// `!!win32VersionedUpdate`.
-    pub win32_versioned_update: bool,
-}
 
 /// The process mode selected from the Remote Tunnel Access intent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,7 +179,7 @@ struct CoordinatorInner {
     tunnel_cli: CodeTunnelCli,
     state: RefCell<CoordinatorState>,
     configuration_service: Rc<dyn IConfigurationService>,
-    environment: Rc<dyn RemoteTunnelEnvironment>,
+    environment: Rc<dyn NativeEnvironmentServiceApi>,
     telemetry_service: Rc<dyn ITelemetryService>,
     on_did_change_status: Rc<Emitter<ITunnelProcessStatus>>,
     on_did_output: Rc<Emitter<ITunnelProcessOutput>>,
@@ -210,8 +200,8 @@ impl TunnelProcessCoordinator {
     pub fn new(
         tunnel_cli_factory: Option<TunnelCliFactory>,
         configuration_service: Rc<dyn IConfigurationService>,
-        environment: Rc<dyn RemoteTunnelEnvironment>,
-        product: &TunnelProduct,
+        environment: Rc<dyn NativeEnvironmentServiceApi>,
+        product: &dyn IProductService,
         telemetry_service: Rc<dyn ITelemetryService>,
     ) -> Rc<Self> {
         let base = Disposable::new();
@@ -227,8 +217,8 @@ impl TunnelProcessCoordinator {
             None => CodeTunnelCli::new(CodeTunnelCliOptions {
                 app_root: environment.app_root(),
                 is_built: environment.is_built(),
-                tunnel_application_name: product.tunnel_application_name.clone(),
-                win32_versioned_update: product.win32_versioned_update,
+                tunnel_application_name: product.tunnel_application_name().map(str::to_owned),
+                win32_versioned_update: product.win32_versioned_update(),
                 spawn: None,
                 on_log: None,
             }),

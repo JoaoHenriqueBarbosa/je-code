@@ -28,6 +28,7 @@ pub mod js;
 pub mod keyboard_layout;
 pub mod keybinding;
 pub mod layout;
+pub mod lifecycle;
 pub mod log;
 pub mod markers;
 pub mod notification;

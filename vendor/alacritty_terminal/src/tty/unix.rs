@@ -115,6 +115,35 @@ impl Pty {
     pub fn file(&self) -> &File {
         &self.file
     }
+
+    /// je-code: o processo filho, para quem lê o pty sem o laço de eventos (o `TerminalProcess`).
+    pub fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    /// je-code: devolve o lado mestre ao modo bloqueante, para uma thread dedicada ler o pty com `read` simples.
+    pub fn set_blocking(&self) -> Result<()> {
+        let fd = self.file.as_raw_fd();
+        let flags = unsafe { fcntl(fd, F_GETFL, 0) };
+        if flags < 0 || unsafe { fcntl(fd, F_SETFL, flags & !O_NONBLOCK) } < 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// je-code: envia o sinal ao processo filho (o `kill(signal)` do node-pty).
+    pub fn send_signal(&self, signal: i32) -> Result<()> {
+        if unsafe { libc::kill(self.child.id() as i32, signal) } < 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// je-code: o grupo de processos em primeiro plano do terminal (o `process` do node-pty parte dele).
+    pub fn foreground_process_group(&self) -> Option<i32> {
+        let group = unsafe { libc::tcgetpgrp(self.file.as_raw_fd()) };
+        (group > 0).then_some(group)
+    }
 }
 
 /// User information that is required for a new shell session.
