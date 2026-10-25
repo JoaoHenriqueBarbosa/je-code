@@ -307,7 +307,7 @@ impl SuggestController {
                 (Rc::downgrade(editor), Rc::downgrade(&model), Rc::clone(&memory_service), Rc::clone(&focused_item));
             model.on_did_suggest().listen_in(
                 move |e| {
-                    if e.trigger_options.shy {
+                    if e.trigger_options.shy.unwrap_or(false) {
                         return;
                     }
                     let (Some(editor), Some(suggest_model)) = (weak_editor.upgrade(), weak_model.upgrade()) else {

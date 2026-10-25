@@ -309,7 +309,7 @@ impl Ctx {
                 )
             })
         };
-        editor.register_disposable(Rc::clone(&controller));
+        editor.register_disposable(Rc::clone(&controller) as Rc<dyn IDisposable>);
 
         Self { disposables, editor, model, controller, completion_provider }
     }
@@ -791,7 +791,7 @@ fn suggest_widget_gets_orphaned_in_editor_187779() {
     run_test(|ctx| async move {
         ctx.register(
             TestProvider::new(|doc, pos| {
-                let word = doc.get_line_content(pos.line_number).to_string_lossy();
+                let word = <TextModel as je_editor::cursor_common::CursorSimpleModel>::get_line_content(doc, pos.line_number).to_string_lossy();
                 let range = Range::new(pos.line_number, 1, pos.line_number, pos.column);
 
                 list(vec![suggestion(&word, CompletionItemKind::Text, &word, range)])
