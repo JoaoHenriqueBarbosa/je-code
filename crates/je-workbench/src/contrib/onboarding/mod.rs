@@ -14,3 +14,5 @@ pub mod sequence_presentation;
 pub mod onboarding_tryout_actions;
 pub mod guided_tryout_presentation;
 pub mod onboarding_tryout_service;
+pub mod onboarding_scenario_service;
+pub mod onboarding_service;
