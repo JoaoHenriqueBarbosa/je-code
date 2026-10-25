@@ -2576,7 +2576,7 @@ fn preserves_upper_row_pill_gutters_for_wrapped_and_pinned_rows() {
     let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
     for pinned_row in [false, true] {
         // `title.two-tab-bars` é a fileira das fixadas, a barra superior; sem ela a fileira é a da quebra (`wrapping`).
-        let placement = TabRowPlacement { wrapping: !pinned_row, upper_bar: pinned_row, tab_width: 120.0, ..TabRowPlacement::default() };
+        let placement = TabRowPlacement { wrapping: !pinned_row, upper_bar: pinned_row, two_tab_bars: pinned_row, first_tab_bar: pinned_row, tab_width: 120.0, ..TabRowPlacement::default() };
         for row_end in ["", "last-in-row", "connected-tab-right-edge"] {
             let tab = TabElement::new(&format!("tab active connected-tab-upper-row {row_end}"), true);
             // O `left` do `.tab-fill` e o `right`, a distância da borda direita da aba até a do preenchimento.

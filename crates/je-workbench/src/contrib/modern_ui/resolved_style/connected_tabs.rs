@@ -21,7 +21,7 @@
 use je_theme::color::{Color, Srgba};
 use je_theme::size_utils::get_size_registry;
 use je_theme::sizes::base_sizes::{
-    CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, STROKE_THICKNESS,
+    CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
 };
 
 use super::{BoxEdges, ClassList, EditorTabState, ModernUiStyle};
@@ -69,6 +69,9 @@ pub struct TabRowPlacement {
     pub upper_bar: bool,
     /// A aba abre a fileira (`:first-child` ou depois de `.last-in-row`).
     pub starts_row: bool,
+    /// `.title.two-tab-bars` e `.tabs-and-actions-container:first-child` (a barra das abas fixadas).
+    pub two_tab_bars: bool,
+    pub first_tab_bar: bool,
     /// `getBoundingClientRect().width` da aba.
     pub tab_width: f64,
 }
@@ -485,6 +488,7 @@ impl<'a> ModernUiStyle<'a> {
         ModernSpacing {
             size20: self.size(SPACING_SIZE20),
             size40: self.size(SPACING_SIZE40),
+            size60: self.size(SPACING_SIZE60),
             size160: self.size(SPACING_SIZE160),
             size200: self.size(SPACING_SIZE200),
             size240: self.size(SPACING_SIZE240),
@@ -513,6 +517,9 @@ impl<'a> ModernUiStyle<'a> {
             hovered: tab.hovered,
             starts_row: placement.starts_row,
             group_active: tab.group_active,
+            modern_ui_tabs: self.has("modern-ui-tabs"),
+            two_tab_bars: placement.two_tab_bars,
+            first_tab_bar: placement.first_tab_bar,
             tab_width: placement.tab_width,
             tab_height: 0.0,
         };
