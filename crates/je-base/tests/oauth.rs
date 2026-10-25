@@ -1,22 +1,30 @@
-//! Porte de `src/vs/base/test/common/oauth.test.ts` (suíte `OAuth`), caso a caso e na mesma ordem, para as
-//! funções que não fazem requisição HTTP: `Type Guards`, `Scope Matching`, `Utility Functions`,
-//! `Parsing Functions` e `Cross App Access (ID-JAG) wire format`.
+//! Porte de `src/vs/base/test/common/oauth.test.ts` (suíte `OAuth`), caso a caso e na mesma ordem: `Type Guards`,
+//! `Scope Matching`, `Utility Functions`, `Parsing Functions`, `Network Functions`, `Client ID Fallback Scenarios`,
+//! `fetchResourceMetadata`, `fetchAuthorizationServerMetadata` e `Cross App Access (ID-JAG) wire format`.
 //!
 //! Notas de tradução:
 //! - Os objetos literais do TypeScript são JSON lido por `v(...)`; `undefined` e `null` são os dois
 //!   `Value::Null` (para todas as funções `is*` as duas são "não é um objeto"), e `'not an object'` é uma string.
 //! - `assert.throws(fn, /texto/)` é o `Err` com a mensagem; `scopesMatch(undefined, ...)` é `None`.
 //! - `getDefaultMetadataForUrl(new URL(...))` recebe o texto da URL.
-//!
-//! Pendentes (cada caso depende do `fetch`, que o porte injeta por um trait que `oauth.rs` não tem): a suíte
-//! `Network Functions` (15 casos de `fetchDynamicRegistration`), `Client ID Fallback Scenarios` (2),
-//! `fetchResourceMetadata` (31) e `fetchAuthorizationServerMetadata` (30).
+//! - O `sinon.stub()` do `fetch` é o [`FetchStub`]: guarda as chamadas (`callCount`, `args`) e responde na ordem dos
+//!   `onFirstCall`, `onSecondCall`, `onThirdCall`, ou sempre o mesmo (`resolves`/`rejects`). O `sandbox.stub(globalThis,
+//!   'fetch')` é o `set_global_fetch`, desfeito pelo [`GlobalFetchGuard`] (o `sandbox.restore()`).
+//! - O `Response` do mock é o [`MockResponse`]: `ok`, `status`, `statusText`, `json()` e `text()`; o que o mock do
+//!   TypeScript não define é um `Err` (a chamada a uma função inexistente lança).
+//! - O corpo do teste assíncrono roda em `run_with_real_timers`; `assert.rejects(fn, /texto/)` confere a mensagem do
+//!   `Err`, e os trechos separados por `.*` na expressão regular viram `contains_in_order`.
 
 mod common;
 
-use common::ensure_no_disposables_are_leaked_in_test_suite;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use common::{ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers};
 use je_base::buffer::{VSBuffer, encode_base64};
+use je_base::errors::Error;
 use je_base::json::{self, Value};
+use je_base::node::pfs::LocalFuture;
 use je_base::oauth::*;
 
 fn v(source: &str) -> Value {
@@ -29,6 +37,232 @@ fn text(s: &str) -> Value {
 
 fn server_metadata_error(source: &str) -> String {
     is_authorization_server_metadata(&v(source)).expect_err("devia lançar").message
+}
+
+/// O objeto tipado que o TypeScript escreve como literal.
+fn typed<T: serde::de::DeserializeOwned>(source: &str) -> T {
+    serde_json::from_str(source).expect("JSON do tipo")
+}
+
+/// `await assert.rejects(...)`: o erro da promessa rejeitada.
+fn rejected<T>(result: Result<T, Error>) -> Error {
+    match result {
+        Ok(_) => panic!("devia rejeitar"),
+        Err(error) => error,
+    }
+}
+
+/// A expressão regular `/a.*b.*c/`: os trechos aparecem na mensagem nessa ordem.
+fn contains_in_order(message: &str, parts: &[&str]) -> bool {
+    let mut rest = message;
+    for part in parts {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+/// `{ ok, status, statusText, json, text }` do mock de `Response`.
+#[derive(Clone)]
+struct MockResponse {
+    ok: bool,
+    status: u16,
+    status_text: String,
+    json: Result<Value, Error>,
+    text: Result<String, Error>,
+}
+
+impl MockResponse {
+    fn new(ok: bool, status: u16) -> Self {
+        let missing = |name: &str| Error::named("TypeError", format!("response.{name} is not a function"));
+        Self { ok, status, status_text: String::new(), json: Err(missing("json")), text: Err(missing("text")) }
+    }
+
+    /// `{ status, json: async () => body, text: async () => JSON.stringify(body) }` (o corpo já vem compacto).
+    fn with_body(status: u16, body: &str) -> Self {
+        Self { json: Ok(v(body)), text: Ok(body.to_owned()), ..Self::new(status == 200, status) }
+    }
+
+    fn status_text(mut self, status_text: &str) -> Self {
+        self.status_text = status_text.to_owned();
+        self
+    }
+
+    fn json_body(mut self, body: &str) -> Self {
+        self.json = Ok(v(body));
+        self
+    }
+
+    fn json_throws(mut self, message: &str) -> Self {
+        self.json = Err(Error::new(message));
+        self
+    }
+
+    fn text_body(mut self, body: &str) -> Self {
+        self.text = Ok(body.to_owned());
+        self
+    }
+
+    fn text_throws(mut self, message: &str) -> Self {
+        self.text = Err(Error::new(message));
+        self
+    }
+}
+
+impl ICommonResponse for MockResponse {
+    fn ok(&self) -> bool {
+        self.ok
+    }
+
+    fn status(&self) -> u16 {
+        self.status
+    }
+
+    fn status_text(&self) -> String {
+        self.status_text.clone()
+    }
+
+    fn json(&self) -> LocalFuture<'_, Result<Value, Error>> {
+        Box::pin(std::future::ready(self.json.clone()))
+    }
+
+    fn text(&self) -> LocalFuture<'_, Result<String, Error>> {
+        Box::pin(std::future::ready(self.text.clone()))
+    }
+}
+
+/// O `sinon.stub()` do `fetch`.
+#[derive(Default)]
+struct FetchStub {
+    calls: RefCell<Vec<(String, IFetchInit)>>,
+    /// `onFirstCall`, `onSecondCall`, `onThirdCall`.
+    scripted: RefCell<Vec<Option<Result<MockResponse, Error>>>>,
+    /// `resolves`/`rejects` sem `onCall`.
+    fallback: RefCell<Option<Result<MockResponse, Error>>>,
+}
+
+impl FetchStub {
+    fn new() -> Rc<Self> {
+        Rc::new(Self::default())
+    }
+
+    /// `fetchStub.resolves(response)`.
+    fn resolves(&self, response: MockResponse) {
+        *self.fallback.borrow_mut() = Some(Ok(response));
+    }
+
+    /// `fetchStub.rejects(new Error(message))`.
+    fn rejects(&self, message: &str) {
+        *self.fallback.borrow_mut() = Some(Err(Error::new(message)));
+    }
+
+    fn on_call(&self, index: usize, reply: Result<MockResponse, Error>) {
+        let mut scripted = self.scripted.borrow_mut();
+        if scripted.len() <= index {
+            scripted.resize(index + 1, None);
+        }
+        scripted[index] = Some(reply);
+    }
+
+    /// `fetchStub.onFirstCall().resolves(response)`.
+    fn on_first_call_resolves(&self, response: MockResponse) {
+        self.on_call(0, Ok(response));
+    }
+
+    /// `fetchStub.onSecondCall().resolves(response)`.
+    fn on_second_call_resolves(&self, response: MockResponse) {
+        self.on_call(1, Ok(response));
+    }
+
+    /// `fetchStub.onThirdCall().resolves(response)`.
+    fn on_third_call_resolves(&self, response: MockResponse) {
+        self.on_call(2, Ok(response));
+    }
+
+    /// `fetchStub.onFirstCall().rejects(new Error(message))`.
+    fn on_first_call_rejects(&self, message: &str) {
+        self.on_call(0, Err(Error::new(message)));
+    }
+
+    /// `fetchStub.callCount`.
+    fn call_count(&self) -> usize {
+        self.calls.borrow().len()
+    }
+
+    /// `fetchStub.getCall(index).args`.
+    fn args(&self, index: usize) -> (String, IFetchInit) {
+        self.calls.borrow()[index].clone()
+    }
+
+    /// `fetchStub.firstCall.args[0]`.
+    fn url(&self, index: usize) -> String {
+        self.args(index).0
+    }
+
+    /// `fetchStub.getCall(index).args[1]`.
+    fn init(&self, index: usize) -> IFetchInit {
+        self.args(index).1
+    }
+}
+
+impl IFetcher for FetchStub {
+    fn fetch(&self, input: &str, init: IFetchInit) -> LocalFuture<'static, Result<Rc<dyn ICommonResponse>, Error>> {
+        let index = self.calls.borrow().len();
+        self.calls.borrow_mut().push((input.to_owned(), init));
+        let reply = self
+            .scripted
+            .borrow()
+            .get(index)
+            .cloned()
+            .flatten()
+            .or_else(|| self.fallback.borrow().clone())
+            .unwrap_or_else(|| Err(Error::named("TypeError", "Cannot read properties of undefined")));
+        Box::pin(std::future::ready(reply.map(|response| Rc::new(response) as Rc<dyn ICommonResponse>)))
+    }
+}
+
+/// `sandbox.stub(globalThis, 'fetch')`, e o `sandbox.restore()` quando sai de escopo.
+struct GlobalFetchGuard(Option<Rc<dyn IFetcher>>);
+
+impl Drop for GlobalFetchGuard {
+    fn drop(&mut self) {
+        set_global_fetch(self.0.take());
+    }
+}
+
+fn stub_global_fetch(stub: &Rc<FetchStub>) -> GlobalFetchGuard {
+    GlobalFetchGuard(set_global_fetch(Some(stub.clone())))
+}
+
+/// O `fetch` injetável de `{ fetch: fetchStub }`.
+fn injected(stub: &Rc<FetchStub>) -> Rc<dyn IFetcher> {
+    stub.clone()
+}
+
+/// `setup()` com `fetchStub = sandbox.stub(globalThis, 'fetch')` e `teardown()` com `sandbox.restore()`.
+fn run_with_global_stub<F: std::future::Future<Output = ()> + 'static>(body: impl FnOnce(Rc<FetchStub>) -> F) {
+    let fetch_stub = FetchStub::new();
+    let _global = stub_global_fetch(&fetch_stub);
+    run_with_real_timers(body(fetch_stub));
+}
+
+/// `setup()` com `fetchStub = sandbox.stub()` (o `fetch` não é global).
+fn run_with_stub<F: std::future::Future<Output = ()> + 'static>(body: impl FnOnce(Rc<FetchStub>) -> F) {
+    run_with_real_timers(body(FetchStub::new()));
+}
+
+fn resource_options(stub: &Rc<FetchStub>) -> IFetchResourceMetadataOptions {
+    IFetchResourceMetadataOptions { fetch: Some(injected(stub)), ..Default::default() }
+}
+
+fn headers_of(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs.iter().map(|(k, val)| ((*k).to_owned(), (*val).to_owned())).collect()
+}
+
+fn auth_server_options(stub: &Rc<FetchStub>) -> IFetchAuthorizationServerMetadataOptions {
+    IFetchAuthorizationServerMetadataOptions { fetch: Some(injected(stub)), ..Default::default() }
 }
 
 mod type_guards {
@@ -366,6 +600,1316 @@ mod parsing_functions {
 
         let message = get_claims_from_jwt(&token).expect_err("devia lançar").message;
         assert!(message.contains("Failed to parse JWT token"), "{message}");
+    }
+}
+
+mod network_functions {
+    use super::*;
+
+    const BODY_OK: &str = r#"{"client_id":"generated-client-id","client_name":"Test Client"}"#;
+
+    fn server() -> IAuthorizationServerMetadata {
+        typed(r#"{"issuer":"https://auth.example.com","registration_endpoint":"https://auth.example.com/register","response_types_supported":["code"]}"#)
+    }
+
+    /// `JSON.parse(options.body)`.
+    fn request_body(fetch_stub: &FetchStub) -> Value {
+        v(&fetch_stub.init(0).body.expect("corpo da requisição"))
+    }
+
+    fn member<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
+        match value {
+            Value::Object(object) => object.get(name),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_make_correct_request_and_parse_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            // Setup successful response
+            let mock_response = r#"{"client_id":"generated-client-id","client_name":"Test Client","client_uri":"https://code.visualstudio.com"}"#;
+
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(mock_response));
+
+            let server_metadata = server();
+
+            let result = fetch_dynamic_registration(&server_metadata, "Test Client", None).await.unwrap();
+
+            // Verify fetch was called correctly
+            assert_eq!(fetch_stub.call_count(), 1);
+            let (url, options) = fetch_stub.args(0);
+            assert_eq!(url, "https://auth.example.com/register");
+            assert_eq!(options.method, "POST");
+            assert_eq!(options.header("Content-Type"), Some("application/json"));
+
+            // Verify request body
+            let request_body = request_body(&fetch_stub);
+            assert_eq!(member(&request_body, "client_name"), Some(&text("Test Client")));
+            assert_eq!(member(&request_body, "client_uri"), Some(&text("https://code.visualstudio.com")));
+            assert_eq!(member(&request_body, "grant_types"), Some(&v(r#"["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"]"#)));
+            assert_eq!(member(&request_body, "response_types"), Some(&v(r#"["code"]"#)));
+            assert_eq!(
+                member(&request_body, "redirect_uris"),
+                Some(&v(&format!(r#"["https://insiders.vscode.dev/redirect","https://vscode.dev/redirect","http://127.0.0.1/","http://127.0.0.1:{DEFAULT_AUTH_FLOW_PORT}/"]"#)))
+            );
+
+            // Verify response is processed correctly
+            assert_eq!(result, typed::<IAuthorizationDynamicClientRegistrationResponse>(mock_response));
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_throw_error_on_non_ok_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(false, 0).status_text("Bad Request").text_body("Bad Request"));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Registration to https://auth.example.com/register failed: Bad Request"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_throw_error_on_invalid_response_format() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            // Missing required fields
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(r#"{"invalid":"response"}"#));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Invalid authorization dynamic client registration response"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_filter_grant_types_based_on_server_metadata() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            // Setup successful response
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(BODY_OK));
+
+            // Mix of supported and unsupported
+            let server_metadata: IAuthorizationServerMetadata = typed(
+                r#"{"issuer":"https://auth.example.com","registration_endpoint":"https://auth.example.com/register","response_types_supported":["code"],"grant_types_supported":["authorization_code","client_credentials","refresh_token"]}"#,
+            );
+
+            fetch_dynamic_registration(&server_metadata, "Test Client", None).await.unwrap();
+
+            // Verify fetch was called correctly
+            assert_eq!(fetch_stub.call_count(), 1);
+
+            // Verify request body contains only the intersection of supported grant types (client_credentials should be filtered out)
+            assert_eq!(member(&request_body(&fetch_stub), "grant_types"), Some(&v(r#"["authorization_code","refresh_token"]"#)));
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_use_default_grant_types_when_server_metadata_has_none() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            // Setup successful response
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(BODY_OK));
+
+            // No grant_types_supported specified
+            fetch_dynamic_registration(&server(), "Test Client", None).await.unwrap();
+
+            // Verify fetch was called correctly
+            assert_eq!(fetch_stub.call_count(), 1);
+
+            // Verify request body contains default grant types
+            assert_eq!(member(&request_body(&fetch_stub), "grant_types"), Some(&v(r#"["authorization_code","refresh_token","urn:ietf:params:oauth:grant-type:device_code"]"#)));
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_throw_error_when_registration_endpoint_is_missing() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|_fetch_stub| async move {
+            // registration_endpoint is missing
+            let server_metadata: IAuthorizationServerMetadata = typed(r#"{"issuer":"https://auth.example.com","response_types_supported":["code"]}"#);
+
+            let error = rejected(fetch_dynamic_registration(&server_metadata, "Test Client", None).await);
+            assert!(error.message.contains("Server does not support dynamic registration"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_structured_error_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            let error_response = r#"{"error":"invalid_client_metadata","error_description":"The client metadata is invalid"}"#;
+
+            fetch_stub.resolves(MockResponse::new(false, 0).text_body(error_response));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Registration to https://auth.example.com/register failed: invalid_client_metadata: The client metadata is invalid"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_structured_error_response_without_description() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(false, 0).text_body(r#"{"error":"invalid_redirect_uri"}"#));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Registration to https://auth.example.com/register failed: invalid_redirect_uri"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_malformed_json_error_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(false, 0).text_body("Invalid JSON {"));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Registration to https://auth.example.com/register failed: Invalid JSON {"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_include_scopes_in_request_when_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(BODY_OK));
+
+            fetch_dynamic_registration(&server(), "Test Client", Some(&["read", "write"])).await.unwrap();
+
+            // Verify request includes scopes
+            assert_eq!(member(&request_body(&fetch_stub), "scope"), Some(&text("read write")));
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_omit_scope_from_request_when_not_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(BODY_OK));
+
+            fetch_dynamic_registration(&server(), "Test Client", None).await.unwrap();
+
+            // Verify request does not include scope when not provided
+            assert_eq!(member(&request_body(&fetch_stub), "scope"), None);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_empty_scopes_array() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(true, 0).json_body(BODY_OK));
+
+            fetch_dynamic_registration(&server(), "Test Client", Some(&[])).await.unwrap();
+
+            // Verify request includes empty scope
+            assert_eq!(member(&request_body(&fetch_stub), "scope"), Some(&text("")));
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_network_fetch_failure() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.rejects("Network error");
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Network error"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_response_json_failure() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(true, 0).json_throws("JSON parsing failed"));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("JSON parsing failed"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_handle_response_text_failure_for_error_cases() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(false, 0).text_throws("Text parsing failed"));
+
+            let error = rejected(fetch_dynamic_registration(&server(), "Test Client", None).await);
+            assert!(error.message.contains("Text parsing failed"), "{}", error.message);
+        });
+    }
+}
+
+mod client_id_fallback_scenarios {
+    use super::*;
+
+    #[test]
+    fn fetch_dynamic_registration_should_throw_specific_error_for_missing_registration_endpoint() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|_fetch_stub| async move {
+            // registration_endpoint is missing
+            let server_metadata: IAuthorizationServerMetadata = typed(r#"{"issuer":"https://auth.example.com","response_types_supported":["code"]}"#);
+
+            let error = rejected(fetch_dynamic_registration(&server_metadata, "Test Client", None).await);
+            assert_eq!(error.message, "Server does not support dynamic registration");
+        });
+    }
+
+    #[test]
+    fn fetch_dynamic_registration_should_throw_specific_error_for_dcr_failure() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|fetch_stub| async move {
+            fetch_stub.resolves(MockResponse::new(false, 0).text_body("DCR not supported"));
+
+            let server_metadata: IAuthorizationServerMetadata = typed(
+                r#"{"issuer":"https://auth.example.com","registration_endpoint":"https://auth.example.com/register","response_types_supported":["code"]}"#,
+            );
+
+            let error = rejected(fetch_dynamic_registration(&server_metadata, "Test Client", None).await);
+            assert!(error.message.contains("Registration to https://auth.example.com/register failed: DCR not supported"), "{}", error.message);
+        });
+    }
+}
+
+mod fetch_resource_metadata {
+    use super::*;
+
+    const PRM_URL: &str = "https://example.com/.well-known/oauth-protected-resource";
+
+    fn metadata_of(source: &str) -> IAuthorizationProtectedResourceMetadata {
+        typed(source)
+    }
+
+    fn not_found() -> MockResponse {
+        MockResponse::new(false, 404).text_body("Not Found").status_text("Not Found")
+    }
+
+    /// `error instanceof AggregateError || regex.test(error.message)`.
+    fn is_aggregate_or_message(error: &Error, parts: &[&str]) -> bool {
+        error.is_aggregate() || contains_in_order(&error.message, parts)
+    }
+
+    #[test]
+    fn should_successfully_fetch_and_validate_resource_metadata() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let expected_metadata = r#"{"resource":"https://example.com/api","scopes_supported":["read","write"]}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, PRM_URL);
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+            assert_eq!(fetch_stub.url(0), PRM_URL);
+            assert_eq!(fetch_stub.init(0).method, "GET");
+            assert_eq!(fetch_stub.init(0).header("Accept"), Some("application/json"));
+        });
+    }
+
+    #[test]
+    fn should_include_same_origin_headers_when_origins_match() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let same_origin_headers = headers_of(&[("X-Test-Header", "test-value"), ("X-Custom-Header", "value")]);
+            let expected_metadata = r#"{"resource":"https://example.com/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), IFetchResourceMetadataOptions { fetch: Some(injected(&fetch_stub)), same_origin_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, PRM_URL);
+            let init = fetch_stub.init(0);
+            assert_eq!(init.header("Accept"), Some("application/json"));
+            assert_eq!(init.header("X-Test-Header"), Some("test-value"));
+            assert_eq!(init.header("X-Custom-Header"), Some("value"));
+        });
+    }
+
+    #[test]
+    fn should_not_include_same_origin_headers_when_origins_differ() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let resource_metadata_url = "https://other-domain.com/.well-known/oauth-protected-resource";
+            let same_origin_headers = headers_of(&[("X-Test-Header", "test-value")]);
+            let expected_metadata = r#"{"resource":"https://example.com/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(resource_metadata_url), IFetchResourceMetadataOptions { fetch: Some(injected(&fetch_stub)), same_origin_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, resource_metadata_url);
+            let init = fetch_stub.init(0);
+            assert_eq!(init.header("Accept"), Some("application/json"));
+            assert_eq!(init.header("X-Test-Header"), None);
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_fetch_returns_non_200_status() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+
+            // Stub all possible URLs to return 404 for robust fallback testing
+            fetch_stub.resolves(MockResponse::new(false, 404).text_body("Not Found"));
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs fail
+            assert!(is_aggregate_or_message(&error, &["Failed to fetch resource metadata from", "404 Not Found"]), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_handle_error_when_response_text_throws() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+
+            // Stub all possible URLs to return 500 for robust fallback testing
+            fetch_stub.resolves(MockResponse::new(false, 500).status_text("Internal Server Error").text_throws("Cannot read response"));
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs fail
+            assert!(is_aggregate_or_message(&error, &["Failed to fetch resource metadata from", "500 Internal Server Error"]), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_resource_property_does_not_match_target_resource() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+
+            // Stub all possible URLs to return invalid metadata for robust fallback testing
+            fetch_stub.resolves(MockResponse::with_body(200, r#"{"resource":"https://different.com/api"}"#));
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs fail validation
+            assert!(error.is_aggregate());
+            assert!(error.errors.iter().any(|e| e.message.contains("does not match expected value")));
+        });
+    }
+
+    #[test]
+    fn should_normalize_urls_when_comparing_resource_values() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://EXAMPLE.COM/api";
+            let metadata = r#"{"resource":"https://example.com/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, metadata));
+
+            // URL normalization should handle hostname case differences
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await.unwrap();
+            assert_eq!(result.metadata, metadata_of(metadata));
+            assert_eq!(result.discovery_url, PRM_URL);
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_response_is_not_valid_resource_metadata() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            // Missing required 'resource' property
+            fetch_stub.resolves(MockResponse::with_body(200, r#"{"scopes_supported":["read","write"]}"#));
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs return invalid metadata
+            assert!(is_aggregate_or_message(&error, &["Invalid resource metadata"]), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_scopes_supported_is_not_an_array() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            fetch_stub.resolves(MockResponse::with_body(200, r#"{"resource":"https://example.com/api","scopes_supported":"not an array"}"#));
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs return invalid metadata
+            assert!(is_aggregate_or_message(&error, &["Invalid resource metadata"]), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_handle_metadata_with_optional_fields() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let metadata = r#"{"resource":"https://example.com/api","resource_name":"Example API","authorization_servers":["https://auth.example.com"],"jwks_uri":"https://example.com/jwks","scopes_supported":["read","write","admin"],"bearer_methods_supported":["header","body"],"resource_documentation":"https://example.com/docs"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await.unwrap();
+            assert_eq!(result.metadata, metadata_of(metadata));
+        });
+    }
+
+    #[test]
+    fn should_use_global_fetch_when_custom_fetch_is_not_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|global_fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let metadata = r#"{"resource":"https://example.com/api"}"#;
+
+            global_fetch_stub.resolves(MockResponse::with_body(200, metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), IFetchResourceMetadataOptions::default()).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(metadata));
+            assert_eq!(result.discovery_url, PRM_URL);
+            assert_eq!(global_fetch_stub.call_count(), 1);
+        });
+    }
+
+    #[test]
+    fn should_handle_same_origin_with_different_ports() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com:8080/api";
+            let resource_metadata_url = "https://example.com:9090/.well-known/oauth-protected-resource";
+            let same_origin_headers = headers_of(&[("X-Test-Header", "test-value")]);
+            let metadata = r#"{"resource":"https://example.com:8080/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(resource_metadata_url), IFetchResourceMetadataOptions { fetch: Some(injected(&fetch_stub)), same_origin_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, resource_metadata_url);
+            // Different ports mean different origins
+            assert_eq!(fetch_stub.init(0).header("X-Test-Header"), None);
+        });
+    }
+
+    #[test]
+    fn should_handle_same_origin_with_different_protocols() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "http://example.com/api";
+            let same_origin_headers = headers_of(&[("X-Test-Header", "test-value")]);
+            let metadata = r#"{"resource":"http://example.com/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), IFetchResourceMetadataOptions { fetch: Some(injected(&fetch_stub)), same_origin_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, PRM_URL);
+            // Different protocols mean different origins
+            assert_eq!(fetch_stub.init(0).header("X-Test-Header"), None);
+        });
+    }
+
+    #[test]
+    fn should_include_error_details_in_message_with_resource_values() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+
+            // Stub all possible URLs to return invalid metadata for robust fallback testing
+            fetch_stub.resolves(MockResponse::with_body(200, r#"{"resource":"https://different.com/other"}"#));
+
+            // Should be AggregateError with validation errors
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            let error_message = if error.is_aggregate() { error.errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join(" ") } else { error.message.clone() };
+            assert!(error_message.contains("does not match expected value"), "Error message should mention mismatch");
+            assert!(error_message.contains("https://different.com/other"), "Error message should include actual resource value");
+            assert!(error_message.contains("https://example.com/api"), "Error message should include expected resource value");
+        });
+    }
+
+    #[test]
+    fn should_fallback_to_well_known_uri_with_path_when_no_resource_metadata_url_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            let expected_metadata = r#"{"resource":"https://example.com/api/v1","scopes_supported":["read","write"]}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource/api/v1");
+            assert_eq!(fetch_stub.call_count(), 1);
+            // Should try path-appended version first
+            assert_eq!(fetch_stub.url(0), "https://example.com/.well-known/oauth-protected-resource/api/v1");
+        });
+    }
+
+    #[test]
+    fn should_fallback_to_well_known_uri_at_root_when_path_version_fails() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            let expected_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read","write"]}"#;
+
+            // First call fails, second succeeds
+            fetch_stub.on_first_call_resolves(not_found());
+            fetch_stub.on_second_call_resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource");
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(fetch_stub.call_count(), 2);
+            // First attempt with path
+            assert_eq!(fetch_stub.url(0), "https://example.com/.well-known/oauth-protected-resource/api/v1");
+            // Second attempt at root
+            assert_eq!(fetch_stub.url(1), "https://example.com/.well-known/oauth-protected-resource");
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_all_well_known_uris_fail() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+
+            fetch_stub.resolves(not_found());
+
+            let error = rejected(fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 2, "Should contain 2 errors");
+            assert!(contains_in_order(&error.errors[0].message, &["Failed to fetch resource metadata from", "/api/v1", "404"]), "First error should mention /api/v1 and 404");
+            assert!(contains_in_order(&error.errors[1].message, &["Failed to fetch resource metadata from", ".well-known", "404"]), "Second error should mention .well-known and 404");
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_not_append_path_when_target_resource_is_root() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/";
+            let expected_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read"]}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource");
+            assert_eq!(fetch_stub.call_count(), 1);
+            // Both URLs should be the same when path is /
+            assert_eq!(fetch_stub.url(0), "https://example.com/.well-known/oauth-protected-resource");
+        });
+    }
+
+    #[test]
+    fn should_include_same_origin_headers_when_using_well_known_fallback() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+            let same_origin_headers = headers_of(&[("X-Test-Header", "test-value"), ("X-Custom-Header", "value")]);
+            let expected_metadata = r#"{"resource":"https://example.com/api"}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, IFetchResourceMetadataOptions { fetch: Some(injected(&fetch_stub)), same_origin_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource/api");
+            let init = fetch_stub.init(0);
+            assert_eq!(init.header("Accept"), Some("application/json"));
+            assert_eq!(init.header("X-Test-Header"), Some("test-value"));
+            assert_eq!(init.header("X-Custom-Header"), Some("value"));
+        });
+    }
+
+    #[test]
+    fn should_handle_fetch_impl_throwing_network_error_and_continue_to_next_url() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            let expected_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read","write"]}"#;
+
+            // First call throws network error, second succeeds
+            fetch_stub.on_first_call_rejects("Network connection failed");
+            fetch_stub.on_second_call_resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource");
+            assert_eq!(result.errors.len(), 1);
+            assert!(result.errors[0].message.contains("Network connection failed"));
+            assert_eq!(fetch_stub.call_count(), 2);
+            // First attempt with path should have thrown error
+            assert_eq!(fetch_stub.url(0), "https://example.com/.well-known/oauth-protected-resource/api/v1");
+            // Second attempt at root should succeed
+            assert_eq!(fetch_stub.url(1), "https://example.com/.well-known/oauth-protected-resource");
+        });
+    }
+
+    #[test]
+    fn should_throw_aggregate_error_when_fetch_impl_throws_on_all_urls() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+
+            // Both calls throw network errors
+            fetch_stub.rejects("Network connection failed");
+
+            let error = rejected(fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 2, "Should contain 2 errors");
+            assert!(error.errors[0].message.contains("Network connection failed"), "First error should mention network failure");
+            assert!(error.errors[1].message.contains("Network connection failed"), "Second error should mention network failure");
+
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_handle_mix_of_fetch_error_and_non_200_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+
+            // First call throws network error
+            fetch_stub.on_first_call_rejects("Connection timeout");
+
+            // Second call returns 404
+            fetch_stub.on_second_call_resolves(not_found());
+
+            let error = rejected(fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 2, "Should contain 2 errors");
+            assert!(error.errors[0].message.contains("Connection timeout"), "First error should be network error");
+            assert!(contains_in_order(&error.errors[1].message, &["Failed to fetch resource metadata", "404"]), "Second error should be 404");
+
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_accept_root_url_in_prm_resource_when_using_root_discovery_fallback_no_trailing_slash() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            // Per RFC 9728: when metadata retrieved from root discovery URL, the resource value must match the root URL
+            // (where well-known was inserted)
+            let expected_metadata = r#"{"resource":"https://example.com","scopes_supported":["read","write"]}"#;
+
+            // First call (path-appended) fails, second (root) succeeds
+            fetch_stub.on_first_call_resolves(not_found());
+            fetch_stub.on_second_call_resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_accept_root_url_in_prm_resource_when_using_root_discovery_fallback_with_trailing_slash() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            // Test that trailing slash form is also accepted (URL normalization)
+            let expected_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read","write"]}"#;
+
+            // First call (path-appended) fails, second (root) succeeds
+            fetch_stub.on_first_call_resolves(not_found());
+            fetch_stub.on_second_call_resolves(MockResponse::with_body(200, expected_metadata));
+
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_reject_prm_with_full_path_resource_when_using_root_discovery_fallback() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            // This violates RFC 9728: root discovery PRM should have root URL, not full path
+            let invalid_metadata = r#"{"resource":"https://example.com/api/v1","scopes_supported":["read"]}"#;
+
+            // First call (path-appended) fails, second (root) returns invalid metadata
+            fetch_stub.on_first_call_resolves(not_found());
+            fetch_stub.on_second_call_resolves(MockResponse::with_body(200, invalid_metadata));
+
+            let error = rejected(fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 2);
+            // First error is 404 from path-appended attempt
+            assert!(error.errors[0].message.contains("404"));
+            // Second error is validation failure from root attempt
+            assert!(error.errors[1].message.contains("does not match expected value"));
+            // Check that validation was against root URL (origin) not full path
+            assert!(contains_in_order(&error.errors[1].message, &["https://example.com/api/v1", "https://example.com"]));
+
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_reject_prm_with_root_resource_when_using_path_appended_discovery() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            // This violates RFC 9728: path-appended discovery PRM should match full target URL
+            let invalid_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read"]}"#;
+
+            // First attempt (path-appended) gets the wrong resource value. It will fail validation and continue to second
+            // URL (root). Second attempt (root) will succeed because root expects root resource
+            fetch_stub.resolves(MockResponse::with_body(200, invalid_metadata));
+
+            // This should actually succeed on the second (root) attempt
+            let result = fetch_resource_metadata(target_resource, None, resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(invalid_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource");
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(fetch_stub.call_count(), 2);
+            // Verify both URLs were tried
+            assert_eq!(fetch_stub.url(0), "https://example.com/.well-known/oauth-protected-resource/api/v1");
+            assert_eq!(fetch_stub.url(1), "https://example.com/.well-known/oauth-protected-resource");
+        });
+    }
+
+    #[test]
+    fn should_validate_against_target_resource_when_resource_metadata_url_is_explicitly_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            // When explicit URL provided (e.g., from WWW-Authenticate), must match targetResource
+            let valid_metadata = r#"{"resource":"https://example.com/api/v1","scopes_supported":["read"]}"#;
+
+            fetch_stub.resolves(MockResponse::with_body(200, valid_metadata));
+
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(valid_metadata));
+            assert_eq!(result.discovery_url, PRM_URL);
+            assert_eq!(fetch_stub.call_count(), 1);
+            assert_eq!(fetch_stub.url(0), PRM_URL);
+        });
+    }
+
+    #[test]
+    fn should_fallback_to_root_discovery_when_explicit_resource_metadata_url_validation_fails() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api/v1";
+            let invalid_metadata = r#"{"resource":"https://example.com/","scopes_supported":["read"]}"#;
+
+            // Stub all URLs to return root resource metadata. Explicit URL returns root (validation fails), path-appended
+            // fails, root succeeds
+            fetch_stub.resolves(MockResponse::with_body(200, invalid_metadata));
+
+            // Should succeed on root discovery fallback
+            let result = fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await.unwrap();
+            assert_eq!(result.metadata, metadata_of(invalid_metadata));
+            assert_eq!(result.discovery_url, "https://example.com/.well-known/oauth-protected-resource");
+            assert!(!result.errors.is_empty());
+            // Should have tried explicit URL, path-appended, then succeeded on root
+            assert!(fetch_stub.call_count() >= 2);
+        });
+    }
+
+    #[test]
+    fn should_handle_fetch_impl_throwing_error_with_explicit_resource_metadata_url() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let target_resource = "https://example.com/api";
+
+            // Stub all possible URLs to throw network error for robust fallback testing
+            fetch_stub.rejects("DNS resolution failed");
+
+            let error = rejected(fetch_resource_metadata(target_resource, Some(PRM_URL), resource_options(&fetch_stub)).await);
+            // Should be AggregateError since all URLs fail
+            assert!(is_aggregate_or_message(&error, &["DNS resolution failed"]), "{}", error.message);
+
+            // Should have tried explicit URL and well-known discovery
+            assert!(fetch_stub.call_count() >= 2);
+        });
+    }
+}
+
+mod fetch_authorization_server_metadata {
+    use super::*;
+
+    fn metadata_of(source: &str) -> IAuthorizationServerMetadata {
+        typed(source)
+    }
+
+    /// `{ status: 200, json, text, statusText: 'OK' }`.
+    fn ok_with(body: &str) -> MockResponse {
+        MockResponse::with_body(200, body).status_text("OK")
+    }
+
+    /// `{ status, text: async () => text, statusText, json: async () => { throw new Error('Not JSON'); } }`.
+    fn failing(status: u16, text: &str, status_text: &str) -> MockResponse {
+        MockResponse::new(false, status).text_body(text).status_text(status_text).json_throws("Not JSON")
+    }
+
+    #[test]
+    fn should_successfully_fetch_metadata_from_oauth_discovery_endpoint_with_path_insertion() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant","authorization_endpoint":"https://auth.example.com/tenant/authorize","token_endpoint":"https://auth.example.com/tenant/token","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+            // Should try OAuth discovery with path insertion: https://auth.example.com/.well-known/oauth-authorization-server/tenant
+            assert_eq!(fetch_stub.url(0), "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            assert_eq!(fetch_stub.init(0).method, "GET");
+        });
+    }
+
+    #[test]
+    fn should_fallback_to_open_id_connect_discovery_with_path_insertion() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant","authorization_endpoint":"https://auth.example.com/tenant/authorize","token_endpoint":"https://auth.example.com/tenant/token","response_types_supported":["code"]}"#;
+
+            // First call fails, second succeeds
+            fetch_stub.on_first_call_resolves(failing(404, "Not Found", "Not Found"));
+            fetch_stub.on_second_call_resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/openid-configuration/tenant");
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(fetch_stub.call_count(), 2);
+            // First attempt: OAuth discovery
+            assert_eq!(fetch_stub.url(0), "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            // Second attempt: OpenID Connect discovery with path insertion
+            assert_eq!(fetch_stub.url(1), "https://auth.example.com/.well-known/openid-configuration/tenant");
+        });
+    }
+
+    #[test]
+    fn should_fallback_to_open_id_connect_discovery_with_path_addition() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant","authorization_endpoint":"https://auth.example.com/tenant/authorize","token_endpoint":"https://auth.example.com/tenant/token","response_types_supported":["code"]}"#;
+
+            // First two calls fail, third succeeds
+            fetch_stub.on_first_call_resolves(failing(404, "Not Found", "Not Found"));
+            fetch_stub.on_second_call_resolves(failing(404, "Not Found", "Not Found"));
+            fetch_stub.on_third_call_resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/tenant/.well-known/openid-configuration");
+            assert_eq!(result.errors.len(), 2);
+            assert_eq!(fetch_stub.call_count(), 3);
+            // First attempt: OAuth discovery
+            assert_eq!(fetch_stub.url(0), "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            // Second attempt: OpenID Connect discovery with path insertion
+            assert_eq!(fetch_stub.url(1), "https://auth.example.com/.well-known/openid-configuration/tenant");
+            // Third attempt: OpenID Connect discovery with path addition
+            assert_eq!(fetch_stub.url(2), "https://auth.example.com/tenant/.well-known/openid-configuration");
+        });
+    }
+
+    #[test]
+    fn should_handle_authorization_server_at_root_without_extra_path() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/","authorization_endpoint":"https://auth.example.com/authorize","token_endpoint":"https://auth.example.com/token","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+            // For root URLs, no extra path is added
+            assert_eq!(fetch_stub.url(0), "https://auth.example.com/.well-known/oauth-authorization-server");
+        });
+    }
+
+    #[test]
+    fn should_handle_authorization_server_with_trailing_slash() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant/";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant/","authorization_endpoint":"https://auth.example.com/tenant/authorize","token_endpoint":"https://auth.example.com/tenant/token","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server/tenant/");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+        });
+    }
+
+    #[test]
+    fn should_include_additional_headers_in_all_requests() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+            let additional_headers = headers_of(&[("X-Custom-Header", "custom-value"), ("Authorization", "Bearer token123")]);
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, IFetchAuthorizationServerMetadataOptions { fetch: Some(injected(&fetch_stub)), additional_headers }).await.unwrap();
+
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            let init = fetch_stub.init(0);
+            assert_eq!(init.header("X-Custom-Header"), Some("custom-value"));
+            assert_eq!(init.header("Authorization"), Some("Bearer token123"));
+            assert_eq!(init.header("Accept"), Some("application/json"));
+        });
+    }
+
+    #[test]
+    fn should_throw_aggregate_error_when_all_discovery_endpoints_fail() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+
+            fetch_stub.resolves(failing(404, "Not Found", "Not Found"));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 3, "Should contain 3 errors (one for each URL)");
+            assert_eq!(error.message, "Failed to fetch authorization server metadata from all attempted URLs");
+            // Verify each error includes the URL it attempted
+            assert!(contains_in_order(&error.errors[0].message, &["oauth-authorization-server", "404"]), "First error should mention OAuth discovery and 404");
+            assert!(contains_in_order(&error.errors[1].message, &["openid-configuration", "404"]), "Second error should mention OpenID path insertion and 404");
+            assert!(contains_in_order(&error.errors[2].message, &["openid-configuration", "404"]), "Third error should mention OpenID path addition and 404");
+
+            // Should have tried all three endpoints
+            assert_eq!(fetch_stub.call_count(), 3);
+        });
+    }
+
+    #[test]
+    fn should_throw_single_error_not_aggregate_error_when_only_one_url_is_tried_and_fails() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+
+            // First attempt succeeds on second try, so only one error is collected for first URL
+            fetch_stub.on_first_call_resolves(failing(500, "Internal Server Error", "Internal Server Error"));
+
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/","response_types_supported":["code"]}"#;
+
+            fetch_stub.on_second_call_resolves(ok_with(expected_metadata));
+
+            // Should succeed on second attempt
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.errors.len(), 1);
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_throw_aggregate_error_when_multiple_urls_fail_with_mixed_error_types() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+
+            // First call: network error
+            fetch_stub.on_first_call_rejects("Connection timeout");
+
+            // Second call: 404
+            fetch_stub.on_second_call_resolves(failing(404, "Not Found", "Not Found"));
+
+            // Third call: 500
+            fetch_stub.on_third_call_resolves(failing(500, "Internal Server Error", "Internal Server Error"));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 3, "Should contain 3 errors");
+            // First error is network error
+            assert!(error.errors[0].message.contains("Connection timeout"), "First error should be network error");
+            // Second error is 404
+            assert!(contains_in_order(&error.errors[1].message, &["404", "Not Found"]), "Second error should be 404");
+            // Third error is 500
+            assert!(contains_in_order(&error.errors[2].message, &["500", "Internal Server Error"]), "Third error should be 500");
+
+            assert_eq!(fetch_stub.call_count(), 3);
+        });
+    }
+
+    #[test]
+    fn should_handle_invalid_json_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+
+            fetch_stub.resolves(MockResponse::new(true, 200).json_throws("Invalid JSON").text_body("Invalid JSON").status_text("OK"));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.message.contains("Failed to fetch authorization server metadata"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_handle_valid_json_but_invalid_metadata_structure() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            // Missing required 'issuer' field
+            let invalid_metadata = r#"{"authorization_endpoint":"https://auth.example.com/authorize"}"#;
+
+            fetch_stub.resolves(ok_with(invalid_metadata));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.message.contains("Failed to fetch authorization server metadata"), "{}", error.message);
+        });
+    }
+
+    #[test]
+    fn should_use_global_fetch_when_custom_fetch_is_not_provided() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_global_stub(|global_fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/","response_types_supported":["code"]}"#;
+
+            global_fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, IFetchAuthorizationServerMetadataOptions::default()).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(global_fetch_stub.call_count(), 1);
+        });
+    }
+
+    #[test]
+    fn should_handle_network_fetch_failure_and_continue_to_next_endpoint() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/","response_types_supported":["code"]}"#;
+
+            // First call throws network error, second succeeds
+            fetch_stub.on_first_call_rejects("Network error");
+            fetch_stub.on_second_call_resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.errors.len(), 1);
+            assert!(result.errors[0].message.contains("Network error"));
+            // Should have tried two endpoints
+            assert_eq!(fetch_stub.call_count(), 2);
+        });
+    }
+
+    #[test]
+    fn should_throw_error_when_network_fails_on_all_endpoints() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+
+            fetch_stub.rejects("Network error");
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 3, "Should contain 3 errors");
+            assert_eq!(error.message, "Failed to fetch authorization server metadata from all attempted URLs");
+            // All errors should be network errors
+            assert!(error.errors[0].message.contains("Network error"), "First error should be network error");
+            assert!(error.errors[1].message.contains("Network error"), "Second error should be network error");
+            assert!(error.errors[2].message.contains("Network error"), "Third error should be network error");
+
+            // Should have tried all three endpoints
+            assert_eq!(fetch_stub.call_count(), 3);
+        });
+    }
+
+    #[test]
+    fn should_handle_mix_of_network_error_and_non_200_response() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant","response_types_supported":["code"]}"#;
+
+            // First call throws network error
+            fetch_stub.on_first_call_rejects("Connection timeout");
+
+            // Second call returns 404
+            fetch_stub.on_second_call_resolves(failing(404, "Not Found", "Not Found"));
+
+            // Third call succeeds
+            fetch_stub.on_third_call_resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.errors.len(), 2);
+            // Should have tried all three endpoints
+            assert_eq!(fetch_stub.call_count(), 3);
+        });
+    }
+
+    #[test]
+    fn should_handle_response_text_failure_in_error_case() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+
+            fetch_stub.resolves(MockResponse::new(false, 500).text_throws("Cannot read text").status_text("Internal Server Error").json_throws("Cannot read json"));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 3, "Should contain 3 errors");
+            // All errors should include status code and statusText (fallback when text() fails)
+            for err in &error.errors {
+                assert!(err.message.contains("500 Internal Server Error"), "Error should mention 500 and statusText: {}", err.message);
+            }
+        });
+    }
+
+    #[test]
+    fn should_correctly_handle_path_addition_with_trailing_slash() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant/";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant/","response_types_supported":["code"]}"#;
+
+            // First two calls fail, third succeeds
+            fetch_stub.on_first_call_resolves(failing(404, "Not Found", "Not Found"));
+            fetch_stub.on_second_call_resolves(failing(404, "Not Found", "Not Found"));
+            fetch_stub.on_third_call_resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/tenant/.well-known/openid-configuration");
+            assert_eq!(result.errors.len(), 2);
+            assert_eq!(fetch_stub.call_count(), 3);
+            // Third attempt should correctly handle trailing slash (not double-slash)
+            assert_eq!(fetch_stub.url(2), "https://auth.example.com/tenant/.well-known/openid-configuration");
+        });
+    }
+
+    #[test]
+    fn should_handle_deeply_nested_paths() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant/org/sub";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant/org/sub","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server/tenant/org/sub");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+            // Should correctly insert well-known path with nested paths
+            assert_eq!(fetch_stub.url(0), "https://auth.example.com/.well-known/oauth-authorization-server/tenant/org/sub");
+        });
+    }
+
+    #[test]
+    fn should_handle_200_response_with_non_metadata_json() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            let invalid_response = r#"{"error":"not_supported","message":"Metadata not available"}"#;
+
+            fetch_stub.resolves(ok_with(invalid_response));
+
+            let error = rejected(fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await);
+            assert!(error.is_aggregate(), "Should be an AggregateError");
+            assert_eq!(error.errors.len(), 3, "Should contain 3 errors");
+            // All errors should indicate failed to fetch with status code
+            for err in &error.errors {
+                assert!(err.message.contains("Failed to fetch authorization server metadata from"), "Error should mention failed fetch: {}", err.message);
+            }
+
+            // Should try all three endpoints
+            assert_eq!(fetch_stub.call_count(), 3);
+        });
+    }
+
+    #[test]
+    fn should_validate_metadata_according_to_is_authorization_server_metadata() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            // Valid metadata with all required fields
+            let valid_metadata = r#"{"issuer":"https://auth.example.com/","authorization_endpoint":"https://auth.example.com/authorize","token_endpoint":"https://auth.example.com/token","jwks_uri":"https://auth.example.com/jwks","registration_endpoint":"https://auth.example.com/register","response_types_supported":["code","token"]}"#;
+
+            fetch_stub.resolves(ok_with(valid_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(valid_metadata));
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+        });
+    }
+
+    #[test]
+    fn should_handle_ur_ls_with_query_parameters() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com/tenant?version=v2";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/tenant?version=v2","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, auth_server_options(&fetch_stub)).await.unwrap();
+
+            assert_eq!(result.metadata, metadata_of(expected_metadata));
+            // Query parameters are not included in the discovery URL (only pathname is extracted)
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server/tenant");
+            assert_eq!(result.errors, Vec::<Error>::new());
+            assert_eq!(fetch_stub.call_count(), 1);
+        });
+    }
+
+    #[test]
+    fn should_handle_empty_additional_headers() {
+        let _store = ensure_no_disposables_are_leaked_in_test_suite();
+        run_with_stub(|fetch_stub| async move {
+            let authorization_server = "https://auth.example.com";
+            let expected_metadata = r#"{"issuer":"https://auth.example.com/","response_types_supported":["code"]}"#;
+
+            fetch_stub.resolves(ok_with(expected_metadata));
+
+            let result = fetch_authorization_server_metadata(authorization_server, IFetchAuthorizationServerMetadataOptions { fetch: Some(injected(&fetch_stub)), additional_headers: Vec::new() }).await.unwrap();
+
+            assert_eq!(result.discovery_url, "https://auth.example.com/.well-known/oauth-authorization-server");
+            assert_eq!(fetch_stub.init(0).header("Accept"), Some("application/json"));
+        });
     }
 }
 
