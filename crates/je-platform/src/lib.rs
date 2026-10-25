@@ -31,10 +31,13 @@ pub mod layout;
 pub mod log;
 pub mod markers;
 pub mod notification;
+pub mod native;
 pub mod policy;
 pub mod progress;
 pub mod request;
 pub mod product;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod protocol;
 pub mod resources;
 pub mod state;
 pub mod telemetry;
