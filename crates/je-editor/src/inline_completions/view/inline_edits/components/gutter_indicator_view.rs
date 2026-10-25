@@ -27,14 +27,14 @@
 //! - `StickyScrollController.get(editor)` (e o evento `onDidChangeStickyScrollHeight`) ainda não tem porte: a altura do
 //!   sticky scroll chega pelo [`IGutterIndicatorHost::sticky_scroll_height`] (`0` sem controller, como o `constObservable(0)`
 //!   do original);
-//! - **ponto de abertura do menu.** `_showHover` cria o `GutterIndicatorMenuContent` (fatia seguinte), mede o foco nele com
-//!   `createFocusTracker` e o mostra com `IHoverService.showInstantHover`. Essas três peças são do menu, então a view só
-//!   conhece o contrato [`IGutterIndicatorHost::show_menu`]: recebe o [`GutterIndicatorMenuRequest`] (o editor, o
+//! - **ponto de abertura do menu.** `_showHover` cria o `GutterIndicatorMenuContent` (`gutter_indicator_menu`), mede o foco
+//!   nele com `createFocusTracker` e o mostra com `IHoverService.showInstantHover`. Essas três peças são do menu, então a
+//!   view só conhece o contrato [`IGutterIndicatorHost::show_menu`]: recebe o [`GutterIndicatorMenuRequest`] (o editor, o
 //!   [`InlineSuggestionGutterMenuData`], o retângulo da pílula que serve de alvo e o `onClose` do original, que repassa o
 //!   `commandId` por [`InlineEditsGutterIndicator::on_did_close_with_command`]) e devolve a [`IGutterIndicatorMenuSession`]
 //!   (o foco dentro do menu, o descarte e o evento de descarte), ou `None` quando o hover não aparece (o `showInstantHover`
 //!   devolve `undefined`). A view mantém o resto do `_showHover`: a guarda `_hoverVisible`, o descarte ao rolar o editor e o
-//!   `_focusIsInMenu`. A fatia do `gutterIndicatorMenu` implementa o contrato;
+//!   `_focusIsInMenu`. O `GutterIndicatorMenuHost` de `gutter_indicator_menu` implementa o contrato;
 //! - `@IInstantiationService`, `@IHoverService` e `@IUserInteractionService` saem do construtor pelos motivos acima;
 //!   `@IThemeService` é o `Rc<dyn IThemeService>` e `@IAccessibilityService` o `Rc<dyn IAccessibilityService>`;
 //! - `triggerAnimation()` anima o elemento com `Element.animate` (Web Animations) e devolve `animation.finished`. Aqui o
