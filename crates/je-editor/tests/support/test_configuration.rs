@@ -109,6 +109,56 @@ impl EditorEnvironment for TestEnvironment {
     }
 }
 
+/// O ambiente de um editor real (`EditorConfiguration` sem a subclasse `TestConfiguration`): o ambiente é o mesmo do
+/// [`TestEnvironment`], mas a altura de linha, o corpo e o espaçamento da fonte são os do `styling` pedido (o que o
+/// `FontMeasurements.readFontInfo` devolve no navegador, que lê a opção `lineHeight`), e não os 19 fixos do
+/// `TestConfiguration`. A fonte continua a `mockFont` monoespaçada de largura 10, porque não há DOM para medir.
+pub struct StyledTestEnvironment;
+
+impl EditorEnvironment for StyledTestEnvironment {
+    fn read_env_configuration(&self, raw_options: &Dynamic, container_observer: &ElementSizeObserver) -> EnvConfiguration {
+        TestEnvironment.read_env_configuration(raw_options, container_observer)
+    }
+
+    fn read_font_info(&self, styling: &BareFontInfo) -> FontInfo {
+        FontInfo::new(
+            FontInfoOptions {
+                bare: BareFontInfoOptions {
+                    pixel_ratio: styling.pixel_ratio,
+                    font_family: styling.font_family.clone(),
+                    font_weight: styling.font_weight.clone(),
+                    font_size: styling.font_size,
+                    font_feature_settings: EditorFontLigatures::OFF.to_owned(),
+                    font_variation_settings: EditorFontVariations::OFF.to_owned(),
+                    line_height: styling.line_height,
+                    letter_spacing: styling.letter_spacing,
+                },
+                is_monospace: true,
+                typical_halfwidth_character_width: 10.0,
+                typical_fullwidth_character_width: 20.0,
+                can_use_halfwidth_rightwards_arrow: true,
+                space_width: 10.0,
+                middot_width: 10.0,
+                wsmiddot_width: 10.0,
+                max_digit_width: 10.0,
+            },
+            true,
+        )
+    }
+
+    fn on_did_change_font_measurements(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn on_did_change_pixel_ratio(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn on_did_change_screen_reader_optimized(&self) -> Event<()> {
+        Event::none()
+    }
+}
+
 /// `TestConfiguration`.
 pub struct TestConfiguration;
 

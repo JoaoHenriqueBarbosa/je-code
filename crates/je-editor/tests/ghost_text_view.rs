@@ -9,6 +9,9 @@
 //!   `InlineDecoration` `modified-background` por linha, e as opções `extraClasses: ['inline-edit']`,
 //!   `isClickable` e `shouldKeepCursorStable` verdadeiros. O recorte de prefixo (`getPrefixTrim`) só muda as colunas
 //!   das decorações, não a geometria que os casos medem, e vale zero aqui.
+//! - O original cria o `CodeEditorWidget` real, cuja `EditorConfiguration` mede a fonte do DOM com a opção
+//!   `lineHeight` (20). O editor de teste do porte usa a `TestConfiguration`, que fixa a altura de linha em 19, então o
+//!   caso monta a configuração com o [`StyledTestEnvironment`] (mesma fonte `mockFont`, altura de linha do `styling`).
 //! - O `CodeEditorWidget` do porte não tem `View`: `editor.layout(...)`, `editor.render(true)` e o
 //!   `requestAnimationFrame` não existem, e a geometria é a do `ViewModel`, síncrona. A view zone é a do
 //!   `editor.changeViewZones` do widget (a parte `ViewZones`, que a transforma numa whitespace do layout com altura
@@ -44,8 +47,9 @@ use je_editor::position::Position;
 use je_editor::range::Range;
 use je_editor::text_model_edit_source::{EditSources, InlineCompletionAcceptData};
 use support::test_code_editor::{
-    TestCodeEditor, create_code_editor_services, instantiate_test_code_editor, TestCodeEditorCreationOptions,
+    TestCodeEditor, create_code_editor_services, instantiate_test_code_editor_with_configuration, TestCodeEditorCreationOptions,
 };
+use support::test_configuration::{StyledTestEnvironment, TestConfiguration};
 use support::test_text_model::create_text_model;
 
 /// A `GhostTextView` não lê o aviso nem a telemetria do inline edit: o `handleInlineCompletionShown` do
@@ -100,7 +104,10 @@ fn create_insertion_view_context(store: &LeakGuard) -> InsertionViewContext {
     );
     let owned = text_model.clone();
     store.add(to_disposable(move || owned.dispose()));
-    let editor = instantiate_test_code_editor(&services, Some(text_model.clone()), &options);
+    // O original cria o `CodeEditorWidget` real, cuja configuração lê a opção `lineHeight` (20) na medição da fonte; a
+    // `TestConfiguration` fixaria 19.
+    let configuration = TestConfiguration::with_environment(&options, Rc::new(StyledTestEnvironment));
+    let editor = instantiate_test_code_editor_with_configuration(&services, Some(text_model.clone()), &options, configuration);
     store.add_rc(editor.clone());
 
     let target_line_number = 100;
