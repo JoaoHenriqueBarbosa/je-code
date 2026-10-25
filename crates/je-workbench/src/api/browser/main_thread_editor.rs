@@ -798,7 +798,7 @@ impl MainThreadTextEditor {
                 return Ok(false);
             };
 
-            code_editor.focus();
+            ICodeEditor::focus(&*code_editor);
 
             // make modifications as snippet edit
             let edits: Vec<SnippetEdit> = ranges.iter().map(|range| SnippetEdit { range: *range, template: JsString::from(template.clone()), keep_whitespace: None }).collect();

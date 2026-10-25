@@ -87,7 +87,8 @@ thread_local! {
 fn input(disposables: &Rc<DisposableStore>) -> EditorInputRef {
     let id = INDEX.with(|index| index.replace(index.get() + 1));
 
-    disposables.add_rc(TestEditorInput::new(URI::parse(&format!("file://{id}"), false), "testInput"))
+    let input = disposables.add_rc(TestEditorInput::new(URI::parse(format!("file://{id}").as_str(), false), "testInput"));
+    input
 }
 
 /// `{ pinned: true }`.
