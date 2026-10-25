@@ -3224,7 +3224,12 @@ fn reveals_the_terminal_connected_editor_close_action_and_shoulder_before_add_ta
         options.editor_actions_location = EditorActionsLocation::Hidden;
     });
     fx.create_control(true);
-    let third = fx.open_pinned_file("browser.ts", false);
+    // `model.openEditor(third, { index: model.count, pinned: true, active: false })`: no fim, depois da aba terminal.
+    let third: EditorInputRef = {
+        let concrete = fx.suite.disposables.add_rc(NamedInput::new("browser.ts", "/path/browser.ts", None));
+        concrete
+    };
+    open!(fx.model, third, index: fx.model.count() as i64, pinned: true, active: false);
     fx.open_editors();
 
     #[derive(Debug, PartialEq)]
@@ -3498,6 +3503,83 @@ fn alt_is_revalidated_when_pressing_the_tab_action_without_moving_the_mouse() {
     actions.push(fx.tab_actions());
 
     assert_eq!(actions, vec![vec!["closeOthers", "close"], vec!["close", "close"]]);
+}
+
+#[test]
+fn connected_sticky_offsets_follow_rendered_widths_without_preserving_filename_extensions() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 20.0;
+        options.tab_sizing_fixed_max_width = 20.0;
+        options.pinned_tab_sizing = PinnedTabSizing::Shrink;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    // `getName()` devolve `example.dockerignore`.
+    let long_extension: EditorInputRef = fx.suite.disposables.add_rc(NamedInput::new("example.dockerignore", "/path/example.dockerignore", None));
+    open!(fx.model, long_extension, index: 0, pinned: true, sticky: true);
+    fx.open_editors();
+    for (index, editor) in fx.model.get_editors(EditorsOrder::Sequential, None).into_iter().enumerate() {
+        fx.model.stick(&editor);
+        fx.state.handle_sticky_editor_change(index);
+    }
+    fx.layout(400.0);
+
+    let widths = fx.geometry().widths;
+    let label = &fx.state.tabs[0].state.label;
+    // O `text-overflow: ellipsis` do contêiner do rótulo é pintura da renderização nativa.
+    assert_eq!(
+        (
+            format!("{}{}", label.name_prefix.as_deref().unwrap_or(""), label.name.as_deref().unwrap_or("")),
+            label.description.clone(),
+            fx.state.tabs.iter().map(|tab| tab.state.left).collect::<Vec<_>>(),
+        ),
+        ("example.dockerignore".to_string(), String::new(), vec![Some(0.0), Some(widths[0]), Some(widths[0] + widths[1])])
+    );
+}
+
+#[test]
+fn marks_the_connected_clipping_edge_when_it_follows_compact_sticky_tabs() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.pinned_tab_sizing = PinnedTabSizing::Compact;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    let first = fx.model.get_editor_by_index(0).expect("aba 0");
+    fx.model.stick(&first);
+    fx.state.handle_sticky_editor_change(0);
+    fx.activate(1);
+    fx.layout(400.0);
+
+    assert!(fx.state.container.overflow_edge.adjacent_sticky);
+}
+
+#[test]
+fn only_the_bottom_wrapped_row_joins_the_document_and_upper_row_resets_when_unwrapped() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 120.0;
+        options.tab_sizing_fixed_max_width = 120.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(150.0);
+    let upper_row = |fx: &Fixture| fx.state.tabs.iter().map(|tab| tab.state.connected_tab_upper_row).collect::<Vec<_>>();
+    let top_row = |fx: &Fixture| fx.state.tabs.iter().map(|tab| tab.state.connected_tab_top_row).collect::<Vec<_>>();
+    let wrapped = upper_row(&fx);
+    let wrapped_top = top_row(&fx);
+    // `getComputedStyle(fill).top` da aba superior: o `fill-block-inset` de `size20`. O `::after` do ombro (`content: none`) é pintura.
+    let upper_inset = tab_fill_rect(&fx.box_context(0)).top;
+    fx.layout(400.0);
+
+    assert_eq!(
+        (wrapped, wrapped_top, upper_inset, upper_row(&fx), top_row(&fx)),
+        (vec![true, false], vec![true, false], 2.0, vec![false, false], vec![true, true])
+    );
 }
 
 //#endregion
