@@ -25,14 +25,19 @@
 //!   `updateValue` pelo handler do comando registrado e a espera pelo `updateValue` em `set_layout_density`, que é o
 //!   corpo do `run`, num segundo serviço de configuração.
 //!
-//! Recortes: os demais casos da suíte (cerca de 110) leem o estilo calculado de um DOM com os `*.css` do VS Code
-//! (`getComputedStyle`, `getBoundingClientRect`, `generateColorThemeCSS`) ou os registros de cor e de tema do
-//! `common/theme.ts`; não há DOM, e o `.css` é a especificação lida ao portar cada widget. Voltam com o desenho nativo
-//! dos widgets e com o registro de cores: `insets multi diff file rows ...`, `supports isolated notification and dialog
-//! presentation`, os de cor de painel, aba e barra de atividade, `toggles uppercase view headers without relayout`,
-//! `Explorer title casing ...`, as abas conectadas por tema e todos os que seguem até `keeps panel global actions
-//! above overflowing title actions`. No terceiro caso, `paneHeaderLineHeight` e `paneHeaderInlineLineHeight` (estilo
-//! calculado do cabeçalho) ficam de fora.
+//! Recortes: os demais casos da suíte leem o estilo calculado de um DOM com os `*.css` do VS Code (`getComputedStyle`,
+//! `getBoundingClientRect`, `generateColorThemeCSS`); não há DOM, e o `.css` é a especificação lida ao portar cada
+//! widget. Voltam com o desenho nativo dos widgets e com o participante de tema (`generateColorThemeCSS`): `insets multi
+//! diff file rows ...`, `supports isolated notification and dialog presentation`, `uses part-specific pane colors ...`
+//! até `rounds activity bar corners ...` e todos os que seguem (barra de atividade, barra de status, menu compacto,
+//! sashes, cantos do macOS, abas conectadas por tema) exceto os portados abaixo, e `uses the editor background for the
+//! connected surface` até `applies editor tab foregrounds ...`, `uses readable theme foregrounds ...` até `fades tab
+//! actions only when ...`, e de `uses legacy color customizations ...` até `keeps panel global actions above ...`.
+//! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
+//! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
+//! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`); nos casos de
+//! borda e de fundo do shell o `borderColor` e o `backgroundColor` calculados (ficam os padrões registrados); em `uses
+//! the registered modern tab colors` os valores calculados (ficam o registro e os padrões).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -60,7 +65,17 @@ use je_platform::configuration::{
     ConfigurationChange, ConfigurationData, ConfigurationOverrides, ConfigurationTarget, ConfigurationUpdateOverrides, ConfigurationValue,
 };
 use je_platform::contextkey::contextkey::{ContextKeyExpression, IContext};
+use je_platform::environment::environment::EnvironmentService;
 use je_platform::log::NullLogService;
+use je_platform::resources::{join_path, uri_file};
+use je_platform::workspace::{IWorkspace, WorkbenchState, WorkspaceFolder};
+use je_base::uri::URI;
+use je_theme::ColorTheme;
+use je_theme::ThemeType;
+use je_theme::color::Color;
+use je_theme::registry::ColorValue::Id;
+use je_theme::registry::{ColorTransform, ColorValue, Defaults, color_registry};
+use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
 use je_ui::{NodeId, Ui};
 use je_widgets::paneview::{Pane, PaneContent, PaneOptions};
 use je_widgets::splitview::SplitViewView;
@@ -482,4 +497,334 @@ fn switches_connected_editor_tabs_across_windows_and_cleans_up_on_disable_and_di
     assert_eq!(changed_while_disabled, (vec![false, false], vec![false, false], 3, 3));
     assert_eq!(reenabled, (vec![false, false], vec![true, true], 4, 4));
     assert_eq!(disposed, (vec![false, false], vec![false, false], 5, 5));
+}
+
+#[test]
+fn toggles_uppercase_view_headers_without_relayout() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let configuration_service = TestConfigurationService::new(Some(Dynamic::object([
+        (LayoutSettings::ModernUi.as_str(), Dynamic::Bool(true)),
+        (LayoutSettings::ModernUiUppercaseViewHeaders.as_str(), Dynamic::Bool(false)),
+    ])));
+    guard.add_rc(configuration_service.on_did_change_configuration_emitter.clone());
+    let host = TestHost::new();
+    guard.add_rc(host.on_did_add_container_emitter.clone());
+    let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
+    let host_dyn: Rc<dyn ModernUiHost> = host.clone();
+    guard.add_rc(ModernUiContribution::new(configuration, host_dyn));
+    let main = TestHost::main_container();
+
+    let before_toggle = (host.has_class(main, "modern-ui-uppercase-view-headers"), host.layout_count.get());
+    update_configuration(&configuration_service, LayoutSettings::ModernUiUppercaseViewHeaders.as_str(), Dynamic::Bool(true));
+    let after_toggle = (host.has_class(main, "modern-ui-uppercase-view-headers"), host.layout_count.get());
+
+    assert_eq!(before_toggle, (false, 0));
+    assert_eq!(after_toggle, (true, 0));
+}
+
+/// O `IWorkspace` literal `{ id: 'test', folders: [], configuration }` do caso.
+struct TestWorkspace {
+    configuration: Option<URI>,
+}
+
+impl IWorkspace for TestWorkspace {
+    fn id(&self) -> String {
+        "test".to_string()
+    }
+
+    fn folders(&self) -> Vec<WorkspaceFolder> {
+        Vec::new()
+    }
+
+    fn transient(&self) -> bool {
+        false
+    }
+
+    fn configuration(&self) -> Option<URI> {
+        self.configuration.clone()
+    }
+
+    fn name(&self) -> Option<String> {
+        None
+    }
+}
+
+#[test]
+fn explorer_title_casing_follows_the_workspace_name_decision() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let environment = TestEnvironmentService::new();
+    let untitled_workspaces_home = environment.untitled_workspaces_home();
+    // O original lê o `text-transform` calculado dos títulos (`capitalize` sem a classe `preserve-*`, `none` com ela, e
+    // `uppercase` com `modern-ui-uppercase-view-headers`); sem DOM o caso confere a decisão que liga a classe.
+    let preserve_case = |state: WorkbenchState, configuration: Option<URI>| {
+        should_preserve_workspace_name_case(state, &TestWorkspace { configuration }, &*environment)
+    };
+
+    let untitled = preserve_case(WorkbenchState::Workspace, Some(join_path(&untitled_workspaces_home, &["1234", "workspace.json"])));
+    let named = preserve_case(WorkbenchState::Workspace, Some(uri_file("/some/path/myWorkspace.code-workspace")));
+    let folder = preserve_case(WorkbenchState::Folder, None);
+
+    assert_eq!((untitled, named, folder), (false, true, true));
+}
+
+/// `ColorThemeData.createUnloadedTheme(id)`: o tema sem arquivo e sem cores, só com os padrões do registro.
+fn unloaded_theme(theme_type: ThemeType) -> ColorTheme {
+    ColorTheme::unloaded("", theme_type, HashMap::new())
+}
+
+/// `colorRegistry.getColors().find(color => color.id === id)?.defaults`.
+fn registered_defaults(id: &str) -> Option<Defaults> {
+    color_registry().get(id).and_then(|color| color.defaults)
+}
+
+fn is_registered(id: &str) -> bool {
+    color_registry().get(id).is_some()
+}
+
+const SURFACE_BORDER: Option<Defaults> = Some(Defaults::Single(ColorValue::Id("surface.border")));
+
+#[test]
+fn uses_the_editor_surface_border_color() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O `borderColor` calculado do `part editor` vem do `.css` (especificação lida ao portar o desenho da parte): fica o
+    // padrão registrado.
+    assert_eq!(registered_defaults("editor.border"), SURFACE_BORDER);
+}
+
+#[test]
+fn uses_the_modern_activity_bar_border_color() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // Os `borderColor` calculados da barra de atividade e da barra lateral (e o vão cedido à barra) vêm do `.css`.
+    assert_eq!(registered_defaults("modernActivityBar.border"), SURFACE_BORDER);
+}
+
+#[test]
+fn uses_the_modern_panel_border_color() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O `borderColor` do painel e a `--modern-ui-floating-card-stroke-color` compacta vêm do `.css`.
+    assert_eq!(registered_defaults("modernPanel.border"), SURFACE_BORDER);
+}
+
+#[test]
+fn uses_the_modern_ui_shell_background_color() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // O fundo calculado do workbench e da grade vem do `.css`.
+    assert_eq!(
+        (registered_defaults("modernUI.shellBackground"), registered_defaults("modernUI.inactiveShellBackground")),
+        (
+            Some(Defaults::Single(ColorValue::Id("titleBar.activeBackground"))),
+            Some(Defaults::Single(ColorValue::Id("titleBar.inactiveBackground"))),
+        )
+    );
+}
+
+#[test]
+fn uses_opaque_surface_border_defaults() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let dark_theme = unloaded_theme(ThemeType::Dark);
+    let light_theme = unloaded_theme(ThemeType::Light);
+    let dark_surface_border = dark_theme.resolve_color("surface.border", true);
+    let dark_editor_border = dark_theme.resolve_color("editor.border", true);
+    let light_surface_border = light_theme.resolve_color("surface.border", true);
+    let light_editor_border = light_theme.resolve_color("editor.border", true);
+    let equals = |a: &Option<Color>, b: &Option<Color>| a.as_ref().zip(b.as_ref()).map(|(a, b)| a.equals(b));
+    let is_opaque = |color: &Option<Color>| color.as_ref().map(Color::is_opaque);
+
+    assert_eq!(
+        (
+            is_opaque(&dark_surface_border),
+            is_opaque(&dark_editor_border),
+            equals(&dark_editor_border, &dark_surface_border),
+            is_opaque(&light_surface_border),
+            is_opaque(&light_editor_border),
+            equals(&light_editor_border, &light_surface_border),
+        ),
+        (Some(true), Some(true), Some(true), Some(true), Some(true), Some(true))
+    );
+}
+
+#[test]
+fn inherits_the_customized_activity_bar_background_when_inactive() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("modernActivityBar.background", "#123456")]);
+
+    assert_eq!(
+        (
+            theme.resolve_color("modernActivityBar.background", true).map(|color| color.to_string()),
+            theme.resolve_color("modernActivityBar.inactiveBackground", true).map(|color| color.to_string()),
+        ),
+        (Some("#123456".to_owned()), Some("#123456".to_owned()))
+    );
+}
+
+#[test]
+fn supports_deprecated_modern_activity_bar_item_colors() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    let deprecated_color_ids =
+        ["modernActivityBar.activeBackground", "modernActivityBar.activeForeground", "modernActivityBar.hoverBackground", "modernActivityBar.hoverForeground"];
+    theme.set_custom_colors([
+        (deprecated_color_ids[0], "#112233"),
+        (deprecated_color_ids[1], "#223344"),
+        (deprecated_color_ids[2], "#334455"),
+        (deprecated_color_ids[3], "#445566"),
+    ]);
+
+    let item_color_ids = [
+        "modernActivityBarItem.activeBackground",
+        "modernActivityBarItem.activeForeground",
+        "modernActivityBarItem.hoverBackground",
+        "modernActivityBarItem.hoverForeground",
+    ];
+    assert_eq!(
+        (
+            item_color_ids.map(|id| theme.resolve_color(id, true).map(|color| color.to_string())),
+            deprecated_color_ids.map(|id| color_registry().get(id).is_some_and(|color| color.deprecation_message.is_some())),
+        ),
+        (
+            [Some("#112233".to_owned()), Some("#223344".to_owned()), Some("#334455".to_owned()), Some("#445566".to_owned())],
+            [true, true, true, true],
+        )
+    );
+}
+
+const fn single(value: ColorValue) -> Option<Defaults> {
+    Some(Defaults::Single(value))
+}
+
+#[test]
+fn uses_the_registered_modern_tab_colors() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // Os valores calculados dos painéis, das abas, das sondas de `var(--modern-ui-...)` e da aba das configurações
+    // (`getComputedStyle`) vêm dos `.css`; ficam o registro e os padrões de cada cor.
+    let modern_tab_ids = ["modernTab.activeBackground", "modernTab.activeForeground", "modernTab.hoverBackground", "modernTab.hoverForeground"];
+    let editor_ids = [
+        "modernEditorTab.activeActionBackground",
+        "modernEditorTab.activeBackground",
+        "modernEditorTab.activeForeground",
+        "modernEditorTab.activeHoverActionBackground",
+        "modernEditorTab.activeHoverBackground",
+        "editorGroupHeader.connectedTabsBackground",
+        "modernEditorTab.inactiveBackground",
+        "modernEditorTab.hoverActionBackground",
+        "modernEditorTab.hoverBackground",
+        "modernEditorTab.hoverForeground",
+        "modernEditorTab.selectedActionBackground",
+    ];
+
+    assert_eq!(
+        (
+            modern_tab_ids.map(is_registered),
+            modern_tab_ids.map(registered_defaults),
+            editor_ids.map(is_registered),
+            editor_ids.map(registered_defaults),
+        ),
+        (
+            [true; 4],
+            [
+                single(Id("list.inactiveSelectionBackground")),
+                single(ColorValue::Transform(&ColorTransform::OneOf(&[Id("list.inactiveSelectionForeground"), Id("foreground")]))),
+                single(Id("list.hoverBackground")),
+                single(ColorValue::Transform(&ColorTransform::OneOf(&[Id("list.hoverForeground"), Id("foreground")]))),
+            ],
+            [true; 11],
+            [
+                single(ColorValue::Transform(&ColorTransform::Opaque { value: Id("modernEditorTab.activeBackground"), background: Id("editor.background") })),
+                single(Id("modernTab.activeBackground")),
+                single(Id("modernTab.activeForeground")),
+                single(ColorValue::Transform(&ColorTransform::Opaque { value: Id("modernEditorTab.activeHoverBackground"), background: Id("editor.background") })),
+                single(Id("modernEditorTab.hoverBackground")),
+                single(Id("editorGroupHeader.tabsBackground")),
+                single(ColorValue::Rgba(0, 0, 0, 0.0)),
+                single(ColorValue::Transform(&ColorTransform::Opaque { value: Id("modernEditorTab.hoverBackground"), background: Id("editor.background") })),
+                single(Id("modernTab.hoverBackground")),
+                single(Id("modernTab.hoverForeground")),
+                single(ColorValue::Transform(&ColorTransform::Opaque { value: Id("tab.selectedBackground"), background: Id("editor.background") })),
+            ],
+        )
+    );
+}
+
+#[test]
+fn tab_divider_inherits_tab_border_unless_customized() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("tab.border", "#123456")]);
+    let inherited = theme.resolve_color("tab.divider", true).map(|color| color.to_string());
+    theme.set_custom_colors([("tab.border", "#123456"), ("tab.divider", "#654321")]);
+    let customized = theme.resolve_color("tab.divider", true).map(|color| color.to_string());
+
+    assert_eq!((inherited, customized), (Some("#123456".to_owned()), Some("#654321".to_owned())));
+}
+
+#[test]
+fn keeps_the_connected_editor_tab_color_audit_exhaustive() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let ids: Vec<&str> = color_registry().get_colors().iter().map(|color| color.id).collect();
+    let sorted_with_prefix = |prefix: &str| {
+        let mut matching: Vec<&str> = ids.iter().copied().filter(|id| id.starts_with(prefix)).collect();
+        matching.sort_unstable();
+        matching
+    };
+    let editor_group_header_colors: Vec<&str> =
+        ["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground", "editorGroupHeader.tabsBorder"].into_iter().filter(|id| ids.contains(id)).collect();
+
+    assert_eq!(
+        sorted_with_prefix("tab."),
+        vec![
+            "tab.activeBackground",
+            "tab.activeBorder",
+            "tab.activeBorderTop",
+            "tab.activeForeground",
+            "tab.activeModifiedBorder",
+            "tab.border",
+            "tab.divider",
+            "tab.dragAndDropBorder",
+            "tab.hoverBackground",
+            "tab.hoverBorder",
+            "tab.hoverForeground",
+            "tab.inactiveBackground",
+            "tab.inactiveForeground",
+            "tab.inactiveModifiedBorder",
+            "tab.lastPinnedBorder",
+            "tab.selectedBackground",
+            "tab.selectedBorderTop",
+            "tab.selectedForeground",
+            "tab.unfocusedActiveBackground",
+            "tab.unfocusedActiveBorder",
+            "tab.unfocusedActiveBorderTop",
+            "tab.unfocusedActiveForeground",
+            "tab.unfocusedActiveModifiedBorder",
+            "tab.unfocusedHoverBackground",
+            "tab.unfocusedHoverBorder",
+            "tab.unfocusedHoverForeground",
+            "tab.unfocusedInactiveBackground",
+            "tab.unfocusedInactiveForeground",
+            "tab.unfocusedInactiveModifiedBorder",
+        ]
+    );
+    assert_eq!(
+        sorted_with_prefix("modernTab."),
+        vec!["modernTab.activeBackground", "modernTab.activeForeground", "modernTab.hoverBackground", "modernTab.hoverForeground"]
+    );
+    assert_eq!(
+        sorted_with_prefix("modernEditorTab."),
+        vec![
+            "modernEditorTab.activeActionBackground",
+            "modernEditorTab.activeBackground",
+            "modernEditorTab.activeForeground",
+            "modernEditorTab.activeHoverActionBackground",
+            "modernEditorTab.activeHoverBackground",
+            "modernEditorTab.hoverActionBackground",
+            "modernEditorTab.hoverBackground",
+            "modernEditorTab.hoverForeground",
+            "modernEditorTab.inactiveBackground",
+            "modernEditorTab.selectedActionBackground",
+        ]
+    );
+    assert_eq!(
+        editor_group_header_colors,
+        vec!["editorGroupHeader.connectedTabsBackground", "editorGroupHeader.tabsBackground", "editorGroupHeader.tabsBorder"]
+    );
 }
