@@ -2,6 +2,9 @@
 
 pub mod statusbar;
 
+// A janela alvo, o tema e a decisão de inatividade que as partes compartilham.
+pub mod part_support;
+
 pub mod editor;
 
 pub mod notifications;

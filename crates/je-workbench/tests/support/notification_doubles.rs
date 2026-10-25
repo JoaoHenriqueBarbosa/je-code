@@ -3,7 +3,7 @@
 //! testes de toasts, telemetria e visão acessível.
 #![allow(dead_code)]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -261,6 +261,22 @@ impl IAccessibilitySignalService for SilentAccessibilitySignals {
 /// O `TestLayoutService` do `workbenchTestServices.ts`: tudo visível, sem tamanho de parte.
 pub struct TestLayoutService;
 
+thread_local! {
+    static FLOATING_PANELS_ENABLED: Cell<bool> = const { Cell::new(false) };
+    static MODERN_UI_COMPACT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// O `floatingPanelsEnabled` da subclasse `TestFloatingPanelsLayoutService` dos testes de barra de status (por fio de teste, que
+/// é o escopo de cada caso).
+pub fn set_floating_panels_enabled(enabled: bool) {
+    FLOATING_PANELS_ENABLED.with(|flag| flag.set(enabled));
+}
+
+/// O `modernUICompact` da subclasse `TestFloatingPanelsLayoutService` (por fio de teste).
+pub fn set_modern_ui_compact(compact: bool) {
+    MODERN_UI_COMPACT.with(|flag| flag.set(compact));
+}
+
 pub const BODY: LayoutContainerId = LayoutContainerId(1);
 
 impl ILayoutService for TestLayoutService {
@@ -348,10 +364,10 @@ impl IWorkbenchLayoutService for TestLayoutService {
         false
     }
     fn is_floating_panels_enabled(&self) -> bool {
-        false
+        FLOATING_PANELS_ENABLED.with(Cell::get)
     }
     fn is_modern_ui_compact(&self) -> bool {
-        false
+        MODERN_UI_COMPACT.with(Cell::get)
     }
     fn focus_part(&self, _part: Parts, _target_window: Option<WindowId>) {}
     fn get_container_of_part(&self, _target_window: WindowId, _part: Option<Parts>) -> Option<LayoutContainerId> {
