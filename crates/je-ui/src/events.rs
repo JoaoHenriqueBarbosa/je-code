@@ -34,16 +34,39 @@
 //! - **Texto digitado.** [`Ui::text_input`] entrega um [`EventKind::TextInput`] ao nó com foco (o `input` de um
 //!   `<input>`); a edição do campo é do widget.
 //!
-//! Fica de fora, por enquanto: toque e gesto (`Gesture`, `EventType.Tap`), arrastar e soltar do DOM,
-//! composição de IME e `PointerEvent` com vários ponteiros.
+//! - **Arrastar e soltar.** O modelo de processamento do HTML (o do Chromium do Electron), com a carga em
+//!   [`crate::drag::DataTransfer`] no [`Event::data_transfer`]. Botão principal baixo sobre um nó cujo antepassado
+//!   mais próximo com o atributo `draggable` (ou ele mesmo) o tem como `"true"` arma o arrasto; o ponteiro mover
+//!   [`Ui::drag_threshold`] pixels (em algum eixo) dispara [`EventKind::DragStart`] nesse nó, e `preventDefault`
+//!   cancela o arrasto (o ponteiro volta a produzir `PointerMove` e `Click`). Durante o arrasto não há `PointerMove`,
+//!   `PointerUp` nem `Click`: há [`EventKind::Drag`] na origem, [`EventKind::DragEnter`] no novo alvo seguido de
+//!   [`EventKind::DragLeave`] no antigo ao trocar de nó sob o ponteiro (nessa ordem, como no navegador, para o
+//!   contador de entradas do `DragAndDropObserver` fechar), [`EventKind::DragOver`] no alvo a cada movimento e, ao
+//!   soltar, [`EventKind::Drop`] no alvo se o último `dragover` foi aceito (`preventDefault`) e
+//!   [`EventKind::DragEnd`] na origem, com o `dropEffect` final (`none` se o alvo recusou ou se o `drop` não foi
+//!   cancelado). Sem `preventDefault` no `dragover`, o `dropEffect` fica `none`. `Escape` ([`Ui::key_input`] e
+//!   [`Ui::cancel_drag`]) cancela: `DragLeave` no alvo e `DragEnd` com `none`. Todos os sete eventos borbulham.
+//! - **Arrastar de fora.** Arquivos do sistema arrastados para a janela entram por [`Ui::external_drag_enter`],
+//!   [`Ui::external_drag_over`], [`Ui::external_drag_leave`] e [`Ui::external_drop`]: o mesmo `DragEnter`,
+//!   `DragOver`, `DragLeave` e `Drop` no alvo, com os arquivos em [`crate::drag::DataTransfer::files`] e o tipo
+//!   `Files`, mas sem origem, sem `DragStart` e sem `DragEnd`.
+//!
+//! O limiar de arrasto é parâmetro do `Ui` ([`Ui::set_drag_threshold`]), que a janela informa a partir do sistema; o
+//! padrão de 4 px é NÃO MEDIDO (valor assumido, no espírito do `SM_CXDRAG` do Windows e do Chromium, que usam
+//! poucos pixels).
+//!
+//! Fica de fora, por enquanto: toque e gesto (`Gesture`, `EventType.Tap`), composição de IME e `PointerEvent` com
+//! vários ponteiros.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{DisposableRef, plain_disposable, to_disposable};
 
+use crate::drag::{DataStoreMode, DataTransfer, DropEffect};
 use crate::tree::{Content, Cursor, NodeId, Tree};
 use crate::wheel::WheelData;
 
@@ -79,6 +102,20 @@ pub enum EventKind {
     /// `input`/`beforeinput` de um campo de texto: o texto digitado (ou colado pelo IME) em
     /// [`Event::text`]. Vai ao nó com foco, borbulha.
     TextInput,
+    /// `dragstart`: na origem, com o repositório de dados aberto para escrita; `preventDefault` cancela o arrasto.
+    DragStart,
+    /// `drag`: na origem, a cada movimento durante o arrasto.
+    Drag,
+    /// `dragenter`: no nó que passou a estar sob o ponteiro.
+    DragEnter,
+    /// `dragover`: no nó sob o ponteiro, a cada movimento; `preventDefault` aceita a soltura.
+    DragOver,
+    /// `dragleave`: no nó que deixou de estar sob o ponteiro.
+    DragLeave,
+    /// `drop`: no alvo, quando o último `dragover` foi aceito; `getData` e `files` funcionam aqui.
+    Drop,
+    /// `dragend`: na origem, no fim do arrasto, com o `dropEffect` final.
+    DragEnd,
 }
 
 impl EventKind {
@@ -151,13 +188,20 @@ pub struct Event {
     pub wheel: Option<WheelData>,
     /// O texto de um evento [`EventKind::TextInput`].
     pub text: Option<String>,
+    /// A carga do arrasto, nos sete eventos de arrastar e soltar (o `dataTransfer`).
+    pub data_transfer: Option<DataTransfer>,
     default_prevented: bool,
     propagation_stopped: bool,
 }
 
 impl Event {
     pub fn new(kind: EventKind, target: NodeId) -> Self {
-        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, wheel: None, text: None, default_prevented: false, propagation_stopped: false }
+        Self { kind, target, current_target: target, phase: Phase::Target, pointer: None, key: None, wheel: None, text: None, data_transfer: None, default_prevented: false, propagation_stopped: false }
+    }
+
+    pub fn with_data_transfer(mut self, data_transfer: DataTransfer) -> Self {
+        self.data_transfer = Some(data_transfer);
+        self
     }
 
     pub fn with_pointer(mut self, pointer: PointerData) -> Self {
@@ -259,7 +303,30 @@ struct InputState {
     /// Os `* { cursor: X !important }` empilhados (o último vence), com o número de cada um.
     cursor_overrides: Vec<(u64, Cursor)>,
     next_override: u64,
+    /// O arrasto armado pelo botão baixo: a origem e onde o ponteiro estava. Vira [`InputState::drag`] ao passar o limiar.
+    drag_pending: Option<(NodeId, f64, f64)>,
+    drag: Option<DragSession>,
 }
+
+/// Um arrasto em andamento (de dentro ou de fora da janela).
+struct DragSession {
+    /// A origem (`None` no arrasto externo, que não tem `dragstart` nem `dragend`).
+    source: Option<NodeId>,
+    external: bool,
+    transfer: DataTransfer,
+    /// O nó que recebeu o último `dragenter`.
+    last_target: Option<NodeId>,
+    /// O último `dragover` foi aceito (`preventDefault`)?
+    accepted: bool,
+    /// O efeito que valerá na soltura, decidido no último `dragover`.
+    effect: DropEffect,
+    /// O último ponteiro conhecido, para os eventos de cancelamento.
+    pointer: PointerData,
+}
+
+/// O limiar de arrasto padrão, em pixels lógicos. NÃO MEDIDO: valor assumido; a janela deve informar o do sistema
+/// por [`Ui::set_drag_threshold`].
+pub const DEFAULT_DRAG_THRESHOLD: f64 = 4.0;
 
 /// Um callback agendado para o próximo quadro de animação.
 struct FrameCallback {
@@ -276,6 +343,7 @@ struct UiInner {
     next_listener: Cell<u64>,
     frame_callbacks: RefCell<Vec<FrameCallback>>,
     next_frame_callback: Cell<u64>,
+    drag_threshold: Cell<f64>,
 }
 
 /// A árvore de UI de uma janela, com os eventos. Clonar é barato (é um `Rc`).
@@ -290,7 +358,18 @@ impl Default for Ui {
 
 impl Ui {
     pub fn new() -> Self {
-        Self(Rc::new(UiInner { tree: RefCell::new(Tree::new()), input: RefCell::default(), next_listener: Cell::new(0), frame_callbacks: RefCell::new(Vec::new()), next_frame_callback: Cell::new(0) }))
+        Self(Rc::new(UiInner { tree: RefCell::new(Tree::new()), input: RefCell::default(), next_listener: Cell::new(0), frame_callbacks: RefCell::new(Vec::new()), next_frame_callback: Cell::new(0), drag_threshold: Cell::new(DEFAULT_DRAG_THRESHOLD) }))
+    }
+
+    /// O limiar de arrasto em pixels lógicos (ver [`Ui::set_drag_threshold`]).
+    pub fn drag_threshold(&self) -> f64 {
+        self.0.drag_threshold.get()
+    }
+
+    /// Informa o limiar de arrasto do sistema: o ponteiro precisa mover tantos pixels em algum eixo, com o botão
+    /// principal baixo sobre um nó `draggable`, para começar o arrasto. A janela chama isto com o valor do sistema.
+    pub fn set_drag_threshold(&self, pixels: f64) {
+        self.0.drag_threshold.set(pixels.max(0.0));
     }
 
     /// A raiz da árvore: a janela e o `document` ao mesmo tempo. Ouvinte de borbulha aqui é o ouvinte
@@ -335,6 +414,9 @@ impl Ui {
             }
             if input.pressed.is_some_and(|p| removed.contains(&p)) {
                 input.pressed = None;
+            }
+            if input.drag_pending.is_some_and(|(source, _, _)| removed.contains(&source)) {
+                input.drag_pending = None;
             }
             input.hover_path.retain(|n| !removed.contains(n));
         }
@@ -543,17 +625,38 @@ impl Ui {
             PointerInputKind::Move | PointerInputKind::Up => captured.unwrap_or(hit),
         };
         let data = PointerData { x: input.x, y: input.y, button: input.button, modifiers: input.modifiers, click_count: input.click_count };
+        if self.0.input.borrow().drag.is_some() {
+            // Durante o arrasto o ponteiro só produz eventos de arrastar e soltar (e o hover fica congelado).
+            match input.kind {
+                PointerInputKind::Down => {}
+                PointerInputKind::Move => self.drag_update(data),
+                PointerInputKind::Up => {
+                    self.drag_update(data);
+                    self.end_drag(true);
+                    let mut state = self.0.input.borrow_mut();
+                    state.pressed = None;
+                    state.captured = None;
+                }
+            }
+            return hit;
+        }
         match input.kind {
             PointerInputKind::Down => {
+                let pending = if input.button == PointerButton::Primary { self.draggable_ancestor(hit).map(|source| (source, input.x, input.y)) } else { None };
+                self.0.input.borrow_mut().drag_pending = pending;
                 self.update_hover(hit, data);
                 self.0.input.borrow_mut().pressed = Some(target);
                 self.dispatch(&mut Event::new(EventKind::PointerDown, target).with_pointer(data));
             }
             PointerInputKind::Move => {
+                if self.try_begin_drag(data) {
+                    return hit;
+                }
                 self.update_hover(hit, data);
                 self.dispatch(&mut Event::new(EventKind::PointerMove, target).with_pointer(data));
             }
             PointerInputKind::Up => {
+                self.0.input.borrow_mut().drag_pending = None;
                 self.dispatch(&mut Event::new(EventKind::PointerUp, target).with_pointer(data));
                 let pressed = self.0.input.borrow_mut().pressed.take();
                 self.release_pointer_capture();
@@ -610,6 +713,9 @@ impl Ui {
     /// ação padrão do navegador: `Tab` e `Shift+Tab` movem o foco pela ordem de Tab ([`Ui::focus_by_tab`]), e `Enter`
     /// num link de parágrafo o ativa (o `click` com o link por alvo, como o `HTMLAnchorElement` faz).
     pub fn key_input(&self, down: bool, key: KeyData) -> bool {
+        if down && key.key_code == KeyCode::Escape && self.cancel_drag() {
+            return false;
+        }
         let target = self.focused().unwrap_or_else(|| self.root());
         let kind = if down { EventKind::KeyDown } else { EventKind::KeyUp };
         let proceed = self.dispatch(&mut Event::new(kind, target).with_key(key));
@@ -715,5 +821,194 @@ impl Ui {
     pub fn text_input(&self, text: &str) -> bool {
         let target = self.focused().unwrap_or_else(|| self.root());
         self.dispatch(&mut Event::new(EventKind::TextInput, target).with_text(text))
+    }
+}
+
+/// Arrastar e soltar (ver o `//!` do módulo).
+impl Ui {
+    /// Há um arrasto em andamento (de dentro ou de fora da janela)?
+    pub fn is_dragging(&self) -> bool {
+        self.0.input.borrow().drag.is_some()
+    }
+
+    /// A carga do arrasto em andamento, para o shell pintar a imagem de arrasto ([`DataTransfer::drag_image`]).
+    pub fn drag_data_transfer(&self) -> Option<DataTransfer> {
+        self.0.input.borrow().drag.as_ref().map(|d| d.transfer.clone())
+    }
+
+    /// Cancela o arrasto em andamento (o `Escape`): `DragLeave` no alvo e `DragEnd` na origem com `dropEffect` `none`.
+    /// Devolve falso se não havia arrasto.
+    pub fn cancel_drag(&self) -> bool {
+        if !self.is_dragging() {
+            return false;
+        }
+        self.end_drag(false);
+        true
+    }
+
+    /// Arquivos do sistema entraram na janela: o primeiro chamado dispara `DragEnter` e `DragOver` no nó sob `(x, y)`;
+    /// os seguintes, enquanto o arrasto externo continua, só acrescentam arquivos (o winit entrega um evento por
+    /// arquivo) e atualizam a posição. Ignorado durante um arrasto interno.
+    pub fn external_drag_enter(&self, paths: Vec<PathBuf>, x: f64, y: f64) {
+        let data = Self::external_pointer(x, y);
+        {
+            let mut input = self.0.input.borrow_mut();
+            match input.drag.as_mut() {
+                Some(session) if session.external => session.transfer.add_files(paths),
+                Some(_) => return,
+                None => {
+                    input.drag = Some(DragSession { source: None, external: true, transfer: DataTransfer::external(paths), last_target: None, accepted: false, effect: DropEffect::None, pointer: data });
+                }
+            }
+        }
+        self.drag_update(data);
+    }
+
+    /// O arrasto externo moveu: `DragOver` no nó sob `(x, y)` (e `DragEnter`/`DragLeave` se o nó mudou).
+    pub fn external_drag_over(&self, x: f64, y: f64) {
+        if self.external_dragging() {
+            self.drag_update(Self::external_pointer(x, y));
+        }
+    }
+
+    /// O arrasto externo saiu da janela ou foi cancelado: `DragLeave` no alvo, sem `DragEnd`.
+    pub fn external_drag_leave(&self) {
+        if self.external_dragging() {
+            self.end_drag(false);
+        }
+    }
+
+    /// Os arquivos foram soltos em `(x, y)`: `Drop` no alvo se o último `dragover` foi aceito, com os arquivos em
+    /// [`DataTransfer::files`]; sem `DragEnd`. Devolve verdadeiro se o `drop` foi tratado (`preventDefault`).
+    pub fn external_drop(&self, x: f64, y: f64) -> bool {
+        if !self.external_dragging() {
+            return false;
+        }
+        self.drag_update(Self::external_pointer(x, y));
+        self.end_drag(true)
+    }
+
+    fn external_dragging(&self) -> bool {
+        self.0.input.borrow().drag.as_ref().is_some_and(|d| d.external)
+    }
+
+    fn external_pointer(x: f64, y: f64) -> PointerData {
+        PointerData { x, y, button: PointerButton::Primary, modifiers: Modifiers::default(), click_count: 0 }
+    }
+
+    /// O nó mais próximo (o próprio `node` ou um antepassado) que declara o atributo `draggable`, se ele vale
+    /// `"true"`. `draggable="false"` no mais próximo impede o arrasto, como no navegador.
+    fn draggable_ancestor(&self, node: NodeId) -> Option<NodeId> {
+        let tree = self.0.tree.borrow();
+        let mut current = Some(node).filter(|n| tree.is_alive(*n));
+        while let Some(n) = current {
+            match tree.attribute(n, "draggable") {
+                Some("true") => return Some(n),
+                Some(_) => return None,
+                None => current = tree.parent(n),
+            }
+        }
+        None
+    }
+
+    /// Dispara um evento de arrastar e soltar com o repositório no `mode` dado. Devolve falso se um ouvinte chamou
+    /// `preventDefault`.
+    fn drag_event(&self, kind: EventKind, target: NodeId, data: PointerData, transfer: &DataTransfer, mode: DataStoreMode) -> bool {
+        transfer.set_mode(mode);
+        self.dispatch(&mut Event::new(kind, target).with_pointer(data).with_data_transfer(transfer.clone()))
+    }
+
+    /// Com o botão baixo sobre um nó `draggable`, passado o limiar, dispara `DragStart`. Devolve verdadeiro se o
+    /// arrasto começou (o movimento já foi consumido por ele); falso se não havia arrasto armado, se o limiar não foi
+    /// passado, ou se `DragStart` foi cancelado (o movimento segue como `PointerMove`).
+    fn try_begin_drag(&self, data: PointerData) -> bool {
+        let Some((source, start_x, start_y)) = self.0.input.borrow().drag_pending else { return false };
+        if !self.0.tree.borrow().is_alive(source) || self.0.input.borrow().captured.is_some() {
+            // A origem sumiu, ou um ouvinte tomou o ponteiro (o `sash`): não é um arrasto de nó.
+            self.0.input.borrow_mut().drag_pending = None;
+            return false;
+        }
+        let threshold = self.drag_threshold();
+        if (data.x - start_x).abs() < threshold && (data.y - start_y).abs() < threshold {
+            return false;
+        }
+        self.0.input.borrow_mut().drag_pending = None;
+        let transfer = DataTransfer::new();
+        if !self.drag_event(EventKind::DragStart, source, data, &transfer, DataStoreMode::ReadWrite) {
+            transfer.set_mode(DataStoreMode::Protected);
+            return false;
+        }
+        transfer.set_mode(DataStoreMode::Protected);
+        {
+            let mut input = self.0.input.borrow_mut();
+            input.pressed = None;
+            input.captured = None;
+            input.drag = Some(DragSession { source: Some(source), external: false, transfer, last_target: None, accepted: false, effect: DropEffect::None, pointer: data });
+        }
+        self.drag_update(data);
+        true
+    }
+
+    /// O ponteiro moveu durante o arrasto: `Drag` na origem; se o nó sob o ponteiro mudou, `DragEnter` no novo e
+    /// depois `DragLeave` no antigo; `DragOver` no nó sob o ponteiro. O `dropEffect` chega aos ouvintes com o valor
+    /// derivado de `effectAllowed` e vira `none` se ninguém aceitou (`preventDefault`) ou se `effectAllowed` não o
+    /// permite.
+    fn drag_update(&self, data: PointerData) {
+        let Some((source, transfer, previous)) = self.0.input.borrow().drag.as_ref().map(|d| (d.source, d.transfer.clone(), d.last_target)) else { return };
+        let target = self.0.tree.borrow().hit_test(data.x, data.y).unwrap_or_else(|| self.root());
+        if let Some(session) = self.0.input.borrow_mut().drag.as_mut() {
+            session.pointer = data;
+        }
+        if let Some(source) = source {
+            self.drag_event(EventKind::Drag, source, data, &transfer, DataStoreMode::Protected);
+        }
+        if previous != Some(target) && self.is_dragging() {
+            transfer.reset_drop_effect();
+            self.drag_event(EventKind::DragEnter, target, data, &transfer, DataStoreMode::Protected);
+            if let Some(previous) = previous {
+                transfer.reset_drop_effect();
+                self.drag_event(EventKind::DragLeave, previous, data, &transfer, DataStoreMode::Protected);
+            }
+            if let Some(session) = self.0.input.borrow_mut().drag.as_mut() {
+                session.last_target = Some(target);
+            }
+        }
+        if !self.is_dragging() {
+            return;
+        }
+        transfer.reset_drop_effect();
+        let accepted = !self.drag_event(EventKind::DragOver, target, data, &transfer, DataStoreMode::Protected);
+        let chosen = transfer.drop_effect();
+        let effect = if accepted && transfer.effect_allowed().permits(chosen) { chosen } else { DropEffect::None };
+        transfer.set_drop_effect(effect);
+        if let Some(session) = self.0.input.borrow_mut().drag.as_mut() {
+            session.accepted = accepted;
+            session.effect = effect;
+        }
+    }
+
+    /// Encerra o arrasto. Com `drop` e o último `dragover` aceito (com efeito diferente de `none`), `Drop` no alvo
+    /// (com o repositório legível); senão `DragLeave` no alvo. Depois, `DragEnd` na origem (o arrasto externo não tem)
+    /// com o `dropEffect` final: o efeito aceito se o `drop` foi cancelado (`preventDefault`), `none` no resto.
+    /// Devolve verdadeiro se o `drop` foi tratado.
+    fn end_drag(&self, drop: bool) -> bool {
+        let Some(session) = self.0.input.borrow_mut().drag.take() else { return false };
+        let (data, transfer) = (session.pointer, &session.transfer);
+        let mut handled = false;
+        if let Some(target) = session.last_target {
+            if drop && session.accepted && session.effect != DropEffect::None {
+                transfer.set_drop_effect(session.effect);
+                handled = !self.drag_event(EventKind::Drop, target, data, transfer, DataStoreMode::ReadOnly);
+            } else {
+                transfer.set_drop_effect(DropEffect::None);
+                self.drag_event(EventKind::DragLeave, target, data, transfer, DataStoreMode::Protected);
+            }
+        }
+        if let Some(source) = session.source {
+            transfer.set_drop_effect(if handled { session.effect } else { DropEffect::None });
+            self.drag_event(EventKind::DragEnd, source, data, transfer, DataStoreMode::Protected);
+        }
+        transfer.set_mode(DataStoreMode::Protected);
+        handled
     }
 }
