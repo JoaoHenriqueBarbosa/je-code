@@ -16,9 +16,13 @@
 //!   [`IIconRegistry`]). `Codicon.x` é `ThemeIcon::from_id("x")` (o `je-codicons` guarda só ids e pontos de código).
 //! - **Esquemas JSON.** `IJSONSchema` é um `serde_json::Value` (como em `token_classification_registry`).
 //!   [`IconRegistry::get_icon_schema`] e [`IconRegistry::get_icon_reference_schema`] devolvem uma cópia montada na hora,
-//!   não o objeto vivo, porque o registro guarda as propriedades e as enumerações à parte. Ficam de fora o registro do
-//!   esquema `vscode://schemas/icons` no `jsonContributionRegistry` e o `RunOnceScheduler` de 200 ms que reage a
-//!   `onDidChange` (que dependem do registro de contribuições JSON); [`ICONS_SCHEMA_ID`] fica para quem o fizer.
+//!   não o objeto vivo, porque o registro guarda as propriedades e as enumerações à parte. O registro do esquema
+//!   `vscode://schemas/icons` no `jsonContributionRegistry` e o `RunOnceScheduler` de 200 ms que reage a
+//!   `onDidChange` existem: o singleton registra [`ICONS_SCHEMA_ID`] em [`je_base::json_contribution_registry`] na criação e um
+//!   `RunOnceScheduler` de 200 ms, agendado por `onDidChange`, chama `notifySchemaChanged`. Como o esquema do registro é uma
+//!   cópia montada na hora (acima), o objeto registrado é refeito no próprio lugar (a mesma identidade, como o objeto vivo
+//!   do original) quando o agendador dispara, antes do aviso; entre uma mudança e o disparo ele fica defasado em até 200 ms.
+//!   O esquema é `serde_json::Value` aqui e vira [`Dynamic`] ao ser registrado ([`schema_from_json`]).
 //! - **Expressões regulares.** `fontIdRegex` e irmãs são os textos dos padrões (o `.source`), nas constantes `FONT_*_REGEX`;
 //!   o `fontWeightRegex` mantém o `\d{0-1000}` do original, que não é um quantificador válido.
 //! - **`IconContribution.getDefinition(contribution, registry)`.** O original ignora o `registry` e lê o singleton; aqui o
@@ -33,8 +37,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
+use je_base::async_::RunOnceScheduler;
 use je_base::collator::locale_compare;
+use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::event::{Emitter, Event};
+use je_base::json_contribution_registry::{get_json_contribution_registry, schema_from_json};
 use je_base::lifecycle::without_disposable_tracker;
 use je_base::nls::localize;
 use je_base::themables::{ICON_NAME_EXPRESSION, IconModifier, ThemeIcon};
@@ -437,10 +444,44 @@ fn register_common_icons(registry: &IconRegistry) {
     register(GOTO_NEXT_LOCATION_ID, "arrow-down", localize("nextChangeIcon", "Icon for goto next editor location.", &[]));
 }
 
+/// Atraso do `RunOnceScheduler` que avisa a mudança do esquema de ícones.
+const ICONS_SCHEMA_NOTIFY_DELAY_MS: u64 = 200;
+
+/// Refaz o objeto de esquema registrado a partir do esquema atual do registro, no próprio lugar.
+fn refresh_icons_schema(target: &ObjectRef, registry: &IconRegistry) {
+    if let Dynamic::Object(fresh) = schema_from_json(&registry.get_icon_schema()) {
+        for (key, value) in fresh.entries() {
+            target.set(&key, value);
+        }
+    }
+}
+
+/// O trecho de `iconRegistry.ts` que registra `iconsSchemaId` no `jsonContributionRegistry` e agenda o
+/// `notifySchemaChanged` a cada `onDidChange`.
+fn register_icons_schema(registry: &IconRegistry) {
+    let schema = ObjectRef::new();
+    refresh_icons_schema(&schema, registry);
+    get_json_contribution_registry().register_schema(ICONS_SCHEMA_ID, Dynamic::Object(schema.clone()), None);
+
+    let delayer = RunOnceScheduler::new(
+        move || {
+            refresh_icons_schema(&schema, &get_icon_registry());
+            get_json_contribution_registry().notify_schema_changed(ICONS_SCHEMA_ID);
+        },
+        ICONS_SCHEMA_NOTIFY_DELAY_MS,
+    );
+    registry.on_did_change().listen(move |_| {
+        if !delayer.is_scheduled() {
+            delayer.schedule(None);
+        }
+    });
+}
+
 thread_local! {
     static ICON_REGISTRY: Rc<IconRegistry> = {
         let registry = IconRegistry::new();
         initialize(&registry);
+        register_icons_schema(&registry);
         register_common_icons(&registry);
         Rc::new(registry)
     };

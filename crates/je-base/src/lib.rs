@@ -86,6 +86,7 @@ pub mod json_formatter;
 pub mod json_edit;
 pub mod yaml;
 pub mod json_schema;
+pub mod json_contribution_registry;
 pub mod sse_parser;
 pub mod tf_idf;
 pub mod jsonc;
