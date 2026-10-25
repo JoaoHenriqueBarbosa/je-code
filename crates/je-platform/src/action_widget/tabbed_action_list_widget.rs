@@ -1057,7 +1057,7 @@ struct DetailsPage {
     header: Rc<ViewElement>,
     content: Rc<ViewElement>,
     back: DetailsBackButton,
-    previous_focus: PopupFocus,
+    previous_focus: Option<PopupFocus>,
     page_height: f64,
     show_above: bool,
     viewport_height: Cell<f64>,
