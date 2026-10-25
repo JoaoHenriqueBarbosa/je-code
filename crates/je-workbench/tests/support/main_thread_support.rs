@@ -391,6 +391,36 @@ impl IPaneCompositePartService for StubPaneCompositePartService {
     fn get_active_pane_composite(&self, _view_container_location: ViewContainerLocation) -> Option<Rc<dyn IPaneComposite>> {
         None
     }
+
+    fn get_registry_id(&self, _view_container_location: ViewContainerLocation) -> String {
+        String::new()
+    }
+
+    fn get_part_id(&self, _view_container_location: ViewContainerLocation) -> je_workbench::services::layout::layout_service::Parts {
+        je_workbench::services::layout::layout_service::Parts::SidebarPart
+    }
+
+    fn open_pane_composite(&self, _id: Option<&str>, _view_container_location: ViewContainerLocation, _focus: bool) -> Promise<Option<Rc<dyn IPaneComposite>>> {
+        Promise::resolved(None)
+    }
+
+    fn get_pinned_pane_composite_ids(&self, _view_container_location: ViewContainerLocation) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn get_visible_pane_composite_ids(&self, _view_container_location: ViewContainerLocation) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn get_pane_composite_ids(&self, _view_container_location: ViewContainerLocation) -> Vec<String> {
+        Vec::new()
+    }
+
+    fn hide_active_pane_composite(&self, _view_container_location: ViewContainerLocation) {}
+
+    fn get_last_active_pane_composite_id(&self, _view_container_location: ViewContainerLocation) -> String {
+        String::new()
+    }
 }
 
 /// `IQuickDiffModelService` que nunca devolve referência.

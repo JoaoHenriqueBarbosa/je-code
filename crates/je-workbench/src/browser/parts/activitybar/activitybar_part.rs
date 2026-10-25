@@ -18,44 +18,63 @@
 //! - **`mainWindow.document.hasFocus()`** (janela ativa ainda desconhecida) é o `hasFocus` do `IHostService`, e
 //!   `mainWindow.vscodeWindowId` é [`MAIN_WINDOW`].
 //! - **`toJSON`** devolve o [`ActivitybarPartJson`].
-//! - **Ainda não portado** (depende de módulos sem porte): o `CustomMenubarControl` e `getMenuBarVisibility` (menu compacto,
-//!   `installMenubar`, `fillContextMenuActions`), a navegação por teclado entre menu, ícones e conta, o
-//!   `getActivityBarContextMenuActions` (usa `IMenuService.getMenuActions` e as ações `ToggleSidebar*` de `layoutActions.ts`), as
-//!   ações `previousSideBarView`/`nextSideBarView` (`SwitchCompositeViewAction`, que pede `openPaneComposite` e
-//!   `getVisiblePaneCompositeIds` no `IPaneCompositePartService`) e as regras de tema em CSS de `registerThemingParticipant`.
+//! - **Menu compacto, teclado e menu de contexto.** O `CustomMenubarControl` é o trait [`ICustomMenubarControl`] (o corpo da
+//!   classe, que liga o `MenuBar` aos menus do `MenuId.MenubarMain`, entra com o porte da barra de título) e o
+//!   `createInstance(CustomMenubarControl)` é a [`MenubarFactory`]. `getMenuBarVisibility` é o `get_menu_bar_visibility` do
+//!   `TitleBarHost`. As dependências que a `ActivityBarCompositeBar` injeta (`IConfigurationService`, `IMenuService`,
+//!   `IContextKeyService`, `IWorkbenchLayoutService`, `IInstantiationService`) são o [`ActivityBarServices`], e o
+//!   `super(location, {...options, fillExtraContextMenuActions})` é o [`ActivityBarCompositeBar::with_services`], que monta a
+//!   base já com o gancho embrulhado. Os `addDisposableListener(..., KEY_DOWN)` de `registerKeyboardNavigationListeners` são
+//!   os métodos `on_*_key_down`, que a árvore de widgets chama com o [`StandardKeyboardEvent`] do elemento. O
+//!   `isAncestor(e.target, menuBarContainer)` chega pelo [`ContextMenuTarget`].
+//! - **Regras de tema em CSS** (`registerThemingParticipant`). A UI nativa não tem folha de estilo: o que cada regra
+//!   escolheria é o [`ActivityBarItemThemeRules`], calculado por [`activity_bar_item_theme_rules`] e lido pelo desenho dos
+//!   itens, com as mesmas precedências (cor de contraste, depois a borda de foco).
+//! - **Ainda não portado**: a base `PaneCompositeBar`/`GlobalCompositeBar` em si (só o contrato, ver `pane_composite_bar`) e o
+//!   corpo do `CustomMenubarControl`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
+use je_base::actions::{ActionRef, Separator, SubmenuAction, ToActionProps, to_action};
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
+use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, MutableDisposable, combined_disposable, to_disposable};
 use je_base::nls::localize;
+use je_base::promise::MaybePromise;
 use je_editor::core_2d::dimension::Dimension;
 use je_editor::services::theme_service::{IColorTheme, IThemeService};
-use je_instantiation::ServicesAccessor;
+use je_instantiation::{InstantiationService, ServicesAccessor};
 use je_platform::action::action_common_categories::Categories;
-use je_platform::action::{Category, CommandAction, CommandActionTitle, Title, Toggled, localize2};
-use je_platform::actions::actions::{Action2, Action2MenuItem, Action2Options, AnyMenuItem, SubmenuItem, menu_registry, register_action2};
+use je_platform::action::{Category, CommandAction, CommandActionTitle, LocalizedString, Title, Toggled, localize2};
+use je_platform::actions::actions::{Action2, Action2MenuItem, Action2Options, AnyMenuItem, IMenuService, MenuActionOptions, SubmenuItem, menu_registry, register_action2};
+use je_platform::actions::menu_entry_action_view_item::get_context_menu_actions;
 use je_platform::actions::menu_ids;
 use je_platform::configuration::models::ConfigurationChangeEvent;
 use je_platform::configuration::service::{IConfigurationService, I_CONFIGURATION_SERVICE};
-use je_platform::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression};
+use je_platform::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, IContextKeyService};
+use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_widgets::action_bar::ActionsOrientation;
+use je_widgets::dom::StandardKeyboardEvent;
 use je_widgets::gridview::ViewDimensions;
 use je_widgets::hover_api::HoverPosition;
 
+use crate::browser::actions::layout_actions::{ToggleSidebarPositionAction, ToggleSidebarVisibilityAction};
+use crate::browser::parts::composite_bar_actions::SwitchCompositeViewAction;
 use crate::browser::parts::pane_composite_bar::{
-    ActivityHoverOptions, CompositeBarColors, ContentElement, GlobalActivities, IGlobalCompositeBar, IPaneCompositeBar, IPaneCompositePart, PaneCompositeBarOptions,
+    ActivityHoverOptions, CompositeBarColors, ContentElement, ContextMenuTarget, GlobalActivities, IGlobalCompositeBar, IPaneCompositeBar, IPaneCompositePart,
+    PaneCompositeBarOptions,
 };
+use crate::browser::parts::titlebar::menubar_control::{ICustomMenubarControl, MENU_BAR_VISIBILITY_SETTING, MenuBarVisibility, MenubarFactory};
 use crate::common::contextkeys::is_sessions_window_context;
 use crate::common::views::{ViewContainerLocation, view_container_location_to_string};
 use crate::services::host::host::IHostService;
 use crate::services::layout::layout_service::{
     ActivityBarPosition, FLOATING_PANEL_INNER_MARGIN, IWorkbenchLayoutService, I_WORKBENCH_LAYOUT_SERVICE, LayoutPart, LayoutSettings, MAIN_WINDOW, Parts,
-    Position, get_floating_panel_margin, get_floating_panel_outer_margin, is_floating_top_edge_exposed,
+    Position, TitleBarHost, get_floating_panel_margin, get_floating_panel_outer_margin, is_floating_top_edge_exposed,
 };
 
 // As cores de `workbench/common/theme.ts` e de `colorRegistry.ts` que a parte lê.
@@ -66,11 +85,59 @@ pub const ACTIVITY_BAR_BORDER: &str = "activityBar.border";
 pub const ACTIVITY_BAR_ACTIVE_BORDER: &str = "activityBar.activeBorder";
 pub const ACTIVITY_BAR_ACTIVE_BACKGROUND: &str = "activityBar.activeBackground";
 pub const ACTIVITY_BAR_DRAG_AND_DROP_BORDER: &str = "activityBar.dropBorder";
+pub const ACTIVITY_BAR_ACTIVE_FOCUS_BORDER: &str = "activityBar.activeFocusBorder";
 pub const ACTIVITY_BAR_BADGE_BACKGROUND: &str = "activityBarBadge.background";
 pub const ACTIVITY_BAR_BADGE_FOREGROUND: &str = "activityBarBadge.foreground";
 pub const MODERN_ACTIVITY_BAR_BACKGROUND: &str = "modernActivityBar.background";
 pub const MODERN_ACTIVITY_BAR_INACTIVE_BACKGROUND: &str = "modernActivityBar.inactiveBackground";
 pub const CONTRAST_BORDER: &str = "contrastBorder";
+pub const ACTIVE_CONTRAST_BORDER: &str = "contrastActiveBorder";
+pub const FOCUS_BORDER: &str = "focusBorder";
+
+/// O que as regras de `registerThemingParticipant` do `activitybarPart.ts` escolheriam para os itens da barra de atividades
+/// (`.monaco-workbench .activitybar > .content :not(.monaco-menu) > .monaco-action-bar .action-item`), já resolvido contra o
+/// tema. Cada campo é a declaração de uma regra, ausente quando a regra não seria emitida.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActivityBarItemThemeRules {
+    /// `.checked .active-item-indicator:before { border-left-color }` (`activityBar.activeBorder`).
+    pub checked_indicator_color: Option<Color>,
+    /// `.checked:focus .active-item-indicator:before { visibility: visible; border-left-color }`
+    /// (`activityBar.activeFocusBorder`); quando presente, o `.checked:focus::before` fica escondido.
+    pub checked_focus_indicator_color: Option<Color>,
+    /// `.checked .active-item-indicator { z-index: 0; background-color }` (`activityBar.activeBackground`).
+    pub checked_indicator_background: Option<Color>,
+    /// `.action-label::before { padding: 6px }`, só com a cor de contraste (alto contraste).
+    pub label_outline_padding: Option<f64>,
+    /// `.active`, `.active:hover`, `.checked` e `.checked:hover` em `.action-label::before { outline: 1px solid }`.
+    pub active_outline: Option<Color>,
+    /// `:hover .action-label::before { outline: 1px dashed }`.
+    pub hover_outline: Option<Color>,
+    /// `:focus .active-item-indicator:before { border-left-color }`: a cor de contraste ou, sem ela, a `focusBorder`.
+    pub focus_indicator_color: Option<Color>,
+}
+
+/// O corpo do `registerThemingParticipant` do `activitybarPart.ts`.
+pub fn activity_bar_item_theme_rules(theme: &dyn IColorTheme) -> ActivityBarItemThemeRules {
+    let mut rules = ActivityBarItemThemeRules {
+        checked_indicator_color: theme.get_color(ACTIVITY_BAR_ACTIVE_BORDER, None),
+        checked_focus_indicator_color: theme.get_color(ACTIVITY_BAR_ACTIVE_FOCUS_BORDER, None),
+        checked_indicator_background: theme.get_color(ACTIVITY_BAR_ACTIVE_BACKGROUND, None),
+        ..ActivityBarItemThemeRules::default()
+    };
+
+    // Styling with Outline color (e.g. high contrast theme)
+    if let Some(outline) = theme.get_color(ACTIVE_CONTRAST_BORDER, None) {
+        rules.label_outline_padding = Some(6.0);
+        rules.active_outline = Some(outline.clone());
+        rules.hover_outline = Some(outline.clone());
+        rules.focus_indicator_color = Some(outline);
+    }
+    // Styling without outline color
+    else {
+        rules.focus_indicator_color = theme.get_color(FOCUS_BORDER, None);
+    }
+    rules
+}
 
 /// O elemento da parte (o `parent` que `create` recebe): classes, propriedades CSS personalizadas e as cores inline.
 #[derive(Default)]
@@ -464,7 +531,7 @@ impl ActivitybarPart {
             },
             prevent_loop_navigation: true,
             recompute_sizes: false,
-            fill_extra_context_menu_actions: Rc::new(|_actions| {}),
+            fill_extra_context_menu_actions: Rc::new(|_actions, _target| {}),
             composite_size,
             colors: Rc::new(|theme: &dyn IColorTheme| CompositeBarColors {
                 active_foreground_color: theme.get_color(ACTIVITY_BAR_FOREGROUND, None),
@@ -535,6 +602,12 @@ impl ActivitybarPart {
     fn get_color(&self, id: &str) -> Option<String> {
         let theme = self.state.borrow().theme.clone();
         theme.get_color(id, None).map(|color| format_rgb(&color))
+    }
+
+    /// As regras de tema dos itens da barra para o tema atual (`registerThemingParticipant`).
+    pub fn item_theme_rules(&self) -> ActivityBarItemThemeRules {
+        let theme = self.state.borrow().theme.clone();
+        activity_bar_item_theme_rules(theme.as_ref())
     }
 
     pub fn update_styles(&self) {
@@ -657,37 +730,102 @@ pub struct MenuBarContainer {
     pub client_height: Cell<f64>,
 }
 
+/// O que a `ActivityBarCompositeBar` injeta do construtor além da base: `IConfigurationService`, `IMenuService`,
+/// `IContextKeyService`, `IWorkbenchLayoutService` e `IInstantiationService` (o `invokeFunction` das ações), mais o
+/// `CustomMenubarControl` e o `part` que a barra serve.
+pub struct ActivityBarServices {
+    pub part: Parts,
+    pub configuration_service: Rc<dyn IConfigurationService>,
+    pub menu_service: Rc<dyn IMenuService>,
+    pub context_key_service: Rc<dyn IContextKeyService>,
+    pub layout_service: Rc<dyn IWorkbenchLayoutService>,
+    pub title_bar_host: Rc<dyn TitleBarHost>,
+    pub instantiation_service: Rc<InstantiationService>,
+    pub menubar_factory: MenubarFactory,
+}
+
 /// `ActivityBarCompositeBar`: a barra de painéis da barra de atividades, que reserva no layout o espaço do menu compacto e
 /// dos ícones globais (conta e gerenciar).
 pub struct ActivityBarCompositeBar {
     base: Rc<dyn IPaneCompositeBar>,
     orientation: ActionsOrientation,
+    element: RefCell<Option<Rc<ContentElement>>>,
+    menu_bar: Rc<MutableDisposable<dyn ICustomMenubarControl>>,
     menu_bar_container: RefCell<Option<Rc<MenuBarContainer>>>,
     global_composite_bar: Option<Rc<dyn IGlobalCompositeBar>>,
     global_activities: Option<GlobalActivities>,
     last_layout_dimensions: RefCell<Option<Dimension>>,
+    services: Option<ActivityBarServices>,
     disposables: Rc<Disposable>,
 }
 
 impl ActivityBarCompositeBar {
-    /// O construtor: `base` é o `PaneCompositeBar` da superclasse; quando há `globalActivities`, a barra global entra e um
-    /// `onDidChange` dela refaz o layout com as últimas dimensões.
+    /// O construtor sem as dependências de menu: `base` é o `PaneCompositeBar` da superclasse; quando há `globalActivities`, a
+    /// barra global entra e um `onDidChange` dela refaz o layout com as últimas dimensões. Sem [`ActivityBarServices`] a barra
+    /// só faz o layout (o menu compacto vem de [`ActivityBarCompositeBar::set_menu_bar_container`]); o menu de contexto, o
+    /// menu compacto instalado pela configuração e o teclado exigem [`ActivityBarCompositeBar::with_services`].
     pub fn new(
         base: Rc<dyn IPaneCompositeBar>,
         orientation: ActionsOrientation,
         global_composite_bar: Option<Rc<dyn IGlobalCompositeBar>>,
         global_activities: Option<GlobalActivities>,
     ) -> Rc<Self> {
+        Self::build(base, orientation, global_composite_bar, global_activities, None)
+    }
+
+    /// O construtor completo. `make_base` cria o `PaneCompositeBar` da superclasse com as opções já embrulhadas
+    /// (`{...options, fillExtraContextMenuActions: (actions, e) => { options.fill...(actions, e); this.fillContextMenuActions(actions, e); }}`)
+    /// e `make_global` cria a `GlobalCompositeBar` (só chamada quando há `globalActivities`) a partir da base.
+    pub fn with_services(
+        options: PaneCompositeBarOptions,
+        make_base: impl FnOnce(PaneCompositeBarOptions) -> Rc<dyn IPaneCompositeBar>,
+        make_global: impl FnOnce(&Rc<dyn IPaneCompositeBar>) -> Rc<dyn IGlobalCompositeBar>,
+        global_activities: Option<GlobalActivities>,
+        services: ActivityBarServices,
+    ) -> Rc<Self> {
+        // O gancho precisa da própria barra, que só existe depois da base: a referência é preenchida logo após a construção.
+        let slot: Rc<RefCell<Weak<Self>>> = Rc::new(RefCell::new(Weak::new()));
+        let orientation = options.orientation;
+        let original = options.fill_extra_context_menu_actions.clone();
+        let hook_slot = slot.clone();
+        let wrapped = PaneCompositeBarOptions {
+            fill_extra_context_menu_actions: Rc::new(move |actions, target| {
+                original(actions, target);
+                let this = hook_slot.borrow().upgrade();
+                if let Some(this) = this {
+                    this.fill_context_menu_actions(actions, target);
+                }
+            }),
+            ..options
+        };
+        let base = make_base(wrapped);
+        let global = global_activities.map(|_| make_global(&base));
+        let this = Self::build(base, orientation, global, global_activities, Some(services));
+        *slot.borrow_mut() = Rc::downgrade(&this);
+        this
+    }
+
+    fn build(
+        base: Rc<dyn IPaneCompositeBar>,
+        orientation: ActionsOrientation,
+        global_composite_bar: Option<Rc<dyn IGlobalCompositeBar>>,
+        global_activities: Option<GlobalActivities>,
+        services: Option<ActivityBarServices>,
+    ) -> Rc<Self> {
         let global_composite_bar = global_activities.and(global_composite_bar);
         let this = Rc::new(Self {
             base,
             orientation,
+            element: RefCell::new(None),
+            menu_bar: MutableDisposable::new(),
             menu_bar_container: RefCell::new(None),
             global_composite_bar: global_composite_bar.clone(),
             global_activities,
             last_layout_dimensions: RefCell::new(None),
+            services,
             disposables: Disposable::new(),
         });
+        this.disposables.register(this.menu_bar.clone());
         if let Some(global) = global_composite_bar {
             this.disposables.register(global.clone());
             let weak = Rc::downgrade(&this);
@@ -701,12 +839,225 @@ impl ActivityBarCompositeBar {
             }));
         }
         this.disposables.register(this.base.clone());
+
+        // Register for configuration changes
+        if let Some(services) = &this.services {
+            let weak = Rc::downgrade(&this);
+            this.disposables.register(services.configuration_service.on_did_change_configuration().listen(move |event| {
+                let Some(this) = weak.upgrade() else {
+                    return;
+                };
+                if event.affects_configuration(MENU_BAR_VISIBILITY_SETTING, None) {
+                    if this.menu_bar_visibility() == Some(MenuBarVisibility::Compact) {
+                        this.install_menubar();
+                    } else {
+                        this.uninstall_menubar();
+                    }
+                }
+            }));
+        }
         this
     }
 
     /// O `menuBarContainer` criado por `installMenubar`.
     pub fn set_menu_bar_container(&self, container: Option<Rc<MenuBarContainer>>) {
         *self.menu_bar_container.borrow_mut() = container;
+    }
+
+    /// O `menuBarContainer` atual: `Some` enquanto o menu compacto está instalado.
+    pub fn menu_bar_container(&self) -> Option<Rc<MenuBarContainer>> {
+        self.menu_bar_container.borrow().clone()
+    }
+
+    /// `getMenuBarVisibility(this.configurationService)`.
+    fn menu_bar_visibility(&self) -> Option<MenuBarVisibility> {
+        let services = self.services.as_ref()?;
+        MenuBarVisibility::parse(&services.title_bar_host.get_menu_bar_visibility()?)
+    }
+
+    fn fill_context_menu_actions(&self, actions: &mut Vec<ActionRef>, target: Option<ContextMenuTarget>) {
+        if self.services.is_none() {
+            return;
+        }
+
+        // Menu
+        let menu_bar_visibility = self.menu_bar_visibility();
+        let mut head: Vec<ActionRef> = Vec::new();
+        if matches!(menu_bar_visibility, Some(MenuBarVisibility::Compact | MenuBarVisibility::Hidden | MenuBarVisibility::Toggle)) {
+            let is_compact = menu_bar_visibility == Some(MenuBarVisibility::Compact);
+            head.push(self.update_menu_bar_visibility_action("toggleMenuVisibility", localize("menu", "Menu", &[]), Some(is_compact), if is_compact { "toggle" } else { "compact" }));
+            head.push(Separator::new());
+        }
+
+        if menu_bar_visibility == Some(MenuBarVisibility::Compact)
+            && self.menu_bar_container.borrow().is_some()
+            && target.is_some_and(|target| target.in_menu_bar_container)
+        {
+            // `unshift` depois do anterior: o item de esconder fica na frente.
+            let mut hide = vec![self.update_menu_bar_visibility_action("hideCompactMenu", localize("hideMenu", "Hide Menu", &[]), None, "toggle"), Separator::new() as ActionRef];
+            hide.append(&mut head);
+            head = hide;
+        }
+        actions.splice(0..0, head);
+
+        // Global Composite Bar
+        if let Some(global) = &self.global_composite_bar {
+            actions.push(Separator::new());
+            actions.extend(global.get_context_menu_actions());
+        }
+        actions.push(Separator::new());
+        actions.extend(self.get_activity_bar_context_menu_actions());
+    }
+
+    /// `toAction({ id, label, checked, run: () => configurationService.updateValue(MenuSettings.MenuBarVisibility, value) })`.
+    fn update_menu_bar_visibility_action(&self, id: &str, label: String, checked: Option<bool>, value: &'static str) -> ActionRef {
+        let configuration_service = self.services.as_ref().expect("as dependências foram injetadas").configuration_service.clone();
+        to_action(ToActionProps {
+            id: id.to_owned(),
+            label,
+            tooltip: None,
+            enabled: None,
+            checked,
+            class: None,
+            alt: None,
+            run: Rc::new(move |_| {
+                let _ = configuration_service.update_value(MENU_BAR_VISIBILITY_SETTING, Dynamic::string(value), None, None);
+                MaybePromise::Value(Dynamic::Undefined)
+            }),
+        })
+    }
+
+    /// `toAction({ id, label, checked, run: () => configurationService.updateValue(ACTIVITY_BAR_COMPACT, value) })`.
+    fn activity_bar_size_action(configuration_service: &Rc<dyn IConfigurationService>, id: &str, label: String, compact: bool, is_compact: bool) -> ActionRef {
+        let configuration_service = configuration_service.clone();
+        to_action(ToActionProps {
+            id: id.to_owned(),
+            label,
+            tooltip: None,
+            enabled: None,
+            checked: Some(is_compact == compact),
+            class: None,
+            alt: None,
+            run: Rc::new(move |_| {
+                let _ = configuration_service.update_value(LayoutSettings::ActivityBarCompact.as_str(), Dynamic::Bool(compact), None, None);
+                MaybePromise::Value(Dynamic::Undefined)
+            }),
+        })
+    }
+
+    fn uninstall_menubar(&self) {
+        self.menu_bar.clear();
+        *self.menu_bar_container.borrow_mut() = None;
+    }
+
+    fn install_menubar(&self) {
+        let Some(services) = &self.services else {
+            return;
+        };
+        if self.menu_bar.value().is_some() {
+            return; // prevent menu bar from installing twice #110720
+        }
+
+        let container = Rc::new(MenuBarContainer::default());
+        *self.menu_bar_container.borrow_mut() = Some(container.clone());
+        assert!(self.element.borrow().is_some(), "a barra não foi criada");
+
+        // Menubar: install a custom menu bar depending on configuration
+        let menu_bar = (services.menubar_factory)();
+        self.menu_bar.set(Some(menu_bar.clone()));
+        menu_bar.create(&container);
+    }
+
+    /// O `KEY_DOWN` do menu compacto: Baixo ou Direita passam o foco para os ícones.
+    pub fn on_menu_bar_key_down(&self, event: &StandardKeyboardEvent) {
+        if Self::is_any_key(event, &[KeyCode::DownArrow, KeyCode::RightArrow]) {
+            self.focus(None);
+        }
+    }
+
+    /// O `KEY_DOWN` do contêiner dos ícones: Baixo ou Direita passam o foco para os ícones globais, Cima ou Esquerda para o
+    /// menu compacto.
+    pub fn on_composite_bar_key_down(&self, event: &StandardKeyboardEvent) {
+        if Self::is_any_key(event, &[KeyCode::DownArrow, KeyCode::RightArrow]) {
+            if let Some(global) = &self.global_composite_bar {
+                global.focus();
+            }
+        } else if Self::is_any_key(event, &[KeyCode::UpArrow, KeyCode::LeftArrow]) {
+            if let Some(menu_bar) = self.menu_bar.value() {
+                menu_bar.toggle_focus();
+            }
+        }
+    }
+
+    /// O `KEY_DOWN` dos ícones globais: Cima ou Esquerda devolvem o foco ao último ícone de painel visível.
+    pub fn on_global_composite_bar_key_down(&self, event: &StandardKeyboardEvent) {
+        if Self::is_any_key(event, &[KeyCode::UpArrow, KeyCode::LeftArrow]) {
+            self.focus(Some(self.get_visible_pane_composite_ids().len().saturating_sub(1)));
+        }
+    }
+
+    /// `kbEvent.equals(KeyCode.X) || kbEvent.equals(KeyCode.Y)`.
+    fn is_any_key(event: &StandardKeyboardEvent, key_codes: &[KeyCode]) -> bool {
+        key_codes.iter().any(|key_code| event.equals(key_code.bits()))
+    }
+
+    /// `getActivityBarContextMenuActions()`.
+    pub fn get_activity_bar_context_menu_actions(&self) -> Vec<ActionRef> {
+        let Some(services) = &self.services else {
+            return Vec::new();
+        };
+
+        let options = MenuActionOptions { arg: None, args: None, should_forward_args: true, render_short_title: true };
+        let activity_bar_position_menu =
+            services.menu_service.get_menu_actions(&menu_ids::activity_bar_position_menu(), services.context_key_service.as_ref(), Some(&options));
+        let position_actions = get_context_menu_actions(&activity_bar_position_menu, None).secondary;
+        let position_submenu: ActionRef =
+            SubmenuAction::new("workbench.action.activityBar.position", &localize("activity bar position", "Activity Bar Position", &[]), position_actions, None);
+        let mut actions: Vec<ActionRef> = vec![position_submenu];
+
+        // Show size submenu only when activity bar is in default position
+        let configuration_service = &services.configuration_service;
+        let activity_bar_position = configuration_service.get_value(Some(LayoutSettings::ActivityBarLocation.as_str()), None);
+        if activity_bar_position.strict_equals(&Dynamic::from(ActivityBarPosition::Default.as_str())) {
+            let is_compact = ActivitybarPart::read_compact(configuration_service.as_ref());
+            let size_actions = vec![
+                Self::activity_bar_size_action(configuration_service, "workbench.action.activityBar.size.default", localize("activityBarSizeDefault", "Default", &[]), false, is_compact),
+                Self::activity_bar_size_action(configuration_service, "workbench.action.activityBar.size.compact", localize("activityBarSizeCompact", "Compact", &[]), true, is_compact),
+            ];
+            let size_submenu: ActionRef = SubmenuAction::new("workbench.action.activityBar.size", &localize("activity bar size", "Activity Bar Size", &[]), size_actions, None);
+            actions.push(size_submenu);
+        }
+
+        let layout_service = services.layout_service.clone();
+        actions.push(self.invoke_action(
+            ToggleSidebarPositionAction::ID,
+            ToggleSidebarPositionAction::get_label(layout_service.as_ref()),
+            Rc::new(ToggleSidebarPositionAction),
+        ));
+
+        if services.part == Parts::SidebarPart {
+            actions.push(self.invoke_action(ToggleSidebarVisibilityAction::ID, ToggleSidebarVisibilityAction::label(), Rc::new(ToggleSidebarVisibilityAction)));
+        }
+
+        actions
+    }
+
+    /// `toAction({ id, label, run: () => this.instantiationService.invokeFunction(accessor => new Action().run(accessor)) })`.
+    fn invoke_action(&self, id: &str, label: String, action: Rc<dyn Action2>) -> ActionRef {
+        let instantiation_service = self.services.as_ref().expect("as dependências foram injetadas").instantiation_service.clone();
+        to_action(ToActionProps {
+            id: id.to_owned(),
+            label,
+            tooltip: None,
+            enabled: None,
+            checked: None,
+            class: None,
+            alt: None,
+            run: Rc::new(move |_| {
+                instantiation_service.invoke_function(|accessor| action.run(accessor, &[]));
+                MaybePromise::Value(Dynamic::Undefined)
+            }),
+        })
     }
 }
 
@@ -718,7 +1069,22 @@ impl IDisposable for ActivityBarCompositeBar {
 
 impl IPaneCompositeBar for ActivityBarCompositeBar {
     fn create(&self, parent: &Rc<ContentElement>) {
+        *self.element.borrow_mut() = Some(parent.clone());
+
+        // Install menubar if compact
+        if self.menu_bar_visibility() == Some(MenuBarVisibility::Compact) {
+            self.install_menubar();
+        }
+
+        // View Containers action bar
         self.base.create(parent);
+
+        // Global action bar
+        if let Some(global) = &self.global_composite_bar {
+            global.create(parent);
+        }
+
+        // Keyboard Navigation: `on_menu_bar_key_down`, `on_composite_bar_key_down` e `on_global_composite_bar_key_down`.
     }
 
     fn layout(&self, mut width: f64, mut height: f64) {
@@ -836,19 +1202,7 @@ struct FocusActivityBarAction;
 
 impl Action2 for FocusActivityBarAction {
     fn desc(&self) -> Action2Options {
-        let title = localize2("focusActivityBar", "Focus Activity Bar");
-        Action2Options {
-            command: CommandAction {
-                category: Some(Category::Localized(Categories::new().view)),
-                ..CommandAction::new(
-                    "workbench.action.focusActivityBar",
-                    Title::Localized(CommandActionTitle { value: title.value, original: title.original, mnemonic_title: None }),
-                )
-            },
-            menu: Vec::new(),
-            keybinding: Vec::new(),
-            f1: true,
-        }
+        view_f1_options("workbench.action.focusActivityBar", localize2("focusActivityBar", "Focus Activity Bar"))
     }
 
     fn run(&self, accessor: &ServicesAccessor, _args: &[Dynamic]) {
@@ -857,7 +1211,22 @@ impl Action2 for FocusActivityBarAction {
     }
 }
 
-/// Os quatro `registerAction2` de posição, o de foco e os dois `MenuRegistry.appendMenuItem` do submenu de posição.
+/// `{ id, title, category: Categories.View, f1: true }`: as opções das ações `focusActivityBar`, `previousSideBarView` e
+/// `nextSideBarView`.
+fn view_f1_options(id: &str, title: LocalizedString) -> Action2Options {
+    Action2Options {
+        command: CommandAction {
+            category: Some(Category::Localized(Categories::new().view)),
+            ..CommandAction::new(id, Title::Localized(CommandActionTitle { value: title.value, original: title.original, mnemonic_title: None }))
+        },
+        menu: Vec::new(),
+        keybinding: Vec::new(),
+        f1: true,
+    }
+}
+
+/// Os quatro `registerAction2` de posição, o de foco, os dois de troca de vista e os dois `MenuRegistry.appendMenuItem` do
+/// submenu de posição.
 pub fn register_activitybar_actions() -> DisposableRef {
     let locations = [
         (ActivityBarPosition::Default, "workbench.action.activityBarLocation.default", "positionActivityBarDefault", "Move Activity Bar to Side", "miDefaultActivityBar", "&&Default", "default", "Default", 1.0),
@@ -872,6 +1241,16 @@ pub fn register_activitybar_actions() -> DisposableRef {
         })
         .collect();
     disposables.push(register_action2(Rc::new(FocusActivityBarAction)));
+    disposables.push(register_action2(Rc::new(SwitchCompositeViewAction::new(
+        view_f1_options("workbench.action.previousSideBarView", localize2("previousSideBarView", "Previous Primary Side Bar View")),
+        ViewContainerLocation::Sidebar,
+        -1,
+    ))));
+    disposables.push(register_action2(Rc::new(SwitchCompositeViewAction::new(
+        view_f1_options("workbench.action.nextSideBarView", localize2("nextSideBarView", "Next Primary Side Bar View")),
+        ViewContainerLocation::Sidebar,
+        1,
+    ))));
     disposables.push(register_activitybar_position_menus());
     combined_disposable(disposables)
 }

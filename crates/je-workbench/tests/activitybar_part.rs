@@ -965,6 +965,10 @@ impl IGlobalCompositeBar for HarnessGlobalCompositeBar {
         panic!("Layout must not measure global activities");
     }
     fn focus(&self) {}
+    fn create(&self, _parent: &Rc<ContentElement>) {}
+    fn get_context_menu_actions(&self) -> Vec<je_base::actions::ActionRef> {
+        Vec::new()
+    }
     fn on_did_change(&self) -> Event<()> {
         Event::none()
     }
