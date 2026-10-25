@@ -207,10 +207,14 @@ Fonte: **eu** (leitura de `api/env.rs`, `api/extensions.rs` e do oráculo `extHo
 | `env.appName`, `appRoot`, `language`, `machineId`, `sessionId`, `uriScheme`, `shell`, `uiKind` | entregue (valores do `HostEnvironment` que o binder entrega, no lugar do `initData`) | `api/env.rs` |
 | `env.clipboard.readText`, `writeText` | entregue (direto no `IClipboardService`: `ExtHostClipboard` e `MainThreadClipboard` não estão portados) | `api/env.rs` |
 | `env.openExternal` | entregue, sem teste (sobre `ExtHostWindow`; pede o cliente `MainThreadWindow`, ainda não portado) | `api/env.rs` |
-| `env.asExternalUri`, `remoteName`, `isTelemetryEnabled`, `logLevel`, `createTelemetryLogger` e as propostas | falta | |
+| `env.remoteName`, `env.asExternalUri` | entregue (`remoteName` do `HostEnvironment.remote_authority`; `asExternalUri` sobre `ExtHostWindow`, com `allowTunneling` e o recuo de `http`/`https` do original; sem o ramo do esquema do app, porque `ExtHostUrls` não está portado; `asExternalUri` sem teste, pede o cliente `MainThreadWindow`) | `api/env.rs` |
+| `env.isTelemetryEnabled`, `onDidChangeTelemetryEnabled`, `createTelemetryLogger` (`TelemetryLogger`: `logUsage`, `logError`, `isUsageEnabled`, `isErrorsEnabled`, `onDidChangeEnableStates`, `dispose`) | entregue (sobre o `ExtHostTelemetry` que o binder entrega por `IMainThreadBinder::telemetry`; extensão do logger é a do host; `sender` precisa ter as funções como propriedades próprias) | `api/env.rs`, `api/telemetry_logger.rs`, teste `extension_host_api_env_extensions` |
+| `env.logLevel`, `onDidChangeLogLevel` | entregue (sobre o serviço de log do host) | `api/env.rs`, teste `extension_host_api_env_extensions` (só o tipo, o serviço de teste não muda de nível) |
+| `env.isAppPortable`, `appHost`, `isNewAppInstall`, `onDidChangeShell` e as propostas | falta | |
+| `extensions.onDidChange` | entregue (evento do registro das extensões do host; disparo sem teste, o registro não é alcançável pelo harness) | `api/extensions.rs` |
+| `extensions.allAcrossExtensionHosts` | falta | é proposta (`extensionsAny`) |
 | `extensions.all`, `getExtension(id)` | entregue | `api/extensions.rs`, sobre os registros do `ExtHostExtensionService` |
 | `Extension` (`id`, `extensionUri`, `extensionPath`, `packageJSON`, `extensionKind`, `isFromDifferentExtensionHost`, `isActive`, `exports`, `activate()`) | entregue | `api/extensions.rs` |
-| `extensions.onDidChange`, `allAcrossExtensionHosts` | falta | o registro do porte não expõe o evento; a segunda é proposta |
 
 Os testes de ponta a ponta estão em `crates/je-workbench/tests/extension_host_api_text_editors.rs` (monta o `MainThreadDocumentsAndEditors` real sobre o
 `ModelService` e um `TestCodeEditorService`) e `extension_host_api_env_extensions.rs` (binder com ambiente e área de transferência, e o registro de
