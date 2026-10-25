@@ -10,22 +10,27 @@
 //! - `browser/commentMenus.ts` ([`browser::comment_menus`]) e `browser/commentsModel.ts` ([`browser::comments_model`]), que o
 //!   `CommentService` constrói por conta própria (`createInstance(CommentMenus)` e `new CommentsModel()`), então vieram junto.
 //!
+//! Fatia 2 (feita):
+//! - `browser/commentsFilterOptions.ts` ([`browser::comments_filter_options`]) e `browser/commentColors.ts`
+//!   ([`browser::comment_colors`]: os ids das cores, que já estão no registro do `je-theme`, e as cores por estado da thread);
+//! - `browser/timestamp.ts` ([`browser::timestamp`]: `TimestampWidget`);
+//! - `browser/commentsTreeViewer.ts` ([`browser::comments_tree_viewer`]: `CommentsList`, `ResourceWithCommentsRenderer`,
+//!   `CommentNodeRenderer`, `CommentsMenus`, `Filter`, o delegado de alturas e o provedor de identidade). O que a árvore divide com a
+//!   do painel de problemas (rótulo de recurso, hover, auxiliares de layout, desfecho do filtro por texto) vem de
+//!   `markers_tree_viewer`.
+//!
 //! Fatias seguintes, na ordem de dependência:
-//! 1. `browser/commentsFilterOptions.ts`;
-//! 2. `browser/commentColors.ts`;
-//! 3. `browser/commentsTreeViewer.ts`;
-//! 4. `browser/commentsView.ts`, com `test/browser/commentsView.test.ts`;
-//! 5. `browser/commentReply.ts`, com `test/browser/commentReply.test.ts`;
-//! 6. `browser/commentNode.ts`;
-//! 7. `browser/commentThreadBody.ts`, `commentThreadHeader.ts`, `commentThreadWidget.ts` e `commentThreadZoneWidget.ts`;
-//! 8. `browser/commentsController.ts`;
-//! 9. `browser/commentsEditorContribution.ts`;
-//! 10. o resto: `common/commentCommandIds.ts`, `common/commentThreadWidget.ts`, `browser/comments.ts`,
-//!     `browser/comments.contribution.ts`, `browser/commentFormActions.ts`, `browser/commentGlyphWidget.ts`,
-//!     `browser/commentThreadAdditionalActions.ts`, `browser/commentThreadRangeDecorator.ts`,
-//!     `browser/commentsAccessibility.ts`, `browser/commentsAccessibleView.ts`, `browser/commentsInputContentProvider.ts`,
-//!     `browser/commentsViewActions.ts`, `browser/reactionsAction.ts`, `browser/simpleCommentEditor.ts` e
-//!     `browser/timestamp.ts`.
+//! 1. `browser/commentsView.ts`, com `test/browser/commentsView.test.ts`;
+//! 2. `browser/commentReply.ts`, com `test/browser/commentReply.test.ts`;
+//! 3. `browser/commentNode.ts`;
+//! 4. `browser/commentThreadBody.ts`, `commentThreadHeader.ts`, `commentThreadWidget.ts` e `commentThreadZoneWidget.ts`;
+//! 5. `browser/commentsController.ts`;
+//! 6. `browser/commentsEditorContribution.ts`;
+//! 7. o resto: `common/commentCommandIds.ts`, `common/commentThreadWidget.ts`, `browser/comments.ts`,
+//!    `browser/comments.contribution.ts`, `browser/commentFormActions.ts`, `browser/commentGlyphWidget.ts`,
+//!    `browser/commentThreadAdditionalActions.ts`, `browser/commentThreadRangeDecorator.ts`,
+//!    `browser/commentsAccessibility.ts`, `browser/commentsAccessibleView.ts`, `browser/commentsInputContentProvider.ts`,
+//!    `browser/commentsViewActions.ts`, `browser/reactionsAction.ts` e `browser/simpleCommentEditor.ts`.
 //!
 //! Os tipos de `editor/common/languages.ts` que o módulo troca com os controladores (`CommentThread`, `Comment`,
 //! `CommentingRanges`, `PendingCommentThread`...) estão no fim de `je_editor::languages`.

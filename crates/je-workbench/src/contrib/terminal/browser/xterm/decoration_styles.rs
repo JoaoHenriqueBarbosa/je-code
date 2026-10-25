@@ -335,7 +335,7 @@ pub fn get_terminal_command_decoration_state(
 }
 
 /// `new Date(timestamp).toLocaleString()` na localidade `en-US` e no fuso do sistema.
-fn to_locale_string(timestamp: f64) -> String {
+pub(crate) fn to_locale_string(timestamp: f64) -> String {
     let Ok(timestamp) = jiff::Timestamp::from_millisecond(timestamp as i64) else { return "Invalid Date".to_owned() };
     let zoned = timestamp.to_zoned(local_time_zone());
     let hour = match zoned.hour() % 12 {

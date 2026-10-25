@@ -57,13 +57,13 @@ use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::{Emitter, Event};
 use je_base::filters::Match;
-use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
+use je_base::key_codes::KeyCode;
+use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, to_disposable};
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::promise::{CancelablePromise, MaybePromise, Promise};
-use je_base::severity::Severity;
 use je_base::symbols::Delay;
 use je_base::themables::ThemeIcon;
-use je_base::{nls::localize, uri::URI};
+use je_base::{JsString, nls::localize};
 use je_editor::code_action::code_action::{ApplyCodeActionReason, ApplyCodeActionServices, apply_code_action, get_code_actions};
 use je_editor::code_action::languages::CodeActionTriggerType;
 use je_editor::code_action::platform::ActionSet;
@@ -76,9 +76,9 @@ use je_platform::contextkey::{IContextKey, IContextKeyService};
 use je_platform::contextview::context_view::IContextMenuService;
 use je_platform::label::label::{ILabelService, UriLabelOptions};
 use je_platform::markers::marker_service::unsupported_schemas;
-use je_platform::markers::markers::{Marker as IMarker, MarkerCode, MarkerSeverity};
+use je_platform::markers::markers::{MarkerCode, MarkerSeverity};
 use je_platform::opener::editor_types::{EditorOptions, TextEditorSelection};
-use je_platform::opener::opener::IOpenerService;
+use je_platform::opener::opener::{AllowCommands, IOpenerService, OpenOptions, OpenResource};
 use je_platform::progress::progress::Progress;
 use je_platform::resources::ext_uri;
 use je_render::Rgba;
@@ -88,7 +88,7 @@ use je_widgets::action_bar::{ActionBar, IActionBarOptions, IActionOptions, IActi
 use je_theme::icon_registry::register_icon;
 use je_widgets::action_view_items::{ActionBarStyles, ActionViewItem, BaseActionViewItem, IActionViewItem, IActionViewItemOptions, ItemSize};
 use je_widgets::count_badge::{CountBadge, ICountBadgeOptions, ICountBadgeStyles};
-use je_widgets::dom::{clear_node, create_el};
+use je_widgets::dom::{StandardKeyboardEvent, clear_node, create_el};
 use je_widgets::highlighted_label::{HighlightedLabel, HighlightedLabelStyles, IHighlight};
 use je_widgets::hover_api::{HoverPlacement, IManagedHover, ManagedHoverContentOrFactory, get_base_layer_hover_delegate, get_default_hover_delegate};
 use je_widgets::icon_label::{IIconLabelCreationOptions, IIconLabelValueOptions};
@@ -100,11 +100,10 @@ use je_widgets::tree::tree_types::{ITreeFilter, ITreeModel, ITreeRenderer, TreeE
 
 use crate::browser::labels::{IFileLabelOptions, IResourceLabel, IResourceLabelOptions, ResourceLabels};
 use crate::common::editor::{TextEditorOptions, UntypedEditorInput};
-use crate::platform::opener::link::{ILinkDescriptor, ILinkOptions, Link, LinkLabel};
 use crate::services::editor::editor_service::IEditorService;
 
 use super::markers_common::{MarkersViewMode, markers_view_mode_context_key};
-use super::markers_filter_options::FilterOptions;
+use super::markers_filter_options::{FilterOptions, TextFilter};
 use super::markers_model::{Marker, MarkerElement, MarkerTableItem, RelatedInformation, ResourceMarkers};
 use super::markers_view_actions::{QuickFixAction, QuickFixActionViewItem};
 use super::messages::Messages;
@@ -116,7 +115,7 @@ pub type MarkersTreeModel = ObjectTreeModel<MarkerElement, FilterData>;
 pub type MarkersTreeNode = <MarkersTreeModel as ITreeModel>::Node;
 
 /// A altura de uma linha (`line-height: 22px` de `.monaco-tl-contents`).
-const LINE_HEIGHT: f64 = 22.0;
+pub(crate) const LINE_HEIGHT: f64 = 22.0;
 
 /// `padding-right: 10px` de `.monaco-tl-contents`.
 const CONTENTS_PADDING_RIGHT: f64 = 10.0;
@@ -130,7 +129,7 @@ const ACTION_ITEM_MARGIN: f64 = 4.0;
 /// `margin: 0 6px` do `.marker-icon` mais o codicon de 16px.
 const MARKER_ICON_WIDTH: f64 = 28.0;
 
-pub(super) const CODICON_SIZE: f64 = 16.0;
+pub(crate) const CODICON_SIZE: f64 = 16.0;
 
 /// `.count-badge-wrapper` com `.wide`: `margin-left: 10px`.
 const WIDE_BADGE_MARGIN_LEFT: f64 = 10.0;
@@ -309,12 +308,12 @@ pub struct MarkerViewModelServices {
 // Auxiliares de texto e de nós
 // ---------------------------------------------------------------------------------------------------------------------
 
-pub(super) fn units(text: &str) -> Vec<u16> {
+pub(crate) fn units(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
 /// Os `IMatch[]` como os `IHighlight[]` do rótulo.
-pub(super) fn highlights(matches: &[Match]) -> Vec<IHighlight> {
+fn highlights(matches: &[Match]) -> Vec<IHighlight> {
     matches.iter().map(|m| IHighlight::new(m.start, m.end)).collect()
 }
 
@@ -323,7 +322,7 @@ fn native_path() -> PathModule<'static> {
     PathModule::native(&ProcessEnvironment)
 }
 
-pub(super) fn place(tree: &mut Tree, node: NodeId, x: f64, y: f64, width: f64, height: f64) {
+pub(crate) fn place(tree: &mut Tree, node: NodeId, x: f64, y: f64, width: f64, height: f64) {
     tree.set_bounds(node, Rect::new(x, y, x + width, y + height));
 }
 
@@ -338,7 +337,7 @@ fn text_node(ui: &Ui, parent: NodeId, class_name: &str, text: &str, styles: &Hig
 }
 
 /// O nó, ou um antepassado dele, tem a classe? (As classes de estado vivem em ancestrais: `wide`, `monaco-list-row`.)
-pub(super) fn ancestor_has_class(tree: &Tree, node: NodeId, class_name: &str) -> bool {
+fn ancestor_has_class(tree: &Tree, node: NodeId, class_name: &str) -> bool {
     let mut current = Some(node);
     while let Some(id) = current {
         if tree.has_class(id, class_name) {
@@ -350,7 +349,7 @@ pub(super) fn ancestor_has_class(tree: &Tree, node: NodeId, class_name: &str) ->
 }
 
 /// `.monaco-list-row:hover`, `.selected` e `.focused`: a linha que contém o nó está selecionada ou com foco?
-pub(super) fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
+pub(crate) fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
     let mut current = Some(node);
     while let Some(id) = current {
         if tree.has_class(id, "monaco-list-row") {
@@ -361,84 +360,46 @@ pub(super) fn row_selected_or_focused(tree: &Tree, node: NodeId) -> bool {
     false
 }
 
+/// O contêiner do rótulo de um recurso e o `ResourceLabel` dentro dele (`dom.append(container, dom.$('.resource-label-container'))` e
+/// `this.labels.create(labelContainer)`): o que os renderers de recurso do painel de problemas e do painel de comentários têm em
+/// comum. `class_name` é a classe do contêiner e `options` as do `IIconLabelCreationOptions`.
+pub(crate) fn create_resource_label(
+    ui: &Ui,
+    labels: &ResourceLabels,
+    container: NodeId,
+    class_name: &str,
+    options: Option<IIconLabelCreationOptions>,
+) -> (NodeId, Rc<dyn IResourceLabel>) {
+    let label_container = create_el(&mut ui.tree_mut(), container, Role::Generic, class_name);
+    let resource_label = labels.create(label_container, options);
+    (label_container, resource_label)
+}
+
+/// `resourceLabel.setFile(resource, { matches })`; sem `matches` é `setFile(resource)`.
+pub(crate) fn set_resource_label_file(resource_label: &dyn IResourceLabel, resource: &je_base::uri::URI, matches: Option<Vec<Match>>) {
+    resource_label.set_file(
+        resource,
+        matches.map(|matches| IFileLabelOptions {
+            resource: IResourceLabelOptions {
+                icon_label: IIconLabelValueOptions { matches: Some(matches), ..IIconLabelValueOptions::default() },
+                ..IResourceLabelOptions::default()
+            },
+            ..IFileLabelOptions::default()
+        }),
+    );
+}
+
 /// `hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, content)`.
-pub(super) fn setup_mouse_hover(node: NodeId, content: &str) -> Rc<dyn IManagedHover> {
+pub(crate) fn setup_mouse_hover(node: NodeId, content: &str) -> Rc<dyn IManagedHover> {
     get_base_layer_hover_delegate().setup_managed_hover(get_default_hover_delegate(HoverPlacement::Mouse), node, ManagedHoverContentOrFactory::from(content), None)
 }
 
 /// O valor de texto de um `code` não vazio (o `code ?` do original é falso para a cadeia vazia).
-pub(super) fn code_value(code: &MarkerCode) -> Option<&str> {
+fn code_value(code: &MarkerCode) -> Option<&str> {
     match code {
         MarkerCode::Text(text) => Some(text.as_str()).filter(|text| !text.is_empty()),
         MarkerCode::Target { value, .. } => Some(value.as_str()),
     }
-}
-
-/// `labelService.getUriLabel(resource, { relative: true })`: o rótulo do recurso relativo à pasta do workspace, que o
-/// painel mostra na árvore (aria-label do recurso e dica da informação relacionada) e na tabela (coluna de arquivo e
-/// filtro por texto).
-pub(super) fn relative_uri_label(label_service: &dyn ILabelService, resource: &URI) -> String {
-    label_service.get_uri_label(resource, &UriLabelOptions { relative: Some(true), ..UriLabelOptions::default() })
-}
-
-/// O filtro de severidade comum à árvore e à tabela: o marcador passa se a severidade dele está ligada nas opções.
-pub(super) fn matches_severity(options: &FilterOptions, severity: MarkerSeverity) -> bool {
-    options.show_errors && severity == MarkerSeverity::ERROR
-        || options.show_warnings && severity == MarkerSeverity::WARNING
-        || options.show_infos && severity == MarkerSeverity::INFO
-}
-
-/// Os destaques do texto do filtro na origem e no código do marcador (`sourceMatches` e `codeMatches`), comuns à árvore e
-/// à tabela. A origem e o código vazios não têm destaque, como no original.
-pub(super) fn source_and_code_matches(marker: &IMarker, text: &[u16]) -> (Option<Vec<Match>>, Option<Vec<Match>>) {
-    let source_matches = marker.source.as_deref().filter(|source| !source.is_empty()).and_then(|source| (FilterOptions::FILTER)(text, &units(source)));
-    let code_matches = marker.code.as_ref().and_then(code_value).and_then(|code| (FilterOptions::FILTER)(text, &units(code)));
-    (source_matches, code_matches)
-}
-
-/// A classe e o conteúdo do ícone de severidade (`SeverityIcon.className` e o codicon colorido), comuns ao desenhista de
-/// marcador da árvore e à coluna de severidade da tabela. `class_prefix` antecede `codicon ...` (a tabela põe as classes
-/// `marker-icon` no próprio nó do ícone, a árvore as põe no contêiner dele).
-pub(super) fn set_severity_icon(tree: &mut Tree, icon: NodeId, severity: Option<Severity>, class_prefix: &str, styles: &MarkersTreeStyles) {
-    match severity {
-        Some(severity) => {
-            tree.set_class_name(icon, &format!("{class_prefix}codicon {}", SeverityIcon::class_name(severity)));
-            let color = styles.severity_icon.color(severity).unwrap_or(styles.label.foreground);
-            tree.style_mut(icon).content = Content::Codicon { id: SeverityIcon::theme_icon(severity).id, size: CODICON_SIZE as f32, color };
-        }
-        None => {
-            tree.set_class_name(icon, &format!("{class_prefix}codicon"));
-            tree.style_mut(icon).content = Content::None;
-        }
-    }
-}
-
-/// O lugar onde o provedor guarda o item de ação de correção rápida que ele cria (o `actionBar.viewItems[0]` do original).
-pub(super) type QuickFixItemSlot = Rc<RefCell<Option<Rc<QuickFixActionViewItem>>>>;
-
-/// O `actionViewItemProvider` da barra de correção rápida: `QuickFixActionViewItem` para a `QuickFixAction`, o item padrão
-/// para o resto. O item criado fica no `slot`.
-pub(super) fn quick_fix_view_item_provider(ui: &Ui, context_menu_service: &Rc<dyn IContextMenuService>, slot: &QuickFixItemSlot) -> IActionViewItemProvider {
-    let (ui, context_menu_service, slot) = (ui.clone(), context_menu_service.clone(), slot.clone());
-    Rc::new(move |action: &ActionRef, options: &IActionViewItemOptions| {
-        if action.id() != QuickFixAction::ID {
-            return None;
-        }
-        let item = QuickFixActionViewItem::new(&ui, action.clone(), options.clone(), context_menu_service.clone());
-        *slot.borrow_mut() = Some(item.clone());
-        Some(item as Rc<dyn IActionViewItem>)
-    })
-}
-
-/// `quickFixAction.onShowQuickFixes(() => viewItems[0].showQuickFixes())`: mostra as correções no item que o provedor criou.
-pub(super) fn listen_show_quick_fixes(quick_fix_action: &QuickFixAction, slot: &QuickFixItemSlot) -> DisposableRef {
-    let slot = slot.clone();
-    quick_fix_action.on_show_quick_fixes().listen(move |_| {
-        let quick_fix_action_view_item = slot.borrow().clone();
-        if let Some(quick_fix_action_view_item) = quick_fix_action_view_item {
-            quick_fix_action_view_item.show_quick_fixes();
-        }
-    })
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -468,7 +429,7 @@ impl IListAccessibilityProvider<MarkerElement> for MarkersWidgetAccessibilityPro
     fn get_aria_label(&self, element: &MarkerElement) -> Option<String> {
         match element {
             MarkerElement::ResourceMarkers(resource_markers) => {
-                let label = relative_uri_label(self.label_service.as_ref(), &resource_markers.resource);
+                let label = self.label_service.get_uri_label(&resource_markers.resource, &UriLabelOptions { relative: Some(true), ..UriLabelOptions::default() });
                 let path = if label.is_empty() { resource_markers.path.clone() } else { label };
                 Some(Messages::markers_tree_aria_label_resource(resource_markers.markers().len(), &resource_markers.name, &native_path().dirname(&path)))
             }
@@ -650,8 +611,13 @@ impl ITreeRenderer<MarkersTreeModel> for ResourceMarkersRenderer {
     }
 
     fn render_template(&self, container: NodeId) -> TemplateData {
-        let resource_label_container = create_el(&mut self.ui.tree_mut(), container, Role::Generic, "resource-label-container");
-        let resource_label = self.labels.create(resource_label_container, Some(IIconLabelCreationOptions { support_highlights: true, ..IIconLabelCreationOptions::default() }));
+        let (resource_label_container, resource_label) = create_resource_label(
+            &self.ui,
+            &self.labels,
+            container,
+            "resource-label-container",
+            Some(IIconLabelCreationOptions { support_highlights: true, ..IIconLabelCreationOptions::default() }),
+        );
 
         let badge_wrapper = create_el(&mut self.ui.tree_mut(), container, Role::Generic, "count-badge-wrapper");
         let count = CountBadge::new(&self.ui, badge_wrapper, &ICountBadgeOptions::default(), self.styles.count_badge);
@@ -667,16 +633,7 @@ impl ITreeRenderer<MarkersTreeModel> for ResourceMarkersRenderer {
             _ => Vec::new(),
         };
 
-        template.resource_label.set_file(
-            &resource_markers.resource,
-            Some(IFileLabelOptions {
-                resource: IResourceLabelOptions {
-                    icon_label: IIconLabelValueOptions { matches: Some(uri_matches), ..IIconLabelValueOptions::default() },
-                    ..IResourceLabelOptions::default()
-                },
-                ..IFileLabelOptions::default()
-            }),
-        );
+        set_resource_label_file(&*template.resource_label, &resource_markers.resource, Some(uri_matches));
 
         Self::update_count(node, template);
         self.rendered_nodes.borrow_mut().entry(resource_markers_key(&resource_markers)).or_default().push(template.clone());
@@ -716,86 +673,23 @@ struct LabelItem {
     label: Rc<HighlightedLabel>,
 }
 
-/// O código do marcador: `(`, o rótulo e `)`, dentro de `.marker-code` (e de um `a.monaco-link`, se tem `target`). A tabela
-/// usa o mesmo desenho na coluna de código (com a classe `code-label`).
-pub(super) struct CodeItem {
-    /// O nó que entra na linha: o `a.monaco-link` ou o próprio contêiner do código.
-    pub(super) node: NodeId,
-    /// O contêiner do código (`.marker-code` na árvore).
-    pub(super) container: NodeId,
-    pub(super) open: NodeId,
-    pub(super) close: NodeId,
-    pub(super) open_width: f64,
-    pub(super) close_width: f64,
-    pub(super) label: Rc<HighlightedLabel>,
+/// O código do marcador: `(`, o rótulo e `)`, dentro de `.marker-code` (e de um `a.monaco-link`, se tem `target`).
+struct CodeItem {
+    /// O nó que entra na linha: o `a.monaco-link` ou o próprio `.marker-code`.
+    node: NodeId,
+    /// `.marker-code`.
+    container: NodeId,
+    open: NodeId,
+    close: NodeId,
+    open_width: f64,
+    close_width: f64,
+    label: Rc<HighlightedLabel>,
 }
 
 impl CodeItem {
-    pub(super) fn width(&self) -> f64 {
+    fn width(&self) -> f64 {
         self.open_width + self.label.width() + self.close_width
     }
-
-    /// Posiciona o `(`, o rótulo e o `)` dentro do contêiner e o contêiner (e o link, se há) em `x`, com a altura dada.
-    /// Devolve a largura do código.
-    pub(super) fn place_at(&self, tree: &mut Tree, x: f64, height: f64) -> f64 {
-        let width = self.width();
-        place(tree, self.node, x, 0.0, width, height);
-        if self.node != self.container {
-            place(tree, self.container, 0.0, 0.0, width, height);
-        }
-        place(tree, self.open, 0.0, 0.0, self.open_width, height);
-        place(tree, self.label.element(), self.open_width, 0.0, self.label.width(), height);
-        place(tree, self.close, self.open_width + self.label.width(), 0.0, self.close_width, height);
-        width
-    }
-}
-
-/// O código do marcador: o contêiner (texto simples), ou o contêiner dentro de um [`Link`] quando o código tem `target`
-/// (a abertura com `allowCommands`, a dica com o endereço e o teclado são do `Link`). Comum à árvore (`.marker-code`,
-/// opacidade 0,7) e à tabela (`.code-label`, sem opacidade), que passam a classe e a opacidade.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_code(
-    ui: &Ui,
-    opener_service: &Rc<dyn IOpenerService>,
-    disposables: &DisposableStore,
-    parent: NodeId,
-    code: &MarkerCode,
-    code_matches: &[Match],
-    mut label_styles: HighlightedLabelStyles,
-    text_link_foreground: Option<Rgba>,
-    container_class: &str,
-    opacity: f32,
-) -> CodeItem {
-    let (node, container, value) = match code {
-        MarkerCode::Text(text) => {
-            let container = create_el(&mut ui.tree_mut(), parent, Role::Generic, container_class);
-            (container, container, text.as_str())
-        }
-        MarkerCode::Target { value, target } => {
-            let href = target.to_string(true).to_string_lossy();
-            if let Some(link_foreground) = text_link_foreground {
-                label_styles.foreground = link_foreground;
-            }
-            let container = create_el(&mut ui.tree_mut(), parent, Role::Generic, container_class);
-            let link = Link::new(
-                ui,
-                parent,
-                ILinkDescriptor { label: LinkLabel::Node(container), href: href.clone(), title: Some(href), tab_index: None },
-                ILinkOptions::default(),
-                opener_service.clone(),
-            );
-            let node = link.element();
-            disposables.add(link);
-            (node, container, value.as_str())
-        }
-    };
-    ui.tree_mut().style_mut(node).opacity = opacity;
-    let (open, open_width) = text_node(ui, container, "", "(", &label_styles, label_styles.foreground);
-    let label = HighlightedLabel::new(ui, container, None, label_styles);
-    disposables.add(label.clone());
-    label.set(Some(value), &highlights(code_matches), "", false, false);
-    let (close, close_width) = text_node(ui, container, "", ")", &label_styles, label_styles.foreground);
-    CodeItem { node, container, open, close, open_width, close_width, label }
 }
 
 /// Uma linha da mensagem (`.marker-message-line`).
@@ -828,7 +722,7 @@ struct MarkerWidget {
     icon_container: NodeId,
     message_and_details_container: NodeId,
     message_and_details_container_hover: Rc<dyn IManagedHover>,
-    quick_fix_item: QuickFixItemSlot,
+    quick_fix_item: Rc<RefCell<Option<Rc<QuickFixActionViewItem>>>>,
     disposables: Rc<DisposableStore>,
     lines: RefCell<Vec<MessageLine>>,
     details: RefCell<Option<Details>>,
@@ -838,10 +732,20 @@ struct MarkerWidget {
 impl MarkerWidget {
     fn new(parent: NodeId, markers_view_model: Rc<MarkersViewModel>, services: Rc<MarkersTreeServices>) -> Rc<Self> {
         let ui = services.ui.clone();
-        let quick_fix_item: QuickFixItemSlot = Rc::default();
+        let quick_fix_item: Rc<RefCell<Option<Rc<QuickFixActionViewItem>>>> = Rc::default();
 
         let actions_container = create_el(&mut ui.tree_mut(), parent, Role::Generic, "actions");
-        let provider = quick_fix_view_item_provider(&ui, &services.context_menu_service, &quick_fix_item);
+        let provider: IActionViewItemProvider = {
+            let (ui, context_menu_service, slot) = (ui.clone(), services.context_menu_service.clone(), quick_fix_item.clone());
+            Rc::new(move |action: &ActionRef, options: &IActionViewItemOptions| {
+                if action.id() != QuickFixAction::ID {
+                    return None;
+                }
+                let item = QuickFixActionViewItem::new(&ui, action.clone(), options.clone(), context_menu_service.clone());
+                *slot.borrow_mut() = Some(item.clone());
+                Some(item as Rc<dyn IActionViewItem>)
+            })
+        };
         let action_bar = ActionBar::new(&ui, actions_container, IActionBarOptions { action_view_item_provider: Some(provider), styles: services.styles.action_bar.clone(), ..IActionBarOptions::default() });
 
         // wrap the icon in a container that get the icon color as foreground color. That way, if the
@@ -899,7 +803,17 @@ impl MarkerWidget {
         {
             let mut tree = ui.tree_mut();
             tree.set_class_name(self.icon_container, &format!("marker-icon {}", severity.map_or("", |severity| severity.as_str())));
-            set_severity_icon(&mut tree, self.icon, severity, "", &self.services.styles);
+            match severity {
+                Some(severity) => {
+                    tree.set_class_name(self.icon, &format!("codicon {}", SeverityIcon::class_name(severity)));
+                    let color = self.services.styles.severity_icon.color(severity).unwrap_or(self.services.styles.label.foreground);
+                    tree.style_mut(self.icon).content = Content::Codicon { id: SeverityIcon::theme_icon(severity).id, size: CODICON_SIZE as f32, color };
+                }
+                None => {
+                    tree.set_class_name(self.icon, "codicon");
+                    tree.style_mut(self.icon).content = Content::None;
+                }
+            }
         }
         self.render_quickfix_actionbar(element);
 
@@ -945,7 +859,14 @@ impl MarkerWidget {
                 this.layout();
             }
         }));
-        self.disposables.add(listen_show_quick_fixes(&quick_fix_action, &self.quick_fix_item));
+        let this = self.this.clone();
+        self.disposables.add(quick_fix_action.on_show_quick_fixes().listen(move |_| {
+            let Some(this) = this.upgrade() else { return };
+            let quick_fix_action_view_item = this.quick_fix_item.borrow().clone();
+            if let Some(quick_fix_action_view_item) = quick_fix_action_view_item {
+                quick_fix_action_view_item.show_quick_fixes();
+            }
+        }));
     }
 
     fn render_multiline_actionbar(&self, marker: &Rc<Marker>, parent: NodeId) -> (NodeId, Rc<ActionBar>) {
@@ -1051,8 +972,7 @@ impl MarkerWidget {
             source_item = Some(LabelItem { node, label });
 
             if let Some(code) = code {
-                let styles = &self.services.styles;
-                code_item = Some(render_code(&ui, &self.services.opener_service, &self.disposables, parent, code, code_matches, styles.label_styles(), styles.text_link_foreground, "marker-code", 0.7));
+                code_item = Some(self.render_code(parent, code, code_matches));
             }
         }
 
@@ -1061,6 +981,59 @@ impl MarkerWidget {
 
         let (multiline_actions, multiline_bar) = self.render_multiline_actionbar(marker, parent);
         Details { source: source_item, code: code_item, line_col, line_col_width, multiline_actions, multiline_bar }
+    }
+
+    /// O `.marker-code`: texto simples, ou dentro de um `Link` quando o código tem `target`.
+    fn render_code(&self, parent: NodeId, code: &MarkerCode, code_matches: &[Match]) -> CodeItem {
+        let ui = self.services.ui.clone();
+        let mut label_styles = self.services.styles.label_styles();
+        let (node, container, value) = match code {
+            MarkerCode::Text(text) => {
+                let container = create_el(&mut ui.tree_mut(), parent, Role::Generic, "marker-code");
+                (container, container, text.as_str())
+            }
+            MarkerCode::Target { value, target } => {
+                let href = target.to_string(true).to_string_lossy();
+                if let Some(link_foreground) = self.services.styles.text_link_foreground {
+                    label_styles.foreground = link_foreground;
+                }
+                let link = create_el(&mut ui.tree_mut(), parent, Role::Link, "monaco-link");
+                let container = create_el(&mut ui.tree_mut(), link, Role::Generic, "marker-code");
+                self.setup_link(link, href);
+                (link, container, value.as_str())
+            }
+        };
+        ui.tree_mut().style_mut(node).opacity = 0.7;
+        let (open, open_width) = text_node(&ui, container, "", "(", &label_styles, label_styles.foreground);
+        let label = HighlightedLabel::new(&ui, container, None, label_styles);
+        self.disposables.add(label.clone());
+        label.set(Some(value), &highlights(code_matches), "", false, false);
+        let (close, close_width) = text_node(&ui, container, "", ")", &label_styles, label_styles.foreground);
+        CodeItem { node, container, open, close, open_width, close_width, label }
+    }
+
+    /// O comportamento do `Link`: a dica com o endereço e a abertura por clique, `Enter` ou `Space`.
+    fn setup_link(&self, link: NodeId, href: String) {
+        let ui = self.services.ui.clone();
+        let hover = setup_mouse_hover(link, &href);
+        self.disposables.add(to_disposable(move || hover.dispose()));
+        let open = {
+            let opener_service = self.services.opener_service.clone();
+            Rc::new(move |e: &mut je_ui::Event| {
+                e.stop(true);
+                let options = OpenOptions { allow_commands: Some(AllowCommands::Bool(true)), ..OpenOptions::default() };
+                let _ = opener_service.open(&OpenResource::Text(JsString::from(href.as_str())), Some(&options));
+            })
+        };
+        let on_click = open.clone();
+        self.disposables.add(ui.listen(link, EventKind::Click, false, move |e| (*on_click)(e)));
+        self.disposables.add(ui.listen(link, EventKind::KeyDown, false, move |e| {
+            if let Some(event) = StandardKeyboardEvent::from_event(e)
+                && (event.equals(KeyCode::Enter.0 as u32) || event.equals(KeyCode::Space.0 as u32))
+            {
+                (*open)(e);
+            }
+        }));
     }
 
     /// `.monaco-list-row:hover`, `.selected` ou `.focused`.
@@ -1145,8 +1118,15 @@ impl MarkerWidget {
             place(&mut tree, source.node, x, 0.0, width, LINE_HEIGHT);
             x += width;
         }
-        if let Some(code) = &details.code {
-            x += code.place_at(&mut tree, x, LINE_HEIGHT);
+        if let (Some(code), Some(width)) = (&details.code, code_width) {
+            place(&mut tree, code.node, x, 0.0, width, LINE_HEIGHT);
+            if code.node != code.container {
+                place(&mut tree, code.container, 0.0, 0.0, width, LINE_HEIGHT);
+            }
+            place(&mut tree, code.open, 0.0, 0.0, code.open_width, LINE_HEIGHT);
+            place(&mut tree, code.label.element(), code.open_width, 0.0, code.label.width(), LINE_HEIGHT);
+            place(&mut tree, code.close, code.open_width + code.label.width(), 0.0, code.close_width, LINE_HEIGHT);
+            x += width;
         }
         x += DETAILS_MARGIN_LEFT;
         place(&mut tree, details.line_col, x, 0.0, details.line_col_width, LINE_HEIGHT);
@@ -1287,7 +1267,7 @@ impl ITreeRenderer<MarkersTreeModel> for RelatedInformationRenderer {
             _ => (Vec::new(), Vec::new()),
         };
 
-        let resource_label_title = relative_uri_label(self.services.label_service.as_ref(), &raw.resource);
+        let resource_label_title = self.services.label_service.get_uri_label(&raw.resource, &UriLabelOptions { relative: Some(true), ..UriLabelOptions::default() });
         template.resource_label.set(Some(ext_uri().basename(&raw.resource, None).as_str()), &highlights(&uri_matches), &resource_label_title, false, false);
         let styles = self.services.styles.label_styles();
         let ln_col = Messages::markers_panel_at_line_col_number(raw.start_line_number, raw.start_column);
@@ -1308,6 +1288,27 @@ impl ITreeRenderer<MarkersTreeModel> for RelatedInformationRenderer {
 // ---------------------------------------------------------------------------------------------------------------------
 // Filter
 // ---------------------------------------------------------------------------------------------------------------------
+
+/// O desfecho comum dos filtros por texto de `filterMarker`, `filterRelatedInformation` e (no painel de comentários)
+/// `filterCommentNode` depois de casar (ou não) o texto.
+pub(crate) fn text_filter_result<F>(text_filter: &TextFilter, matched: bool, parent_visibility: TreeVisibility, data: impl FnOnce() -> F) -> TreeFilterResult<F> {
+    // Matched and not negated
+    if matched && !text_filter.negate {
+        return TreeFilterResult::Data { visibility: VisibilityValue::Bool(true), data: data() };
+    }
+
+    // Matched and negated - exclude it only if parent visibility is not set
+    if matched && text_filter.negate && parent_visibility == TreeVisibility::Recurse {
+        return TreeFilterResult::Bool(false);
+    }
+
+    // Not matched and negated - include it only if parent visibility is not set
+    if !matched && text_filter.negate && parent_visibility == TreeVisibility::Recurse {
+        return TreeFilterResult::Bool(true);
+    }
+
+    TreeFilterResult::Visibility(parent_visibility)
+}
 
 /// `Filter`.
 pub struct Filter {
@@ -1356,29 +1357,14 @@ impl Filter {
         TreeFilterResult::Visibility(TreeVisibility::Recurse)
     }
 
-    /// O desfecho comum de `filterMarker` e `filterRelatedInformation` depois de casar (ou não) o texto.
-    fn text_filter_result(options: &FilterOptions, matched: bool, parent_visibility: TreeVisibility, data: impl FnOnce() -> FilterData) -> TreeFilterResult<FilterData> {
-        // Matched and not negated
-        if matched && !options.text_filter.negate {
-            return TreeFilterResult::Data { visibility: VisibilityValue::Bool(true), data: data() };
-        }
-
-        // Matched and negated - exclude it only if parent visibility is not set
-        if matched && options.text_filter.negate && parent_visibility == TreeVisibility::Recurse {
-            return TreeFilterResult::Bool(false);
-        }
-
-        // Not matched and negated - include it only if parent visibility is not set
-        if !matched && options.text_filter.negate && parent_visibility == TreeVisibility::Recurse {
-            return TreeFilterResult::Bool(true);
-        }
-
-        TreeFilterResult::Visibility(parent_visibility)
-    }
-
     fn filter_marker(&self, marker: &Marker, parent_visibility: TreeVisibility) -> TreeFilterResult<FilterData> {
         let options = self.options();
-        if !matches_severity(&options, marker.marker.severity) {
+        let severity = marker.marker.severity;
+        let matches_severity = options.show_errors && severity == MarkerSeverity::ERROR
+            || options.show_warnings && severity == MarkerSeverity::WARNING
+            || options.show_infos && severity == MarkerSeverity::INFO;
+
+        if !matches_severity {
             return TreeFilterResult::Bool(false);
         }
 
@@ -1394,10 +1380,11 @@ impl Filter {
         let text = units(&options.text_filter.text);
         let line_matches: Vec<Vec<Match>> = marker.lines().iter().map(|line| (FilterOptions::MESSAGE_FILTER)(&text, line.units()).unwrap_or_default()).collect();
 
-        let (source_matches, code_matches) = source_and_code_matches(&marker.marker, &text);
+        let source_matches = marker.marker.source.as_deref().filter(|source| !source.is_empty()).and_then(|source| (FilterOptions::FILTER)(&text, &units(source)));
+        let code_matches = marker.marker.code.as_ref().and_then(code_value).and_then(|code| (FilterOptions::FILTER)(&text, &units(code)));
         let matched = source_matches.is_some() || code_matches.is_some() || line_matches.iter().any(|line_match| !line_match.is_empty());
 
-        Self::text_filter_result(&options, matched, parent_visibility, || FilterData::Marker {
+        text_filter_result(&options.text_filter, matched, parent_visibility, || FilterData::Marker {
             line_matches,
             source_matches: source_matches.unwrap_or_default(),
             code_matches: code_matches.unwrap_or_default(),
@@ -1415,7 +1402,7 @@ impl Filter {
         let message_matches = (FilterOptions::MESSAGE_FILTER)(&text, &units(&native_path().basename(&related_information.raw.message, None)));
         let matched = uri_matches.is_some() || message_matches.is_some();
 
-        Self::text_filter_result(&options, matched, parent_visibility, || FilterData::RelatedInformation {
+        text_filter_result(&options.text_filter, matched, parent_visibility, || FilterData::RelatedInformation {
             uri_matches: uri_matches.unwrap_or_default(),
             message_matches: message_matches.unwrap_or_default(),
         })
@@ -1532,7 +1519,7 @@ impl MarkerViewModel {
                         auto_apply: None,
                         context: None,
                     };
-                    get_code_actions(&registry, &model, SelectionOrRange::Range(range), &trigger, Rc::new(je_editor::code_action::platform::ProgressNone), &cancellation_token).then(move |actions| {
+                    get_code_actions(&registry, &model, SelectionOrRange::Range(range), &trigger, Progress::none(), &cancellation_token).then(move |actions| {
                         // this._register(actions)
                         let to_dispose = actions.clone();
                         match weak.upgrade() {
