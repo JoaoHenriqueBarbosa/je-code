@@ -1,23 +1,29 @@
 //! `vscode.notebooks` (`createNotebookController`, `registerNotebookCellStatusBarItemProvider`), os membros de notebook de
-//! `vscode.workspace` (`notebookDocuments`, `openNotebookDocument`, `onDidOpenNotebookDocument`, `onDidCloseNotebookDocument`) e as classes
-//! `NotebookRange`, `NotebookData`, `NotebookCellData`, `NotebookCellOutput`, `NotebookCellOutputItem` e `NotebookCellStatusBarItem`, mais as
-//! classes nativas `NotebookDocument`, `NotebookCell`, `NotebookController` e `NotebookCellExecution`.
+//! `vscode.workspace` (`notebookDocuments`, `openNotebookDocument`, `registerNotebookSerializer`, `onDidOpenNotebookDocument`,
+//! `onDidCloseNotebookDocument`, `onDidChangeNotebookDocument`, `onDidSaveNotebookDocument`, `onWillSaveNotebookDocument`), os de
+//! `vscode.window` (`activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument`, `onDidChangeActiveNotebookEditor`,
+//! `onDidChangeVisibleNotebookEditors`) e as classes `NotebookRange`, `NotebookData`, `NotebookCellData`, `NotebookCellOutput`,
+//! `NotebookCellOutputItem` e `NotebookCellStatusBarItem`, mais as classes nativas `NotebookDocument`, `NotebookCell`, `NotebookEditor`,
+//! `NotebookController` e `NotebookCellExecution`.
 //!
-//! É a ponte para o `ExtHostNotebookController` e o `ExtHostNotebookKernels` portados (`extHostNotebook.ts`, `extHostNotebookDocument.ts`,
-//! `extHostNotebookKernels.ts`). O notebook, a célula, o controlador e a execução que a extensão segura carregam só um `_id` (um número da
-//! [`NotebookObjects`]), com acessores no protótipo sobre o objeto vivo do host; o documento de texto de uma célula é o mesmo `TextDocument`
-//! que `workspace.textDocuments` devolve. Os serviços só existem quando o binder registrou `MainThreadNotebook`,
-//! `MainThreadNotebookDocuments` e `MainThreadNotebookEditors` (mais os documentos de texto, porque cada célula é um documento de texto); o
-//! `createNotebookController` só existe com o cliente `MainThreadNotebookKernels`.
+//! É a ponte para o `ExtHostNotebookController`, o `ExtHostNotebookDocuments`, o `ExtHostNotebookDocumentSaveParticipant` e o
+//! `ExtHostNotebookKernels` portados (`extHostNotebook.ts`, `extHostNotebookDocument.ts`, `extHostNotebookDocuments.ts`,
+//! `extHostNotebookDocumentSaveParticipant.ts`, `extHostNotebookKernels.ts`). O notebook, a célula, o editor, o controlador e a execução que a
+//! extensão segura carregam só um `_id` (um número da [`NotebookObjects`]), com acessores no protótipo sobre o objeto vivo do host; o documento
+//! de texto de uma célula é o mesmo `TextDocument` que `workspace.textDocuments` devolve. Os serviços só existem quando o binder registrou
+//! `MainThreadNotebook`, `MainThreadNotebookDocuments` e `MainThreadNotebookEditors` (mais os documentos de texto, porque cada célula é um
+//! documento de texto); o `createNotebookController` só existe com o cliente `MainThreadNotebookKernels` e o `onWillSaveNotebookDocument` só
+//! existe com o cliente `MainThreadBulkEdits` (o participante aplica as edições que os ouvintes devolvem).
 //!
 //! O `executeHandler` e o `interruptHandler` do controlador, e o `provideCellStatusBarItems` do provedor da barra de status, são chamados
 //! com os mesmos objetos que a extensão recebe nos outros pontos (célula, notebook, controlador, token); o provedor chega por REFERÊNCIA
-//! (o `this` e os métodos de classe valem), e o `onDidChangeCellStatusBarItems` dele é assinado quando o provedor o define.
+//! (o `this` e os métodos de classe valem), e o `onDidChangeCellStatusBarItems` dele é assinado quando o provedor o define. O serializador de
+//! `registerNotebookSerializer` também chega por referência: `deserializeNotebook` e `serializeNotebook` rodam sobre o objeto da extensão.
 //!
 //! Falta (o serviço do host tem, falta só a ponte, ou depende de proposta que o host nunca habilita):
-//! - `registerNotebookSerializer` (pede o serializador por referência com `Uint8Array`, que não atravessa o motor),
-//!   `onDidChangeNotebookDocument`, `onDidSaveNotebookDocument`, `onWillSaveNotebookDocument`;
-//! - `window.activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument`, `onDidChange*NotebookEditor*` e o `NotebookEditor`;
+//! - `NotebookEditor#replOptions` e `NotebookDocumentShowOptions#asRepl` além do que o host já entende (propostas `notebookReplDocument`);
+//!   `onDidChangeNotebookEditorSelection` e `onDidChangeNotebookEditorVisibleRanges` (o serviço `ExtHostNotebookEditors` ainda não é ligado
+//!   pelo host, então `NotebookEditor#visibleRanges` só muda com o delta de documentos e editores);
 //! - `NotebookEdit` em `WorkspaceEdit`, `createRendererMessaging`, `NotebookController#asWebviewUri`, `onDidReceiveMessage`, `postMessage`,
 //!   `variableProvider`, `createNotebookExecution`, `createNotebookControllerDetectionTask` e `registerKernelSourceActionProvider`
 //!   (propostas `notebookMessaging`, `notebookVariableProvider`, `notebookExecution`, `notebookKernelSource`);
@@ -25,16 +31,20 @@
 //!   `NotebookCellExecution#executionOrder` fora de número.
 //!
 //! Divergências:
-//! - O `vscode` é um só para todas as extensões: o controlador e o provedor são registrados em nome da extensão `je.exthost`, e as propostas
-//!   de API nunca estão habilitadas (`rendererScripts` do `createNotebookController` é ignorado, como o original faz sem `notebookMessaging`).
-//! - O motor entrega objeto comum por cópia, então a identidade (`a === b`) de um notebook, de uma célula ou de um controlador não vale (cada
-//!   leitura cria um objeto JavaScript novo com o mesmo `_id`); comparar por `uri` ou por `id` funciona.
+//! - O `vscode` é um só para todas as extensões: o controlador, o provedor, o serializador e os ouvintes de gravação são registrados em nome
+//!   da extensão `je.exthost`, e as propostas de API nunca estão habilitadas (`rendererScripts` do `createNotebookController` é ignorado, como
+//!   o original faz sem `notebookMessaging`; o quarto argumento `registration` de `registerNotebookSerializer` não existe).
+//! - O motor entrega objeto comum por cópia, então a identidade (`a === b`) de um notebook, de uma célula, de um editor ou de um controlador
+//!   não vale (cada leitura cria um objeto JavaScript novo com o mesmo `_id`); comparar por `uri` ou por `id` funciona.
 //! - `NotebookCellOutputItem#data` é uma lista de números (os bytes), não um `Uint8Array`: o `Uint8Array` não atravessa o motor. O construtor
 //!   e `NotebookCellOutputItem.bytes` aceitam a lista de bytes (e um `Uint8Array` copiado como objeto de índices); `text`, `json`, `stdout`,
-//!   `stderr` e `error` produzem a lista.
+//!   `stderr` e `error` produzem a lista. Para o serializador a ponte faz a conversão do lado JavaScript: `deserializeNotebook` recebe um
+//!   `Uint8Array` de verdade (feito com `Uint8Array.from`) e o `Uint8Array` (ou lista) que `serializeNotebook` devolve vira a lista de bytes.
 //! - `NotebookController#executeHandler` devolve `undefined` enquanto a extensão não atribuiu nenhum (o original devolve o tratador padrão).
-//! - As tabelas de notebooks, células, controladores e execuções não têm coletor (o motor não avisa quando o objeto é descartado): um notebook
-//!   fechado continua legível, com `isClosed` verdadeiro.
+//! - As tabelas de notebooks, células, editores, controladores e execuções não têm coletor (o motor não avisa quando o objeto é descartado): um
+//!   notebook fechado continua legível, com `isClosed` verdadeiro.
+//! - O objeto do evento de `onWillSaveNotebookDocument` (`{ notebook, reason, token, waitUntil }`) é uma cópia; `waitUntil` só vale durante o
+//!   ouvinte (depois lança "waitUntil can NOT be called asynchronous") e as promessas são entregues ao evento do host quando o ouvinte retorna.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -47,44 +57,66 @@ use je_base::event::{Event, Listener};
 use je_base::json::{Object, Value};
 use je_base::lifecycle::{plain_disposable, DisposableRef, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
-use je_workbench::api::common::ext_host_notebook::{ExtHostNotebookController, NotebookCellStatusBarItemProvider, NotebookCellStatusBarItems};
-use je_workbench::api::common::ext_host_notebook_document::{NotebookCell, NotebookDocument};
+use je_workbench::api::common::ext_host_notebook::{
+    ExtHostNotebookController, NotebookAsRepl, NotebookCellStatusBarItemProvider, NotebookCellStatusBarItems, NotebookDocumentShowOptions, NotebookSerializer,
+};
+use je_workbench::api::common::ext_host_notebook_document::{NotebookCell, NotebookDocument, NotebookDocumentChangeEvent};
+use je_workbench::api::common::ext_host_notebook_document_save_participant::{ExtHostNotebookDocumentSaveParticipant, NotebookDocumentWillSaveEvent};
+use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
+use je_workbench::api::common::ext_host_notebook_editor::NotebookEditor;
 use je_workbench::api::common::ext_host_notebook_kernels::{
     ExtHostNotebookKernels, NotebookCellExecution, NotebookController, NotebookExecuteHandler, NotebookInterruptHandler, NotebookSelectionChange,
 };
 use je_workbench::api::common::ext_host_types::{
     ErrorLike, IdOrMetadata, NotebookCellData, NotebookCellKind, NotebookCellOutput, NotebookCellOutputItem, NotebookCellStatusBarAlignment,
-    NotebookCellStatusBarCommand, NotebookCellStatusBarItem, NotebookControllerAffinity2, NotebookData, NotebookRange,
+    NotebookCellStatusBarCommand, NotebookCellStatusBarItem, NotebookControllerAffinity2, NotebookData, NotebookDocumentContentOptions, NotebookEditorRevealType,
+    NotebookRange,
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
 
 use crate::api::commands::{call_settled, convert_maybe, promise_to_js};
 use crate::api::disposable::DisposableTable;
-use crate::api::events::{event_function, EventTables};
+use crate::api::events::{event_function, event_function_with_epilogue, EventTables};
+use crate::api::file_system_events::thenable_edit;
 use crate::api::js_object::{JsObjects, JsResult};
 use crate::api::language_types::command_from_js;
 use crate::api::languages::host_extension;
 use crate::api::text_editors::TextObjects;
 use crate::api::types::marked;
+use crate::api::workspace_edit::WorkspaceEditObjects;
 use crate::api::{getter, handle_field, handle_object, setter};
 use crate::convert::{bytes_of, bytes_to_js, class_name, dynamic_to_js, exported, field, is_nullish, js_to_dynamic, opt_bool, opt_number, opt_string, string_arg, uri_from_js, uri_to_js};
+
+/// O que `onWillSaveNotebookDocument` usa: o participante de gravação e onde moram as `WorkspaceEdit` que `waitUntil` recebe.
+#[derive(Clone)]
+pub struct WillSaveApi {
+    pub participant: Rc<ExtHostNotebookDocumentSaveParticipant>,
+    pub edits: Rc<WorkspaceEditObjects>,
+}
 
 /// Os serviços do host que os membros de notebook usam.
 #[derive(Clone)]
 pub struct NotebookApi {
     pub notebooks: Rc<ExtHostNotebookController>,
+    /// Os eventos de mudança e de gravação dos documentos.
+    pub documents: Rc<ExtHostNotebookDocuments>,
+    /// Sem o cliente `MainThreadBulkEdits` não há `onWillSaveNotebookDocument`.
+    pub will_save: Option<WillSaveApi>,
     /// Sem o cliente `MainThreadNotebookKernels` não há `createNotebookController`.
     pub kernels: Option<Rc<ExtHostNotebookKernels>>,
     pub objects: Rc<NotebookObjects>,
     pub events: Rc<EventTables>,
+    /// Dá o `vscode.TextDocument` de uma célula nos eventos de mudança.
+    pub text: Rc<TextObjects>,
 }
 
-/// Os notebooks, as células, os controladores e as execuções que o JavaScript segura, por id (os objetos carregam só o id).
+/// Os notebooks, as células, os editores, os controladores e as execuções que o JavaScript segura, por id (os objetos carregam só o id).
 #[derive(Default)]
 pub struct NotebookObjects {
     next: Cell<u32>,
     documents: RefCell<Vec<(u32, NotebookDocument)>>,
     cells: RefCell<Vec<(u32, NotebookCell)>>,
+    editors: RefCell<Vec<(u32, NotebookEditor)>>,
     controllers: RefCell<HashMap<u32, Rc<NotebookController>>>,
     executions: RefCell<HashMap<u32, Rc<NotebookCellExecution>>>,
     /// O `executeHandler` e o `interruptHandler` que a extensão atribuiu, por controlador (a leitura devolve o que ela passou).
@@ -119,6 +151,22 @@ impl NotebookObjects {
             id
         });
         handle_object("NotebookCell", id)
+    }
+
+    /// O `vscode.NotebookEditor` do editor: o mesmo editor volta com o mesmo `_id`.
+    pub fn editor_to_js(&self, editor: &NotebookEditor) -> JsData {
+        let known = self.editors.borrow().iter().find(|(_, candidate)| NotebookEditor::ptr_eq(candidate, editor)).map(|(id, _)| *id);
+        let id = known.unwrap_or_else(|| {
+            let id = self.next_id();
+            self.editors.borrow_mut().push((id, editor.clone()));
+            id
+        });
+        handle_object("NotebookEditor", id)
+    }
+
+    fn editor_of(&self, value: &JsData) -> Result<Rc<NotebookEditor>, String> {
+        let id = handle_field(value, "NotebookEditor")?;
+        self.editors.borrow().iter().find(|(candidate, _)| *candidate == id).map(|(_, editor)| Rc::new(editor.clone())).ok_or_else(|| "NotebookEditor: editor desconhecido".to_owned())
     }
 
     fn controller_to_js(&self, controller: &NotebookController) -> JsData {
@@ -280,6 +328,145 @@ fn json_value_of(value: &JsData) -> Value {
                 .map(|(key, item)| (key.as_str(), json_value_of(item)))
                 .collect::<Object>(),
         ),
+    }
+}
+
+fn cell_data_to_js(cell: &NotebookCellData) -> JsData {
+    let mut fields = vec![
+        ("kind".to_owned(), JsData::Num(f64::from(cell.kind.value()))),
+        ("value".to_owned(), JsData::Str(cell.value.clone())),
+        ("languageId".to_owned(), JsData::Str(cell.language_id.clone())),
+    ];
+    if let Some(mime) = &cell.mime {
+        fields.push(("mime".to_owned(), JsData::Str(mime.clone())));
+    }
+    fields.push(("outputs".to_owned(), JsData::Array(cell.outputs.iter().map(output_to_js).collect())));
+    if let Some(metadata) = &cell.metadata {
+        fields.push(("metadata".to_owned(), dynamic_to_js(metadata)));
+    }
+    if let Some(summary) = &cell.execution_summary {
+        fields.push(("executionSummary".to_owned(), dynamic_to_js(summary)));
+    }
+    marked("NotebookCellData", fields)
+}
+
+/// O `vscode.NotebookData` que o `serializeNotebook` da extensão recebe.
+fn notebook_data_to_js(data: &NotebookData) -> JsData {
+    let mut fields = vec![("cells".to_owned(), JsData::Array(data.cells.iter().map(cell_data_to_js).collect()))];
+    if let Some(metadata) = &data.metadata {
+        fields.push(("metadata".to_owned(), dynamic_to_js(metadata)));
+    }
+    marked("NotebookData", fields)
+}
+
+/// `{ [key: string]: boolean }` das opções de conteúdo: só as chaves com valor booleano.
+fn flag_map_of(value: Option<&JsData>) -> Option<HashMap<String, bool>> {
+    match value {
+        Some(JsData::Object(fields)) => Some(fields.iter().filter_map(|(key, item)| opt_bool(Some(item)).map(|flag| (key.clone(), flag))).collect()),
+        _ => None,
+    }
+}
+
+/// `vscode.NotebookDocumentContentOptions`.
+fn content_options_of(value: Option<&JsData>) -> Option<NotebookDocumentContentOptions> {
+    let value = value.filter(|options| !is_nullish(Some(*options)))?;
+    Some(NotebookDocumentContentOptions {
+        transient_outputs: opt_bool(field(value, "transientOutputs")),
+        transient_cell_metadata: flag_map_of(field(value, "transientCellMetadata")),
+        transient_document_metadata: flag_map_of(field(value, "transientDocumentMetadata")),
+        cell_content_metadata: flag_map_of(field(value, "cellContentMetadata")),
+    })
+}
+
+/// Os valores de uma mudança de documento como o `vscode.NotebookDocumentChangeEvent`.
+fn change_event_to_js(api: &NotebookApi, event: &NotebookDocumentChangeEvent) -> JsData {
+    let cell_changes = event
+        .cell_changes
+        .iter()
+        .map(|change| {
+            let mut fields = vec![("cell".to_owned(), api.objects.cell_to_js(&change.cell))];
+            if let Some(document) = &change.document {
+                fields.push(("document".to_owned(), api.text.document_to_js(document)));
+            }
+            if let Some(metadata) = &change.metadata {
+                fields.push(("metadata".to_owned(), dynamic_to_js(metadata)));
+            }
+            if let Some(outputs) = &change.outputs {
+                fields.push(("outputs".to_owned(), JsData::Array(outputs.iter().map(output_to_js).collect())));
+            }
+            if let Some(summary) = &change.execution_summary {
+                fields.push(("executionSummary".to_owned(), dynamic_to_js(summary)));
+            }
+            JsData::Object(fields)
+        })
+        .collect();
+    let content_changes = event
+        .content_changes
+        .iter()
+        .map(|change| {
+            JsData::Object(vec![
+                ("range".to_owned(), notebook_range_fields(&change.range)),
+                ("addedCells".to_owned(), JsData::Array(change.added_cells.iter().map(|cell| api.objects.cell_to_js(cell)).collect())),
+                ("removedCells".to_owned(), JsData::Array(change.removed_cells.iter().map(|cell| api.objects.cell_to_js(cell)).collect())),
+            ])
+        })
+        .collect();
+    let mut fields = vec![("notebook".to_owned(), api.objects.document_to_js(&event.notebook))];
+    if let Some(metadata) = &event.metadata {
+        fields.push(("metadata".to_owned(), dynamic_to_js(metadata)));
+    }
+    fields.push(("cellChanges".to_owned(), JsData::Array(cell_changes)));
+    fields.push(("contentChanges".to_owned(), JsData::Array(content_changes)));
+    JsData::Object(fields)
+}
+
+// ---- o serializador da extensão
+
+/// Adapta o `vscode.NotebookSerializer` da extensão para o motor: `deserializeNotebook` recebe um `Uint8Array` de verdade e
+/// `serializeNotebook` devolve a lista de bytes (o `Uint8Array` não atravessa o motor).
+const SERIALIZER_ADAPTER: &str = "(function (serializer, sink) { sink({ \
+    deserializeNotebook: function (bytes, token) { return serializer.deserializeNotebook(Uint8Array.from(bytes), token); }, \
+    serializeNotebook: function (data, token) { \
+      return Promise.resolve(serializer.serializeNotebook(data, token)).then(function (bytes) { return Array.from(bytes); }); } }); })";
+
+/// O `vscode.NotebookSerializer` da extensão (por referência, com o `this` e os métodos da classe).
+struct JsSerializer {
+    js: JsObjects,
+    events: Rc<EventTables>,
+    /// O adaptador de [`SERIALIZER_ADAPTER`] sobre o serializador.
+    target: JsData,
+}
+
+impl JsSerializer {
+    fn new(js: &JsObjects, events: &Rc<EventTables>, serializer: &Rc<JsHandle>) -> Result<Rc<dyn NotebookSerializer>, String> {
+        let original = JsData::Handle(serializer.clone());
+        for method in ["deserializeNotebook", "serializeNotebook"] {
+            if !js.is_function(&original, method) {
+                return Err(format!("registerNotebookSerializer: o serializador precisa de {method}"));
+            }
+        }
+        let adapter = js.runner().eval(SERIALIZER_ADAPTER, "je-exthost/notebook-serializer.js")?;
+        let target = js.capture(&adapter, &[original])?;
+        Ok(Rc::new(Self { js: js.clone(), events: events.clone(), target }))
+    }
+}
+
+impl NotebookSerializer for JsSerializer {
+    fn deserialize_notebook(&self, content: &[u8], token: CancellationToken) -> MaybePromise<NotebookData> {
+        let args = vec![bytes_to_js(content), self.events.token_to_js(token)];
+        let runner = self.js.runner().clone();
+        convert_maybe(self.js.invoke(&self.target, "deserializeNotebook", args), move |result| match result {
+            JsResult::Single(data) => notebook_data_of(&exported(&runner, &data)).map_err(Error::new),
+            _ => Err(Error::new("deserializeNotebook precisa devolver um NotebookData")),
+        })
+    }
+
+    fn serialize_notebook(&self, data: &NotebookData, token: CancellationToken) -> MaybePromise<Vec<u8>> {
+        let args = vec![notebook_data_to_js(data), self.events.token_to_js(token)];
+        convert_maybe(self.js.invoke(&self.target, "serializeNotebook", args), |result| match result {
+            JsResult::Many(items) => bytes_of(Some(&JsData::Array(items))).map_err(Error::new),
+            _ => Err(Error::new("serializeNotebook precisa devolver um Uint8Array")),
+        })
     }
 }
 
@@ -689,13 +876,67 @@ fn handle_id_of(objects: &NotebookObjects, controller: &Rc<NotebookController>) 
     objects.controllers.borrow().iter().find(|(_, candidate)| NotebookController::ptr_eq(candidate, controller)).map_or(0, |(id, _)| *id)
 }
 
-/// Define as classes nativas `NotebookDocument`, `NotebookCell`, `NotebookController` e `NotebookCellExecution` (protótipos dos objetos que
-/// o host entrega). `text` é a tabela que dá o `vscode.TextDocument` de uma célula.
+/// Define as classes nativas `NotebookDocument`, `NotebookCell`, `NotebookEditor`, `NotebookController` e `NotebookCellExecution` (protótipos
+/// dos objetos que o host entrega). `text` é a tabela que dá o `vscode.TextDocument` de uma célula.
 pub fn define_classes(runner: &NodeRunner, objects: &Rc<NotebookObjects>, text: &Rc<TextObjects>, table: &Rc<DisposableTable>, events: &Rc<EventTables>) {
     define_document(runner, objects);
     define_cell(runner, objects, text);
+    define_editor(runner, objects);
     define_controller(runner, objects, table);
     define_execution(runner, objects, events);
+}
+
+fn define_editor(runner: &NodeRunner, objects: &Rc<NotebookObjects>) {
+    let get = |name: &str, read: fn(&NotebookObjects, &Rc<NotebookEditor>) -> JsData| getter(objects, name, NotebookObjects::editor_of, read);
+    let getters: Vec<(String, MethodCallback)> = vec![
+        get("notebook", |objects, editor| objects.document_to_js(&editor.notebook())),
+        get("selection", |_, editor| editor.selection().map_or(JsData::Undefined, |range| notebook_range_fields(&range))),
+        get("selections", |_, editor| JsData::Array(editor.selections().iter().map(notebook_range_fields).collect())),
+        get("visibleRanges", |_, editor| JsData::Array(editor.visible_ranges().iter().map(notebook_range_fields).collect())),
+        get("viewColumn", |_, editor| editor.view_column().map_or(JsData::Undefined, JsData::Num)),
+    ];
+    let setters: Vec<(String, MethodCallback)> = vec![
+        setter(objects, "selection", NotebookObjects::editor_of, |_, editor, value| {
+            editor.set_selection(notebook_range_of(value)?);
+            Ok(())
+        }),
+        setter(objects, "selections", NotebookObjects::editor_of, |_, editor, value| {
+            let JsData::Array(items) = value else {
+                return Err("NotebookEditor.selections precisa ser uma lista de NotebookRange".to_owned());
+            };
+            editor.set_selections(items.iter().map(notebook_range_of).collect::<Result<Vec<_>, String>>()?);
+            Ok(())
+        }),
+    ];
+    let reveal_objects = objects.clone();
+    let methods: Vec<(String, u32, MethodCallback)> = vec![(
+        "revealRange".to_owned(),
+        2,
+        Rc::new(move |this, args| {
+            let editor = reveal_objects.editor_of(this)?;
+            let range = notebook_range_of(args.first().ok_or("revealRange: falta o intervalo")?)?;
+            let reveal_type = match args.get(1) {
+                Some(value) if !is_nullish(Some(value)) => {
+                    Some(opt_number(Some(value)).and_then(|kind| NotebookEditorRevealType::from_value(kind as i32)).ok_or("revealRange: o tipo precisa ser um NotebookEditorRevealType")?)
+                }
+                _ => None,
+            };
+            editor.reveal_range(&range, reveal_type);
+            Ok(JsData::Undefined)
+        }),
+    )];
+    runner.define_accessor_class(
+        ClassSpec {
+            name: "NotebookEditor".to_owned(),
+            length: 0,
+            construct: Rc::new(|_| Err("NotebookEditor não tem construtor público: use window.showNotebookDocument".to_owned())),
+            methods,
+            getters,
+            statics: vec![],
+            parent: None,
+        },
+        setters,
+    );
 }
 
 // ---- as classes de valor
@@ -892,8 +1133,9 @@ pub fn namespace(runner: &NodeRunner, js: &JsObjects, api: &NotebookApi, table: 
     JsData::Object(members)
 }
 
-/// Os membros de notebook de `vscode.workspace`: os métodos e os acessores que o namespace junta aos demais.
-pub fn workspace_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<DisposableTable>) -> (Vec<(String, u32, MethodCallback)>, Vec<(String, MethodCallback)>) {
+/// Os membros de notebook de `vscode.workspace`: os métodos e os acessores que o namespace junta aos demais, e `registerNotebookSerializer`,
+/// que recebe o serializador da extensão (uma função por referência, própria do namespace).
+pub fn workspace_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<DisposableTable>) -> (Vec<(String, u32, MethodCallback)>, Vec<(String, MethodCallback)>, Vec<(String, JsData)>) {
     let (open_runner, open_api) = (runner.clone(), api.clone());
     let methods: Vec<(String, u32, MethodCallback)> = vec![(
         "openNotebookDocument".to_owned(),
@@ -925,10 +1167,12 @@ pub fn workspace_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<Disp
         }),
     )];
 
-    let list_api = api.clone();
+    let (list_api, change_api) = (api.clone(), api.clone());
     let (open_event_runner, open_event_table, open_event_api) = (runner.clone(), table.clone(), api.clone());
     let (close_event_runner, close_event_table, close_event_api) = (runner.clone(), table.clone(), api.clone());
-    let getters: Vec<(String, MethodCallback)> = vec![
+    let (change_runner, change_table) = (runner.clone(), table.clone());
+    let (save_runner, save_table, save_api) = (runner.clone(), table.clone(), api.clone());
+    let mut getters: Vec<(String, MethodCallback)> = vec![
         (
             "notebookDocuments".to_owned(),
             Rc::new(move |_, _| Ok(JsData::Array(list_api.notebooks.notebook_documents().iter().map(|document| list_api.objects.document_to_js(&document.api_notebook())).collect()))),
@@ -949,6 +1193,168 @@ pub fn workspace_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<Disp
                 Ok(event_function(&close_event_runner, &close_event_table, "onDidCloseNotebookDocument", close_event_api.notebooks.on_did_close_notebook_document(), move |document| {
                     objects.document_to_js(document)
                 }))
+            }),
+        ),
+        (
+            "onDidChangeNotebookDocument".to_owned(),
+            Rc::new(move |_, _| {
+                let api = change_api.clone();
+                Ok(event_function(&change_runner, &change_table, "onDidChangeNotebookDocument", change_api.documents.on_did_change_notebook_document(), move |event| {
+                    change_event_to_js(&api, event)
+                }))
+            }),
+        ),
+        (
+            "onDidSaveNotebookDocument".to_owned(),
+            Rc::new(move |_, _| {
+                let objects = save_api.objects.clone();
+                Ok(event_function(&save_runner, &save_table, "onDidSaveNotebookDocument", save_api.documents.on_did_save_notebook_document(), move |document| {
+                    objects.document_to_js(document)
+                }))
+            }),
+        ),
+    ];
+    if let Some(will_save) = api.will_save.clone() {
+        let (will_runner, will_table, will_api) = (runner.clone(), table.clone(), api.clone());
+        getters.push((
+            "onWillSaveNotebookDocument".to_owned(),
+            Rc::new(move |_, _| Ok(will_save_event(&will_runner, &will_table, &will_api, &will_save))),
+        ));
+    }
+
+    let (register_js, register_table, register_api) = (JsObjects::new(runner), table.clone(), api.clone());
+    let register_serializer = runner.make_function_by_reference(
+        "registerNotebookSerializer",
+        3,
+        Rc::new(move |args| {
+            let notebook_type = string_arg(args, 0, "registerNotebookSerializer: o notebookType")?;
+            let Some(JsData::Handle(serializer)) = args.get(1) else {
+                return Err("registerNotebookSerializer: o serializador precisa ser um objeto".to_owned());
+            };
+            let serializer = JsSerializer::new(&register_js, &register_api.events, serializer)?;
+            // As opções chegam por referência: `exported` as entrega por valor.
+            let options = args.get(2).map(|options| exported(register_js.runner(), options));
+            let registration = register_api
+                .notebooks
+                .register_notebook_serializer(&host_extension(), &notebook_type, serializer, content_options_of(options.as_ref()), None)
+                .map_err(|error| error.message)?;
+            Ok(register_table.to_js(registration))
+        }),
+    );
+    let references = vec![("registerNotebookSerializer".to_owned(), JsData::Handle(Rc::new(register_serializer)))];
+    (methods, getters, references)
+}
+
+/// A função de evento de `onWillSaveNotebookDocument`: o ouvinte recebe `{ notebook, reason, token, waitUntil }`.
+fn will_save_event(runner: &NodeRunner, table: &Rc<DisposableTable>, api: &NotebookApi, will_save: &WillSaveApi) -> JsData {
+    let event = will_save.participant.get_on_will_save_notebook_document_event(&host_extension());
+    let (event_runner, api, edits) = (runner.clone(), api.clone(), will_save.edits.clone());
+    event_function_with_epilogue(runner, table, "onWillSaveNotebookDocument", event, move |event: &NotebookDocumentWillSaveEvent| {
+        // `None` marca o fim do despacho: depois dele `waitUntil` não vale mais.
+        let thenables: Rc<RefCell<Option<Vec<JsData>>>> = Rc::new(RefCell::new(Some(Vec::new())));
+        let collected = thenables.clone();
+        let wait_until = event_runner.make_function(
+            "waitUntil",
+            1,
+            Rc::new(move |args| {
+                let mut slot = collected.borrow_mut();
+                let list = slot.as_mut().ok_or("waitUntil can NOT be called asynchronous")?;
+                list.push(args.first().cloned().unwrap_or(JsData::Undefined));
+                Ok(JsData::Undefined)
+            }),
+        );
+        let payload = JsData::Object(vec![
+            ("notebook".to_owned(), api.objects.document_to_js(&event.notebook)),
+            ("reason".to_owned(), JsData::Num(f64::from(event.reason.value()))),
+            ("token".to_owned(), api.events.token_to_js(event.token.clone())),
+            ("waitUntil".to_owned(), JsData::Handle(Rc::new(wait_until))),
+        ]);
+        let (runner, edits) = (event_runner.clone(), edits.clone());
+        let epilogue = move |event: &NotebookDocumentWillSaveEvent| {
+            for thenable in thenables.borrow_mut().take().unwrap_or_default() {
+                if let Err(error) = event.wait_until(thenable_edit(&runner, &edits, thenable)) {
+                    on_unexpected_error(&error);
+                }
+            }
+        };
+        (payload, epilogue)
+    })
+}
+
+/// `NotebookDocumentShowOptions` da extensão.
+fn show_options_of(value: &JsData) -> Result<NotebookDocumentShowOptions, String> {
+    let selections = match field(value, "selections") {
+        Some(JsData::Array(items)) => Some(items.iter().map(notebook_range_of).collect::<Result<Vec<_>, String>>()?),
+        _ => None,
+    };
+    let as_repl = match field(value, "asRepl") {
+        Some(JsData::Bool(flag)) => Some(NotebookAsRepl::Flag(*flag)),
+        Some(JsData::Str(label)) => Some(NotebookAsRepl::Label(label.clone())),
+        Some(options @ JsData::Object(_)) => Some(NotebookAsRepl::Label(opt_string(field(options, "label")).ok_or("asRepl.label precisa ser texto")?)),
+        _ => None,
+    };
+    Ok(NotebookDocumentShowOptions {
+        view_column: opt_number(field(value, "viewColumn")),
+        preserve_focus: opt_bool(field(value, "preserveFocus")),
+        selections,
+        preview: opt_bool(field(value, "preview")),
+        as_repl,
+    })
+}
+
+/// Os membros de notebook de `vscode.window`: `activeNotebookEditor`, `visibleNotebookEditors`, `showNotebookDocument` e os dois eventos de editor.
+pub fn window_members(runner: &NodeRunner, api: &NotebookApi, table: &Rc<DisposableTable>) -> (Vec<(String, u32, MethodCallback)>, Vec<(String, MethodCallback)>) {
+    let (show_runner, show_api) = (runner.clone(), api.clone());
+    let methods: Vec<(String, u32, MethodCallback)> = vec![(
+        "showNotebookDocument".to_owned(),
+        2,
+        Rc::new(move |_, args| {
+            let document = show_api.objects.document_of(args.first().ok_or("showNotebookDocument: falta o notebook")?)?;
+            let options = match args.get(1) {
+                Some(options) if !is_nullish(Some(options)) => Some(show_options_of(options)?),
+                _ => None,
+            };
+            let objects = show_api.objects.clone();
+            Ok(promise_to_js(&show_runner, show_api.notebooks.show_notebook_document(&document, options), move |editor| objects.editor_to_js(editor)))
+        }),
+    )];
+
+    let (active_api, visible_api) = (api.clone(), api.clone());
+    let (active_runner, active_table, active_event_api) = (runner.clone(), table.clone(), api.clone());
+    let (visible_runner, visible_table, visible_event_api) = (runner.clone(), table.clone(), api.clone());
+    let getters: Vec<(String, MethodCallback)> = vec![
+        (
+            "activeNotebookEditor".to_owned(),
+            Rc::new(move |_, _| Ok(active_api.notebooks.active_notebook_editor().map_or(JsData::Undefined, |editor| active_api.objects.editor_to_js(&editor)))),
+        ),
+        (
+            "visibleNotebookEditors".to_owned(),
+            Rc::new(move |_, _| Ok(JsData::Array(visible_api.notebooks.visible_notebook_editors().iter().map(|editor| visible_api.objects.editor_to_js(editor)).collect()))),
+        ),
+        (
+            "onDidChangeActiveNotebookEditor".to_owned(),
+            Rc::new(move |_, _| {
+                let objects = active_event_api.objects.clone();
+                Ok(event_function(
+                    &active_runner,
+                    &active_table,
+                    "onDidChangeActiveNotebookEditor",
+                    active_event_api.notebooks.on_did_change_active_notebook_editor(),
+                    move |editor: &Option<NotebookEditor>| editor.as_ref().map_or(JsData::Undefined, |editor| objects.editor_to_js(editor)),
+                ))
+            }),
+        ),
+        (
+            "onDidChangeVisibleNotebookEditors".to_owned(),
+            Rc::new(move |_, _| {
+                let objects = visible_event_api.objects.clone();
+                Ok(event_function(
+                    &visible_runner,
+                    &visible_table,
+                    "onDidChangeVisibleNotebookEditors",
+                    visible_event_api.notebooks.on_did_change_visible_notebook_editors(),
+                    move |editors: &Vec<NotebookEditor>| JsData::Array(editors.iter().map(|editor| objects.editor_to_js(editor)).collect()),
+                ))
             }),
         ),
     ];

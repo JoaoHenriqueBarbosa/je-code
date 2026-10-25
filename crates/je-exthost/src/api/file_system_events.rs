@@ -135,7 +135,7 @@ fn files_event(files: JsData) -> JsData {
 
 /// O valor de uma promessa de `waitUntil` como a `WorkspaceEdit` que ela devolve (`None` para qualquer outro valor, que o original
 /// ignora; uma promessa rejeitada rejeita o participante).
-fn thenable_edit(runner: &NodeRunner, edits: &Rc<WorkspaceEditObjects>, value: JsData) -> Promise<Option<WorkspaceEdit>> {
+pub(crate) fn thenable_edit(runner: &NodeRunner, edits: &Rc<WorkspaceEditObjects>, value: JsData) -> Promise<Option<WorkspaceEdit>> {
     let edits = edits.clone();
     let JsData::Handle(thenable) = &value else { return Promise::resolved(edits.resolved_edit(&value)) };
     let (promise, resolver) = Promise::<JsData>::new();

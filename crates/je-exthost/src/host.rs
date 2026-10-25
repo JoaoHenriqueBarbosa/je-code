@@ -14,6 +14,7 @@ use je_platform::log::{LogServiceRef, NullLogService};
 use je_platform::request::request::{AuthInfo, Credentials};
 use je_platform::resources::ext_uri;
 use je_workbench::api::common::ext_host_notebook::{ExtHostNotebookController, IExtHostConsumerFileSystem};
+use je_workbench::api::common::ext_host_notebook_document_save_participant::ExtHostNotebookDocumentSaveParticipant;
 use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
 use je_workbench::api::common::ext_host_notebook_kernels::ExtHostNotebookKernels;
 use je_workbench::api::browser::main_thread_commands::MainThreadCommands;
@@ -41,7 +42,7 @@ use je_workbench::api::common::ext_host_output::ExtHostOutputService;
 use je_workbench::api::common::ext_host_progress::ExtHostProgress;
 use je_workbench::api::common::ext_host_protocol::{
     CreateDocumentOptions, ExtHostAuthenticationShape, ExtHostCommandsShape, ExtHostCommentsShape, ExtHostConfigurationShape, ExtHostContext, ExtHostDiagnosticsShape, ExtHostDocumentsAndEditorsShape, ExtHostDocumentsShape,
-    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
+    ExtHostEditorsShape, ExtHostEditorTabsShape, ExtHostFileSystemEventServiceShape, ExtHostFileSystemShape, ExtHostLanguageFeaturesShape, ExtHostLanguagesShape, ExtHostNotebookDocumentSaveParticipantShape, ExtHostNotebookDocumentsShape, ExtHostNotebookKernelsShape,
     ExtHostNotebookShape, ExtHostOutputServiceShape, ExtHostProgressShape, ExtHostQuickOpenShape, ExtHostSCMShape,
     ExtHostStatusBarShape, ExtHostTerminalServiceShape, ExtHostTreeViewsShape, ExtHostWorkspaceShape,
     ICommandMetadataDto, IExtHostTelemetry, IMainContext, MainContext, MainThreadDocumentsShape, MainThreadTelemetryShape, OpenDocumentOptions,
@@ -65,7 +66,7 @@ use je_workbench::api::common::ext_host_storage::{ExtHostSecretState, ExtHostSto
 use crate::api::events::EventTables;
 use crate::api::extensions::ExtensionServiceSlot;
 use crate::api::languages::{LanguagesServices, LanguagesState};
-use crate::api::notebooks::NotebookApi;
+use crate::api::notebooks::{NotebookApi, WillSaveApi};
 use crate::api::text_editors::{TextEditorApi, TextEditorServices};
 use crate::api::window::{WindowServices, WindowState};
 use crate::api::workspace::WorkspaceServices;
@@ -451,8 +452,20 @@ impl ExtensionHost {
                     );
                     let controller_shape: Rc<dyn ExtHostNotebookShape> = controller.clone();
                     late.notebook.0.bind(controller_shape);
-                    let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = ExtHostNotebookDocuments::new(controller.clone());
+                    let documents = ExtHostNotebookDocuments::new(controller.clone());
+                    let documents_shape: Rc<dyn ExtHostNotebookDocumentsShape> = documents.clone();
                     late.notebook_documents.0.bind(documents_shape);
+                    // O `onWillSaveNotebookDocument` aplica as edições que os ouvintes devolvem: pede o cliente `MainThreadBulkEdits`.
+                    let will_save = bulk_edits.as_ref().map(|(_, edits)| {
+                        let participant = Rc::new(ExtHostNotebookDocumentSaveParticipant::new(
+                            log_service.clone(),
+                            controller.clone(),
+                            bridged_ref.get_proxy(&MainContext::MAIN_THREAD_BULK_EDITS),
+                        ));
+                        let participant_shape: Rc<dyn ExtHostNotebookDocumentSaveParticipantShape> = participant.clone();
+                        late.notebook_save_participant.0.bind(participant_shape);
+                        WillSaveApi { participant, edits: edits.clone() }
+                    });
                     let kernels = provided(MainContext::MAIN_THREAD_NOTEBOOK_KERNELS.sid)
                         .then(|| ExtHostNotebookKernels::new(bridged_ref, controller.clone(), &commands, log_service.clone()))
                         .and_then(|kernels| match kernels {
@@ -466,7 +479,15 @@ impl ExtensionHost {
                                 None
                             }
                         });
-                    Some(NotebookApi { notebooks: controller, kernels, objects: notebook_objects.clone(), events: event_tables.clone() })
+                    Some(NotebookApi {
+                        notebooks: controller,
+                        documents,
+                        will_save,
+                        kernels,
+                        objects: notebook_objects.clone(),
+                        events: event_tables.clone(),
+                        text: window_state.text_objects.clone(),
+                    })
                 }
                 _ => None,
             };
@@ -694,6 +715,7 @@ impl ExtensionHost {
                 || bridged.terminal.is_some()
                 || bridged.tree_views.is_some()
                 || text_editor_api.is_some()
+                || notebook_api.is_some()
             {
                 let window_services = Rc::new(WindowServices {
                     message_service,
@@ -706,6 +728,7 @@ impl ExtensionHost {
                     tree_views: bridged.tree_views.clone(),
                     text_editors: text_editor_api,
                     tabs: tabs_api,
+                    notebooks: notebook_api.clone(),
                 });
                 members.push(("window".to_owned(), window::namespace(runner, window_services, &table, &event_tables, &window_state)));
             }
