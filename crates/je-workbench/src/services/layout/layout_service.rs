@@ -676,6 +676,8 @@ pub trait LayoutPart {
     fn get_id(&self) -> String;
 }
 
+je_instantiation::service_id!(pub I_WORKBENCH_LAYOUT_SERVICE: dyn IWorkbenchLayoutService = "layoutService");
+
 /// `IWorkbenchLayoutService`.
 pub trait IWorkbenchLayoutService: ILayoutService {
     /// Emits when the zen mode is enabled or disabled.
