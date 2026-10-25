@@ -8,9 +8,9 @@
 //! `on_toggle_key_down(key, false)`; `aria-expanded` é o `aria_expanded` da visão do controle; `document.activeElement === toggle` é
 //! `is_toggle_focused`; `toggle.isConnected` é o controle continuar entre os controles atuais da feature (o mesmo `Rc`). O
 //! `container` é o nó raiz de um `Ui`. Os serviços são os do `createCodeEditorServices` do porte mais os que o widget pede (chaves de
-//! contexto e atalhos de teste, sinais de acessibilidade, progresso, provedor de diff, tema de cores). O widget é o completo, com as
-//! sete features reais (`DiffEditorFeaturesImpl`); só entram dublês para o que mora fora do `je-editor` ou ainda não foi portado: a
-//! barra de ações da calha (`MenuWorkbenchToolBar`, do `je-workbench`) e o `DiffEditorViewZones`.
+//! contexto e atalhos de teste, sinais de acessibilidade, progresso, provedor de diff, tema de cores, área de transferência e menu de
+//! contexto). O widget é o completo, com as sete features reais (`DiffEditorFeaturesImpl`); só entra dublê para o que mora fora do
+//! `je-editor`: a barra de ações da calha (`MenuWorkbenchToolBar`, do `je-workbench`).
 //!
 //! Notas de tradução:
 //! - O `deepStrictEqual` sobre objetos vira a comparação de tuplas de campos, na ordem do objeto do original.
@@ -31,7 +31,6 @@ use std::rc::Rc;
 use je_base::dynamic::Dynamic;
 use je_base::event::Event;
 use je_base::lifecycle::{IDisposable, RefCounted, to_disposable};
-use je_base::observable::{IObservable, const_observable};
 use je_base::promise::Thenable;
 use je_editor::code_action::platform::{
     I_ACCESSIBILITY_SIGNAL_SERVICE, I_EDITOR_PROGRESS_SERVICE, IAccessibilitySignalService, IEditorProgressService, IProgressIndicator,
@@ -41,25 +40,26 @@ use je_editor::code_editor_widget::CodeEditorWidgetOptions;
 use je_editor::core_2d::dimension::Dimension;
 use je_editor::diff_editor::components::diff_editor_editors::{CreateInnerEditor, DiffEditorSide};
 use je_editor::diff_editor::delegating_editor_impl::DelegatingEditor;
-use je_editor::diff_editor::diff_editor_features::{CreateDiffEditorViewZones, DiffEditorFeaturesImpl};
+use je_editor::diff_editor::diff_editor_features::DiffEditorFeaturesImpl;
 use je_editor::diff_editor::diff_editor_widget::{DiffEditorWidget, DiffEditorWidgetArgs};
-use je_editor::diff_editor::feature_contracts::{DiffEditorFeatureContext, IDiffEditorViewZones, IsUpdatingViewZones, ObservableViewZonePair};
 use je_editor::diff_editor::features::gutter_feature::{DiffGutterToolbarFactory, DiffGutterToolbarRequest, IDiffGutterToolbar};
 use je_editor::diff_editor::features::hide_unchanged_regions_feature::HiddenLinesOverlay;
 use je_editor::diff_editor::DiffCodeEditorWidgetOptions;
 use je_editor::diff_editor_options::DiffEditorVariant;
-use je_editor::diff_editor_utils::ViewZoneIdSet;
 use je_editor::diff_editor_view_model::DiffEditorModel;
 use je_editor::diff_provider_factory_service::{I_DIFF_PROVIDER_FACTORY_SERVICE, IDiffProviderFactoryService};
 use je_editor::model::RelaxedTextModelCreationOptions;
 use je_editor::multi_diff_editor::diff_editor_surface::IDiffEditorWidget;
+use je_editor::services::clipboard_service::{I_CLIPBOARD_SERVICE, IClipboardService};
 use je_editor::services::theme_service::{I_THEME_SERVICE, IThemeService};
 use je_instantiation::ServiceCollection;
 use je_platform::contextkey::{I_CONTEXT_KEY_SERVICE, IContextKeyService, IContextKeyServiceTarget};
+use je_platform::contextview::context_view::{ContextMenuRequest, I_CONTEXT_MENU_SERVICE, IContextMenuService};
 use je_platform::keybinding::keybinding::{I_KEYBINDING_SERVICE, IKeybindingService};
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
 use je_ui::Ui;
 use support::inline_completions_test_utils::{MockKeybindingService, SilentAccessibilitySignalService};
+use support::test_clipboard_service::TestClipboardService;
 use support::test_code_editor::{TestCodeEditor, create_code_editor_services, instantiate_test_code_editor_with_configuration};
 use support::test_color_theme_service::TestThemeService;
 use support::test_configuration::{StyledTestEnvironment, TestConfiguration};
@@ -256,17 +256,19 @@ impl IProgressIndicator for TestEditorProgressService {
 
 impl IEditorProgressService for TestEditorProgressService {}
 
-/// O dublê do `DiffEditorViewZones`, que ainda não foi portado (ver `je_editor::diff_editor`): sem zonas.
-struct InertViewZones;
+/// O `IContextMenuService` do teste: nenhum caso abre o menu da lâmpada do código apagado, e nenhum evento dispara.
+struct TestContextMenuService;
 
-impl IDisposable for InertViewZones {
-    fn dispose(&self) {}
-}
-
-impl IDiffEditorViewZones for InertViewZones {
-    fn view_zones(&self) -> IObservable<Rc<ObservableViewZonePair>> {
-        const_observable(Rc::new(ObservableViewZonePair { orig: Vec::new(), modified: Vec::new() }))
+impl IContextMenuService for TestContextMenuService {
+    fn on_did_show_context_menu(&self) -> Event<()> {
+        Event::none()
     }
+
+    fn on_did_hide_context_menu(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn show_context_menu(&self, _request: ContextMenuRequest) {}
 }
 
 /// O dublê da barra de ações da calha (o `MenuWorkbenchToolBar` mora no `je-workbench`): sem botões.
@@ -285,18 +287,11 @@ impl IDiffGutterToolbar for EmptyGutterToolbar {
     }
 }
 
-/// As features do widget: as sete são as reais (`DiffEditorFeaturesImpl`), menos o `DiffEditorViewZones` e a barra da calha.
+/// As features do widget: as sete são as reais (`DiffEditorFeaturesImpl`), menos a barra da calha.
 fn create_features() -> Rc<DiffEditorFeaturesImpl> {
     let create_gutter_toolbar: DiffGutterToolbarFactory =
         Rc::new(|_request: DiffGutterToolbarRequest| -> Rc<dyn IDiffGutterToolbar> { Rc::new(EmptyGutterToolbar) });
-    let create_view_zones: CreateDiffEditorViewZones = Rc::new(
-        |_context: &DiffEditorFeatureContext,
-         _is_updating_view_zones: IsUpdatingViewZones,
-         _orig_view_zone_ids_to_ignore: ViewZoneIdSet,
-         _mod_view_zone_ids_to_ignore: ViewZoneIdSet|
-         -> Rc<dyn IDiffEditorViewZones> { Rc::new(InertViewZones) },
-    );
-    DiffEditorFeaturesImpl::new(create_gutter_toolbar, create_view_zones)
+    DiffEditorFeaturesImpl::new(create_gutter_toolbar)
 }
 
 /// O corpo de `compact disclosures expand and collapse with a persistent keyboard target (side by side: ${renderSideBySide})`.
@@ -320,6 +315,10 @@ fn compact_disclosures_expand_and_collapse_with_a_persistent_keyboard_target(ren
         collection.set(I_THEME_SERVICE, theme_service);
         let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(MockKeybindingService);
         collection.set(I_KEYBINDING_SERVICE, keybinding_service);
+        let clipboard_service: Rc<dyn IClipboardService> = Rc::new(TestClipboardService::new());
+        collection.set(I_CLIPBOARD_SERVICE, clipboard_service);
+        let context_menu_service: Rc<dyn IContextMenuService> = Rc::new(TestContextMenuService);
+        collection.set(I_CONTEXT_MENU_SERVICE, context_menu_service);
         let services = create_code_editor_services(&disposables.store(), Some(collection));
 
         let mut lines: Vec<String> = (0..40).map(|i| format!("const value{i} = {i};")).collect();

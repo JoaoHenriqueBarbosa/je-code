@@ -1,11 +1,15 @@
 //! Utilitários do editor de diff (`src/vs/editor/browser/widget/diffEditor/utils.ts`) que os view models, os componentes e o widget
 //! usam: `filterWithPrevious`, `applyObservableDecorations`, `ObservableElementSizeObserver`, `IObservableViewZone`,
 //! `applyViewZones` e `translatePosition`, mais os que as features da fatia 3 usam: `PlaceholderViewZone`, `ManagedOverlayWidget` e
-//! `ViewZoneOverlayWidget`. O `RefCounted` do mesmo arquivo vive em `je_base::lifecycle` ao lado do `RefCountedDisposable`. O restante
-//! do arquivo (`animatedObservable`, `deepMerge`...) pertence às features do editor de diff que ainda faltam (fatia 3b) e entra com
-//! elas.
+//! `ViewZoneOverlayWidget`, e os que o `DiffEditorViewZones` usa: `joinCombine` e `animatedObservable`. O `RefCounted` do mesmo arquivo
+//! vive em `je_base::lifecycle` ao lado do `RefCountedDisposable`. O restante do arquivo (`deepMerge`...) pertence às features do editor
+//! de diff que ainda faltam e entra com elas.
 //!
 //! Divergências:
+//! - **`animatedObservable`** troca o `window.requestAnimationFrame` pelo [`CodeWindow::request_animation_frame`], que não tem
+//!   cancelamento: cada pedido leva o número da geração corrente e o `cancelAnimationFrame` é incrementá-la, de modo que o quadro já
+//!   pedido não faz nada. O `Date.now()` é [`runtime::date_now`], o relógio que os testes falsificam.
+//! - **`joinCombine`** devolve sempre um `Vec` novo (o original devolve o próprio array de entrada quando o outro está vazio).
 //! - **`ObservableElementSizeObserver`** recebe o `Option<Rc<dyn ReferenceDomElement>>` do [`ElementSizeObserver`] no lugar do
 //!   `HTMLElement | null`. O `observe(dimension)` do original só repassa ao `ElementSizeObserver` (e uma função de repasse não
 //!   existe neste projeto), então o observador interno é o campo público
@@ -31,9 +35,11 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use je_base::browser::dom::CodeWindow;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::observable::base::ObservableRef;
-use je_base::observable::observables::observable_value::{ObservableValue, observable_value_owned};
+use je_base::observable::observables::observable_value::{ObservableValue, observable_value, observable_value_owned};
+use je_base::runtime;
 use je_base::observable::change_tracker::FnChangeTracker;
 use je_base::observable::{
     AnyObservable, DebugNameOptions, DebugOwner, DerivedOptions, IObservable, IReader, Observable, SettableExt, StrictEquals, autorun,
@@ -49,6 +55,38 @@ use crate::model::ModelDeltaDecoration;
 use crate::position::Position;
 use crate::position_to_offset::TextLength;
 use crate::range::Range;
+
+/// `joinCombine(arr1, arr2, keySelector, combine)`: junta duas listas ordenadas pela chave, combinando os elementos de mesma chave.
+pub fn join_combine<T: Clone>(arr1: &[T], arr2: &[T], key_selector: impl Fn(&T) -> i32, combine: impl Fn(&T, &T) -> T) -> Vec<T> {
+    if arr1.is_empty() {
+        return arr2.to_vec();
+    }
+    if arr2.is_empty() {
+        return arr1.to_vec();
+    }
+
+    let mut result: Vec<T> = Vec::with_capacity(arr1.len() + arr2.len());
+    let (mut i, mut j) = (0_usize, 0_usize);
+    while i < arr1.len() && j < arr2.len() {
+        let (val1, val2) = (&arr1[i], &arr2[j]);
+        let (key1, key2) = (key_selector(val1), key_selector(val2));
+
+        if key1 < key2 {
+            result.push(val1.clone());
+            i += 1;
+        } else if key1 > key2 {
+            result.push(val2.clone());
+            j += 1;
+        } else {
+            result.push(combine(val1, val2));
+            i += 1;
+            j += 1;
+        }
+    }
+    result.extend_from_slice(&arr1[i..]);
+    result.extend_from_slice(&arr2[j..]);
+    result
+}
 
 /// `filterWithPrevious(arr, filter)`: filtra os elementos dando a cada um o elemento anterior da lista original (e não o anterior
 /// que passou no filtro).
@@ -263,6 +301,116 @@ pub fn apply_view_zones(
     }
 
     store
+}
+
+/// A duração da animação de `animatedObservable`.
+const ANIMATION_DURATION_MS: f64 = 300.0;
+
+/// `easeOutExpo(t, b, c, d)`.
+fn ease_out_expo(t: f64, b: f64, c: f64, d: f64) -> f64 {
+    if t == d { b + c } else { c * (-(2.0_f64.powf(-10.0 * t / d)) + 1.0) + b }
+}
+
+/// O estado da animação de [`animated_observable`] (as variáveis `targetVal`, `startVal`, `curVal`, `animationStartMs` e
+/// `animationFrame` do original).
+struct ValueAnimator {
+    window: Rc<CodeWindow>,
+    result: Rc<ObservableValue<f64, ()>>,
+    target_val: Cell<f64>,
+    start_val: Cell<f64>,
+    cur_val: Cell<f64>,
+    animation_start_ms: Cell<f64>,
+    /// A geração do quadro pedido; `cancelAnimationFrame` é incrementá-la.
+    frame_generation: Cell<u64>,
+}
+
+impl ValueAnimator {
+    /// `window.cancelAnimationFrame(animationFrame)`.
+    fn cancel_frame(&self) {
+        self.frame_generation.set(self.frame_generation.get() + 1);
+    }
+
+    /// O corpo do autorun `update value`, depois de o observável base ter sido lido.
+    fn retarget(self: &Rc<Self>, new_target: f64, animate: bool) {
+        self.cancel_frame();
+
+        self.start_val.set(self.cur_val.get());
+        self.target_val.set(new_target);
+        let now = runtime::date_now() as f64;
+        if self.start_val.get() == self.target_val.get() {
+            // No change, no animation
+            self.animation_start_ms.set(now - ANIMATION_DURATION_MS);
+        } else {
+            self.animation_start_ms.set(now - if animate { 0.0 } else { ANIMATION_DURATION_MS });
+        }
+
+        self.update();
+    }
+
+    /// `update()`.
+    fn update(self: &Rc<Self>) {
+        let passed_ms = runtime::date_now() as f64 - self.animation_start_ms.get();
+        let (start, target) = (self.start_val.get(), self.target_val.get());
+        self.cur_val.set(ease_out_expo(passed_ms, start, target - start, ANIMATION_DURATION_MS).floor());
+
+        if passed_ms < ANIMATION_DURATION_MS {
+            let (this, generation) = (Rc::downgrade(self), self.frame_generation.get());
+            self.window.request_animation_frame(move || {
+                if let Some(this) = this.upgrade() {
+                    if this.frame_generation.get() == generation {
+                        this.update();
+                    }
+                }
+            });
+        } else {
+            self.cur_val.set(target);
+        }
+
+        self.result.set(self.cur_val.get(), None);
+    }
+}
+
+/// `animatedObservable(targetWindow, base, store)`: segue `base` animando a mudança em 300 ms (`easeOutExpo`) quando a mudança vem
+/// marcada com `true`; sem a marca, o valor salta direto.
+pub fn animated_observable(target_window: &Rc<CodeWindow>, base: &Rc<ObservableValue<f64, bool>>, store: &DisposableStore) -> IObservable<f64> {
+    let target_val = base.get();
+    let result: Rc<ObservableValue<f64, ()>> = observable_value("animatedValue", target_val);
+    let animator = Rc::new(ValueAnimator {
+        window: target_window.clone(),
+        result: result.clone(),
+        target_val: Cell::new(target_val),
+        start_val: Cell::new(target_val),
+        cur_val: Cell::new(target_val),
+        animation_start_ms: Cell::new(-1.0),
+        frame_generation: Cell::new(0),
+    });
+
+    let change_tracker = FnChangeTracker::<Cell<bool>>::new(
+        |_| Cell::new(false),
+        {
+            let base = base.clone();
+            move |ctx, summary| {
+                if ctx.did_change(&*base) {
+                    summary.set(summary.get() || ctx.change::<bool>().copied().unwrap_or(false));
+                }
+                true
+            }
+        },
+    );
+    {
+        let (animator, base) = (animator.clone(), base.clone());
+        store.add(autorun_handle_changes(DebugNameOptions::named("update value"), change_tracker, move |reader, summary: &Cell<bool>| {
+            // update value
+            let target = base.read(reader);
+            animator.retarget(target, summary.get());
+        }));
+    }
+    {
+        let animator = animator.clone();
+        store.add(to_disposable(move || animator.cancel_frame()));
+    }
+
+    result.to_observable()
 }
 
 /// O `domNode` de uma [`PlaceholderViewZone`] (um `div` vazio): o dado que o pintor recupera de [`IViewZone::dom_node`] por `downcast`.

@@ -20,9 +20,10 @@
 //! `selectedDiffs` do `RevertButtonsFeature` ([`features::revert_buttons_feature::selected_diffs_observable`]) é compartilhado com a
 //! calha.
 //!
-//! Em parte: o `components/diffEditorViewZones/` ([`components::diff_editor_view_zones`]) tem o `renderLines.ts`,
-//! `inlineDiffDeletedCodeMargin.ts` e `copySelection.ts`. Ainda não portado: o `diffEditorViewZones.ts` (`DiffEditorViewZones`); a
-//! criação dele é o parâmetro [`diff_editor_features::CreateDiffEditorViewZones`] da implementação do contrato, que some com a parte 2.
+//! O `components/diffEditorViewZones/` ([`components::diff_editor_view_zones`]) está completo: `renderLines.ts`,
+//! `inlineDiffDeletedCodeMargin.ts`, `copySelection.ts` e `diffEditorViewZones.ts` (`DiffEditorViewZones`), que o
+//! [`diff_editor_features::DiffEditorFeaturesImpl`] cria direto pelo serviço de instanciação, como o widget faz. O `utils.ts` ganhou
+//! o `joinCombine` e o `animatedObservable` ([`crate::diff_editor_utils`]).
 //!
 //! Onde ficam os arquivos `diff_editor_*` que já existiam em `crates/je-editor/src/`: `diff_editor_options`, `diff_editor_utils`,
 //! `diff_editor_view_model` e `diff_provider_factory_service` continuam onde estão, porque outros
