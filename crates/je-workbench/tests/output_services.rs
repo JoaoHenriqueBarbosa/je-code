@@ -217,25 +217,26 @@ fn new_fixture() -> Fixture {
         TestTextResourcePropertiesService::new(configuration_service),
         undo_redo_service.clone(),
     ));
-    let logger_service: Rc<dyn LoggerService> = guard.add_rc(TestLoggerService::new(None));
+    let logger_service = guard.add_rc(TestLoggerService::new(None));
+    let logger_service: Rc<dyn LoggerService> = logger_service;
     let services = OutputServiceServices {
         channel_model: OutputChannelModelServices {
-            file_service: guard.add_rc(TestFileService::new()),
+            file_service: { let concrete = guard.add_rc(TestFileService::new()); concrete },
             model_service,
             log_service: NullLogService::shared(),
             logger_service,
             editor_worker_service: Rc::new(UnusedEditorWorkerService),
             undo_redo_service,
         },
-        storage_service: guard.add_rc(InMemoryStorageService::new()),
+        storage_service: { let storage = guard.add_rc(InMemoryStorageService::new()); Rc::new(storage) },
         text_model_service: Rc::new(TestTextModelService),
-        lifecycle_service: guard.add_rc(TestLifecycleService::new()),
+        lifecycle_service: { let concrete = guard.add_rc(TestLifecycleService::new()); concrete },
         views_service: Rc::new(TestViewsService),
-        context_key_service: guard.add_rc(MockContextKeyService::new()),
+        context_key_service: { let concrete = guard.add_rc(MockContextKeyService::new()); concrete },
         default_log_levels_service: Rc::new(TestDefaultLogLevelsService),
         file_dialog_service: Rc::new(UnusedFileDialogService),
         environment_service: TestEnvironmentService::new(),
-        language_service: guard.add_rc(LanguageService::new(false)),
+        language_service: { let concrete = guard.add_rc(LanguageService::new(false)); concrete },
         context_service: TestContextService::new(Some(new_test_workspace("output-test", Vec::new(), None, None)), None),
         language_features_service: Rc::new(LanguageFeaturesService::new()),
     };
