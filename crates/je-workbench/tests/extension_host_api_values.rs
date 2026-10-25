@@ -184,7 +184,7 @@ fn theme_icon_and_theme_color_are_classes_with_the_original_members() {
 fn markdown_string_and_snippet_string_append_methods_change_the_receiver_and_chain() {
     run_extension(EXTENSION_SOURCE, setup, |workbench, ()| {
         let strings = workbench.execute("t.strings", Vec::new());
-        assert_eq!(text(&strings, "markdown"), "# t a\\*b **x**\n```rs\nlet x;\n```\n", "appendText escapa o markdown, appendMarkdown não, appendCodeblock cerca o código");
+        assert_eq!(text(&strings, "markdown"), "# t&nbsp;a\\*b **x**\n```rs\nlet x;\n```\n", "appendText escapa o markdown, appendMarkdown não, appendCodeblock cerca o código");
         assert_eq!(strings.get_str("markdownChains"), Dynamic::Bool(true), "os métodos devolvem this");
         assert_eq!(text(&strings, "bare"), "\n```\ny\n```\n", "a linguagem padrão é vazia");
         assert_eq!(strings.get_str("markdownIsInstance"), Dynamic::Bool(true));

@@ -214,7 +214,7 @@ fn on_did_change_model_decorations() {
             *flag.borrow_mut() = true;
         }));
 
-        view_model.model.delta_decorations(&[], &test_decoration());
+        view_model.model.delta_decorations(&[], &test_decoration(), 0);
 
         assert!(*invoked.borrow());
 
