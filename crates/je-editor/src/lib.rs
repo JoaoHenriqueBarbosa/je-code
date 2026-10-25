@@ -75,6 +75,8 @@ pub mod text_model_events;
 pub mod text_model_guides;
 pub mod text_model_search;
 pub mod text_model_tokens;
+pub mod text_model_text;
+pub mod position_offset_transformer_with_text_model;
 pub mod text_to_html_tokenizer;
 pub mod tokenization_registry;
 pub mod tokenization_text_model_part;
