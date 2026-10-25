@@ -1,8 +1,8 @@
 //! Porte parcial de `src/vs/editor/browser/editorBrowser.ts`: o `MouseTargetType`, as interfaces de alvo do
 //! mouse (`IBaseMouseTarget` e derivadas, o union `IMouseTarget`) e `IEditorMouseEvent` /
-//! `IPartialEditorMouseEvent`, e os widgets de conteúdo e de overlay (`IContentWidget`, `IOverlayWidget` e as
-//! posições). O resto do arquivo (`IEditor`, `ICodeEditor`, `IDiffEditor`, widgets de margem de glifos,
-//! `IPasteEvent` e afins) não está aqui.
+//! `IPartialEditorMouseEvent`, os widgets de conteúdo e de overlay (`IContentWidget`, `IOverlayWidget` e as
+//! posições) e as view zones (`IViewZone`, `IViewZoneChangeAccessor`). O resto do arquivo (`IEditor`, `ICodeEditor`,
+//! `IDiffEditor`, widgets de margem de glifos, `IPasteEvent` e afins) não está aqui.
 //!
 //! Divergências:
 //! - O union `IMouseTarget` vira o enum `MouseTarget`, com um struct de dados por variante. Os campos que a
@@ -12,7 +12,8 @@
 //!   (os métodos `new` conferem que ele é um dos tipos permitidos). Os campos comuns de `IBaseMouseTarget`
 //!   são lidos por `MouseTarget::element`, `position`, `mouse_column` e `range`.
 //! - `element: HTMLElement | null` vira `Option<ElementId>`, identificador opaco: não há DOM.
-//! - `IMouseEvent` (`vs/base/browser/mouseEvent.ts`) vira `MouseEvent`, com os campos que o código e os testes
+//! - `IMouseEvent` (`vs/base/browser/mouseEvent.ts`) vira `MouseEvent`, e `IMouseWheelEvent` vira `MouseWheelEvent` (o
+//!   evento mais `wheelDelta*`, `delta*` e `deltaMode`), com os campos que o código e os testes
 //!   leem (`leftButton`, `middleButton`, `rightButton`, `buttons`, `target`, `detail`, `posx`, `posy`, os
 //!   quatro modificadores, `timestamp`, `defaultPrevented`). `browserEvent` (o `MouseEvent` do navegador)
 //!   não existe; `preventDefault` e `stopPropagation` ficam para quando o despacho de eventos for portado.
@@ -21,6 +22,9 @@
 //! - `InjectedText` é o de `model_line_projection_data` e `GlyphMarginLane` o de `model`.
 //! - Os widgets de conteúdo e de overlay não têm `getDomNode()`: a UI é uma árvore nativa, e o dono do widget o
 //!   desenha. As propriedades opcionais da interface são métodos com valor padrão.
+
+use std::any::Any;
+use std::rc::Rc;
 
 use je_base::event::Event;
 
@@ -386,6 +390,20 @@ pub struct MouseEvent {
     pub default_prevented: bool,
 }
 
+/// `IMouseWheelEvent` de `vs/base/browser/mouseEvent.ts` (`extends MouseEvent`): o evento de mouse mais os campos da
+/// roda.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MouseWheelEvent {
+    pub event: MouseEvent,
+    pub wheel_delta: f64,
+    pub wheel_delta_x: f64,
+    pub wheel_delta_y: f64,
+    pub delta_x: f64,
+    pub delta_y: f64,
+    pub delta_z: f64,
+    pub delta_mode: u32,
+}
+
 /// A mouse event originating from the editor (`IEditorMouseEvent`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct EditorMouseEvent {
@@ -528,6 +546,98 @@ pub trait IOverlayWidget {
     fn get_min_content_width_in_px(&self) -> Option<f64> {
         None
     }
+}
+
+// #endregion
+
+// #region View zones
+
+/// `IViewZone`: um retângulo inserido entre as linhas do editor (diffs, peek de implementação...). Os campos
+/// opcionais da interface são métodos com valor padrão; os campos que quem cria a zona muda depois de adicioná-la
+/// (`afterLineNumber`, `heightInLines`...) são lidos a cada chamada, então o dono os guarda em `Cell` e chama
+/// `layoutZone`. `onDomNodeTop` e `onComputedHeight` são métodos que não fazem nada por padrão (o `typeof === 'function'`
+/// do original).
+///
+/// Sem DOM, o `domNode` e o `marginDomNode` do original são o dado que o pintor nativo lê: [`IViewZone::dom_node`]
+/// devolve um valor que o pintor recupera por `downcast` para o tipo concreto do dono da zona.
+pub trait IViewZone {
+    /// `afterLineNumber`: the line number after which this zone should appear. Use 0 to place a view zone before
+    /// the first line number.
+    fn after_line_number(&self) -> i32;
+
+    /// `afterColumn`: the column after which this zone should appear. If not set, the maxLineColumn of
+    /// `afterLineNumber` will be used. This is relevant for wrapped lines.
+    fn after_column(&self) -> Option<i32> {
+        None
+    }
+
+    /// `afterColumnAffinity`: if the `afterColumn` has multiple view columns, the affinity specifies which one to use.
+    fn after_column_affinity(&self) -> Option<PositionAffinity> {
+        None
+    }
+
+    /// `showInHiddenAreas`: render the zone even when its line is hidden.
+    fn show_in_hidden_areas(&self) -> bool {
+        false
+    }
+
+    /// `ordinal`: tiebreaker that is used when multiple view zones want to be after the same line. Defaults to
+    /// `afterColumn` otherwise 10000.
+    fn ordinal(&self) -> Option<i32> {
+        None
+    }
+
+    /// `suppressMouseDown`: suppress mouse down events (quem trata o mouse não deixa o evento passar da zona).
+    fn suppress_mouse_down(&self) -> bool {
+        false
+    }
+
+    /// `heightInLines`: the height in lines of the view zone. If specified, `heightInPx` will be used instead of
+    /// this. If neither `heightInPx` nor `heightInLines` is specified, a default of 1 line is chosen.
+    fn height_in_lines(&self) -> Option<f64> {
+        None
+    }
+
+    /// `heightInPx`: the height in px of the view zone. If this is set, the editor gives preference to it rather
+    /// than `heightInLines`.
+    fn height_in_px(&self) -> Option<f64> {
+        None
+    }
+
+    /// `minWidthInPx`: the minimum width in px of the view zone. If this is set, the editor will ensure that the
+    /// scroll width is >= than this value.
+    fn min_width_in_px(&self) -> Option<f64> {
+        None
+    }
+
+    /// `domNode`: o dado que o pintor nativo lê para desenhar a zona na área do conteúdo.
+    fn dom_node(&self) -> Rc<dyn Any>;
+
+    /// `marginDomNode`: o dado opcional que o pintor lê para desenhar a zona na margem.
+    fn margin_dom_node(&self) -> Option<Rc<dyn Any>> {
+        None
+    }
+
+    /// `onDomNodeTop`: callback which gives the relative top of the view zone as it appears (taking scrolling into
+    /// account).
+    fn on_dom_node_top(&self, _top: f64) {}
+
+    /// `onComputedHeight`: callback which gives the height in pixels of the view zone.
+    fn on_computed_height(&self, _height: f64) {}
+}
+
+/// `IViewZoneChangeAccessor`: an accessor that allows for zones to be added or removed. O original invalida o
+/// acessor ao fim do callback; aqui ele só existe emprestado (`&mut dyn`) durante o callback, então o uso depois
+/// dele não compila.
+pub trait IViewZoneChangeAccessor {
+    /// `addZone(zone)`: create a new view zone. Devolve o identificador único da zona.
+    fn add_zone(&mut self, zone: Rc<dyn IViewZone>) -> String;
+
+    /// `removeZone(id)`: remove a zone. Um `id` vazio não faz nada.
+    fn remove_zone(&mut self, id: &str);
+
+    /// `layoutZone(id)`: change a zone's position. Um `id` vazio não faz nada.
+    fn layout_zone(&mut self, id: &str);
 }
 
 // #endregion

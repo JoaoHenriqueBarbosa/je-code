@@ -10,9 +10,9 @@
 //!   `isClickable` e `shouldKeepCursorStable` verdadeiros. O recorte de prefixo (`getPrefixTrim`) só muda as colunas
 //!   das decorações, não a geometria que os casos medem, e vale zero aqui.
 //! - O `CodeEditorWidget` do porte não tem `View`: `editor.layout(...)`, `editor.render(true)` e o
-//!   `requestAnimationFrame` não existem, e a geometria é a do `ViewModel`, síncrona. A view zone vira uma whitespace do
-//!   layout pelo [`WhitespaceViewZoneHost`] (altura `heightInLines * lineHeight`, depois da linha `afterLineNumber`),
-//!   que é o que `ViewZones` faz para uma zona sem coluna, sem área oculta e sem quebra de linha.
+//!   `requestAnimationFrame` não existem, e a geometria é a do `ViewModel`, síncrona. A view zone é a do
+//!   `editor.changeViewZones` do widget (a parte `ViewZones`, que a transforma numa whitespace do layout com altura
+//!   `heightInLines * lineHeight`, depois da linha `afterLineNumber`), como no original.
 //! - `context.input.set(undefined, undefined)` é `input.set(None, None)`; `assert.deepStrictEqual` sobre os dois
 //!   campos é a comparação das tuplas.
 
@@ -24,29 +24,24 @@ use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::dynamic::Dynamic;
-use je_base::event::{Emitter, Event};
 use je_base::lifecycle::to_disposable;
 use je_base::observable::base::IObservable;
 use je_base::observable::observables::const_observable::const_observable;
 use je_base::observable::observables::derived::derived;
 use je_base::observable::observables::observable_value::{ObservableValueOptions, observable_value_opts};
 use je_base::observable::debug_name::DebugNameOptions;
-use je_editor::code_editor_widget::{CodeEditorWidget, ICodeEditor};
-use je_editor::config::editor_options::line_height::LINE_HEIGHT;
+use je_editor::code_editor_widget::ICodeEditor;
 use je_editor::edits::text_edit::{TextEdit, TextReplacement};
-use je_editor::editor_browser::EditorMouseEvent;
 use je_editor::inline_completions::ghost_text::{GhostText, GhostTextOrReplacement, GhostTextPart};
 use je_editor::inline_completions::inline_completion_view_data::InlineCompletionViewData;
 use je_editor::inline_completions::view::ghost_text_view::{
-    GhostTextView, GhostTextViewOptions, GhostTextViewZone, IGhostTextViewHost, IGhostTextWidgetData, IViewZoneChangeAccessor,
-    GhostTextWidgetWarning,
+    GhostTextView, GhostTextViewOptions, IGhostTextWidgetData, GhostTextWidgetWarning,
 };
 use je_editor::inline_decorations::{InlineDecoration, InlineDecorationType};
 use je_editor::language_service::I_LANGUAGE_SERVICE;
 use je_editor::position::Position;
 use je_editor::range::Range;
 use je_editor::text_model_edit_source::{EditSources, InlineCompletionAcceptData};
-use je_editor::view_model_types::{IViewModel, IWhitespaceChangeAccessor};
 use support::test_code_editor::{
     TestCodeEditor, create_code_editor_services, instantiate_test_code_editor, TestCodeEditorCreationOptions,
 };
@@ -77,44 +72,6 @@ struct InsertionInput {
     line_number: i32,
     start_column: i32,
     text: String,
-}
-
-/// O que `editor.changeViewZones` faz sobre o layout do `ViewModel`: cada zona é uma whitespace.
-struct WhitespaceViewZoneHost {
-    editor: Rc<CodeEditorWidget>,
-    mouse_up: Rc<Emitter<EditorMouseEvent>>,
-}
-
-struct WhitespaceZoneAccessor<'a> {
-    whitespace: &'a mut dyn IWhitespaceChangeAccessor,
-    line_height: f64,
-}
-
-impl IViewZoneChangeAccessor for WhitespaceZoneAccessor<'_> {
-    fn add_zone(&mut self, zone: GhostTextViewZone) -> String {
-        let height = f64::from(zone.height_in_lines) * self.line_height;
-        let id = self.whitespace.insert_whitespace(zone.after_line_number, 0, height as i32, 0);
-        (zone.on_computed_height)(height);
-        id
-    }
-
-    fn remove_zone(&mut self, id: &str) {
-        self.whitespace.remove_whitespace(id);
-    }
-}
-
-impl IGhostTextViewHost for WhitespaceViewZoneHost {
-    fn change_view_zones(&self, callback: &mut dyn FnMut(&mut dyn IViewZoneChangeAccessor)) {
-        let view_model = self.editor.get_view_model().expect("o editor do caso tem modelo");
-        let line_height = *self.editor.get_option(LINE_HEIGHT);
-        view_model.change_whitespace(&mut |whitespace| {
-            callback(&mut WhitespaceZoneAccessor { whitespace, line_height });
-        });
-    }
-
-    fn on_mouse_up(&self) -> Event<EditorMouseEvent> {
-        self.mouse_up.event()
-    }
 }
 
 /// O retorno de `createInsertionViewContext`.
@@ -178,10 +135,8 @@ fn create_insertion_view_context(store: &LeakGuard) -> InsertionViewContext {
             Some(Rc::new(InsertionWidgetData { ghost_text: GhostTextOrReplacement::GhostText(ghost_text) }) as Rc<dyn IGhostTextWidgetData>)
         })
     };
-    let host = Rc::new(WhitespaceViewZoneHost { editor: editor.widget().clone(), mouse_up: Emitter::new() });
     let view = GhostTextView::new(
         editor.widget().clone(),
-        host,
         ghost_text_data,
         GhostTextViewOptions {
             extra_classes: vec!["inline-edit".to_owned()],

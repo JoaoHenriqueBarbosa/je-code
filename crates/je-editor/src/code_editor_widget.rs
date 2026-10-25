@@ -37,7 +37,9 @@
 //! - `InteractionEmitter` (um `Emitter` que chama `contributions.onBeforeInteractionEvent()` antes de cada `fire`)
 //!   é o método privado `fire_interaction`, usado em todo disparo dos emitters que o original cria como
 //!   `InteractionEmitter`: `onDidAttemptReadOnlyEdit`, `onWillType`, `onDidType`, `onDidCompositionStart`,
-//!   `onDidCompositionEnd` e `onDidPaste`.
+//!   `onDidCompositionEnd`, `onDidPaste`, `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
+//!   `onMouseDropCanceled`, `onContextMenu` e `onMouseWheel`. (`onMouseMove`, `onMouseLeave`, `onKeyDown` e `onKeyUp`,
+//!   portados antes, disparam direto, sem esse passo.)
 //! - `BooleanEventEmitter` está como [`BooleanEventEmitter`]. `ModelData` é privado.
 //! - O foco (`View.isFocused`, `View.isWidgetFocused`) é o estado `has_text_focus`/`has_widget_focus` do widget,
 //!   com os setters [`CodeEditorWidget::set_has_text_focus`] e [`CodeEditorWidget::set_has_widget_focus`]
@@ -66,12 +68,20 @@
 //! - `ICursorStateComputer` é o `&mut dyn FnMut(&[ValidEditOperation]) -> Option<Vec<Selection>>` do
 //!   `ViewModel::execute_edits`.
 //!
+//! - `changeViewZones(callback)`: o original delega à `View`, cuja parte `ViewZones`
+//!   ([`crate::view_parts::view_zones::ViewZones`]) traduz cada zona numa whitespace do layout do `ViewModel`. O
+//!   `ModelData` guarda a `ViewZones` do modelo atual, registrada como `ViewEventHandler` do `ViewModel`
+//!   (`onConfigurationChanged` e `onLineMappingChanged` recalculam as whitespaces), e [`CodeEditorWidget::view_zones`] a
+//!   entrega a quem pinta (o `render` dela devolve o que o original escreve nos nós DOM das zonas). Sem modelo o
+//!   callback não roda (o original sai se não há `View` real).
+//!
 //! Divergências (fora do escopo deste porte, por nome de membro do original):
-//! - A `View` e o DOM: `_createView`, `View`, `ModelData.view`/`hasRealView` (sempre sem `View` real),
+//! - A `View` e o DOM: `_createView`, `View`, `ModelData.view`/`hasRealView` (sempre sem `View` real, salvo as view
+//!   zones, que existem por modelo),
 //!   `layout`, `render`, `renderAsync`, `getDomNode`, `getContainerDomNode`, `getOverflowWidgetsDomNode`,
 //!   `onVisible`, `onHide` (os dois só chamam `view.refreshFocusState`), `writeScreenReaderContent`,
 //!   `applyFontInfo`, `setBanner`, `setAriaOptions`, `createOverviewRuler`, `delegateVerticalScrollbarPointerDown`,
-//!   `delegateScrollFromMouseWheelEvent`, `changeViewZones`, `getTargetAtClientPoint`, `getScrolledVisiblePosition`,
+//!   `delegateScrollFromMouseWheelEvent`, `getTargetAtClientPoint`, `getScrolledVisiblePosition`,
 //!   `hasPendingScrollAnimation` (o `ViewLayout`
 //!   ainda não o expõe), `focus` de DOM (ver acima), os atributos `data-mode-id` e `data-uri`, a variável CSS
 //!   `--editor-font-size`, o `DragAndDropObserver` com `showDropIndicatorAt`/`removeDropIndicator` e
@@ -83,10 +93,11 @@
 //!   tipos estão em `editor_browser` e não têm `getDomNode()`.
 //! - Widgets de margem de glifos: `addGlyphMarginWidget`, `layoutGlyphMarginWidget`, `removeGlyphMarginWidget`.
 //! - Eventos que só a `View` produz: `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
-//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`,
-//!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`. `onMouseMove`, `onMouseLeave`, `onKeyDown` e
-//!   `onKeyUp` existem, e quem tem a `View` os dispara por `fire_mouse_move`, `fire_mouse_leave`, `fire_key_down` e
-//!   `fire_key_up`.
+//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`, `onMouseMove`, `onMouseLeave`, `onKeyDown` e `onKeyUp`
+//!   existem, e quem tem a `View` (ou o host nativo que a substitui) os dispara por `fire_mouse_up`,
+//!   `fire_mouse_down`, `fire_mouse_drag`, `fire_mouse_drop`, `fire_mouse_drop_canceled`, `fire_context_menu`,
+//!   `fire_mouse_wheel`, `fire_mouse_move`, `fire_mouse_leave`, `fire_key_down` e `fire_key_up`. Ficam fora
+//!   `onWillCopy`, `onWillCut`, `onWillPaste` e `onDropIntoEditor`.
 //! - `ICodeEditorService`: `willCreateCodeEditor`, `addCodeEditor` e `removeCodeEditor` chegam pelo
 //!   [`ICodeEditorRegistry`] opcional de [`CodeEditorWidgetServices`] (o construtor e o `dispose` os chamam, como o
 //!   original).
@@ -136,7 +147,10 @@ use crate::editor_decorations_collection::EditorDecorationsCollection;
 use crate::cursor_common::CursorSimpleModel;
 use crate::cursor_events::{CursorChangeReason, ICursorPositionChangedEvent, ICursorSelectionChangedEvent};
 use crate::cursor_word_operations::WordOperations;
-use crate::editor_browser::{ContentWidgetPosition, EditorMouseEvent, IContentWidget, IOverlayWidget, OverlayWidgetPosition, PartialEditorMouseEvent};
+use crate::editor_browser::{
+    ContentWidgetPosition, EditorMouseEvent, IContentWidget, IOverlayWidget, IViewZoneChangeAccessor, MouseWheelEvent,
+    OverlayWidgetPosition, PartialEditorMouseEvent,
+};
 use crate::edit_operation::SingleEditOperation;
 use crate::edits::text_edit::TextEdit;
 use crate::editor_common::{Command, ScrollType};
@@ -150,12 +164,14 @@ use crate::services::abstract_code_editor_service::ICodeEditorRegistry;
 use crate::text_model::{ModelDecorationsChangeAccessor, TextModel, TextSource};
 use crate::text_model_edit_source::{EditSources, TextModelEditSource};
 use crate::text_model_events as model_events;
+use crate::view_events::ViewEventHandler;
 use crate::view_model_decorations::{filter_font_decorations, filter_validation_decorations};
 use crate::view_model_event_dispatcher::{ContentSizeChangedEvent, OutgoingViewModelEvent, ScrollChangedEvent};
 use crate::view_model_impl::{HiddenAreasSource, IThemeService, ViewModel};
 use crate::view_model_impl_api::{IViewState, ReducedRestoreState};
 use crate::view_model_impl_support::IBatchableTarget;
 use crate::view_model_types::{IEditorWhitespace, IViewLayout, IViewModel, VerticalRevealType};
+use crate::view_parts::view_zones::ViewZones;
 use crate::language_configuration_registry::ILanguageConfigurationService;
 use crate::word_helper::WordAtPosition;
 
@@ -866,6 +882,13 @@ editor_emitters! {
     key_up, on_key_up, je_platform::keybinding::keybinding::KeyboardEvent, direct, "`onKeyUp`: quem tem a `View` (ou o host nativo que a substitui) entrega as teclas por `fire_key_up`.";
     mouse_move, on_mouse_move, EditorMouseEvent, direct, "`onMouseMove`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_move`.";
     mouse_leave, on_mouse_leave, PartialEditorMouseEvent, direct, "`onMouseLeave`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_leave`.";
+    mouse_up, on_mouse_up, EditorMouseEvent, queued, "`onMouseUp`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_up`.";
+    mouse_down, on_mouse_down, EditorMouseEvent, queued, "`onMouseDown`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_down`.";
+    mouse_drag, on_mouse_drag, EditorMouseEvent, queued, "`onMouseDrag`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_drag`.";
+    mouse_drop, on_mouse_drop, PartialEditorMouseEvent, queued, "`onMouseDrop`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_drop`.";
+    mouse_drop_canceled, on_mouse_drop_canceled, (), queued, "`onMouseDropCanceled`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_drop_canceled`.";
+    context_menu, on_context_menu, EditorMouseEvent, queued, "`onContextMenu`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_context_menu`.";
+    mouse_wheel, on_mouse_wheel, MouseWheelEvent, queued, "`onMouseWheel`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_wheel`.";
 }
 
 impl CodeEditorWidget {
@@ -877,6 +900,41 @@ impl CodeEditorWidget {
     /// Entrega a saída do mouse aos ouvintes de `onMouseLeave` (o `View` do original dispara o evento).
     pub fn fire_mouse_leave(&self, event: PartialEditorMouseEvent) {
         self.emitters.mouse_leave.fire(event);
+    }
+
+    /// Entrega o botão solto aos ouvintes de `onMouseUp` (o `View` do original dispara o evento).
+    pub fn fire_mouse_up(&self, event: EditorMouseEvent) {
+        self.fire_interaction(&*self.emitters.mouse_up, event);
+    }
+
+    /// Entrega o botão pressionado aos ouvintes de `onMouseDown` (o `View` do original dispara o evento).
+    pub fn fire_mouse_down(&self, event: EditorMouseEvent) {
+        self.fire_interaction(&*self.emitters.mouse_down, event);
+    }
+
+    /// Entrega o arrasto aos ouvintes de `onMouseDrag` (o `View` do original dispara o evento).
+    pub fn fire_mouse_drag(&self, event: EditorMouseEvent) {
+        self.fire_interaction(&*self.emitters.mouse_drag, event);
+    }
+
+    /// Entrega o soltar de um arrasto aos ouvintes de `onMouseDrop` (o `View` do original dispara o evento).
+    pub fn fire_mouse_drop(&self, event: PartialEditorMouseEvent) {
+        self.fire_interaction(&*self.emitters.mouse_drop, event);
+    }
+
+    /// Entrega o arrasto cancelado aos ouvintes de `onMouseDropCanceled` (o `View` do original dispara o evento).
+    pub fn fire_mouse_drop_canceled(&self) {
+        self.fire_interaction(&*self.emitters.mouse_drop_canceled, ());
+    }
+
+    /// Entrega o menu de contexto aos ouvintes de `onContextMenu` (o `View` do original dispara o evento).
+    pub fn fire_context_menu(&self, event: EditorMouseEvent) {
+        self.fire_interaction(&*self.emitters.context_menu, event);
+    }
+
+    /// Entrega a roda do mouse aos ouvintes de `onMouseWheel` (o `View` do original dispara o evento).
+    pub fn fire_mouse_wheel(&self, event: MouseWheelEvent) {
+        self.fire_interaction(&*self.emitters.mouse_wheel, event);
     }
 }
 
@@ -949,10 +1007,12 @@ impl Drop for UpdateScope<'_> {
     }
 }
 
-/// `ModelData`: o que está logicamente associado a um modelo. Sem `View` (ver "Divergências").
+/// `ModelData`: o que está logicamente associado a um modelo. Sem `View` (ver "Divergências"), só com a parte
+/// `ViewZones` dela.
 struct ModelData {
     model: Rc<TextModel>,
     view_model: Rc<EditorViewModel>,
+    view_zones: Rc<ViewZones<EditorViewModel>>,
     listeners_to_remove: Vec<DisposableRef>,
     attached_view: Rc<AttachedView>,
 }
@@ -963,6 +1023,9 @@ impl ModelData {
             listener.dispose();
         }
         self.model.on_before_detached(&self.attached_view);
+        let view_zones_handler: Rc<dyn ViewEventHandler> = self.view_zones.clone();
+        self.view_model.remove_view_event_handler(&view_zones_handler);
+        self.view_zones.dispose();
         self.view_model.dispose();
     }
 }
@@ -1336,6 +1399,19 @@ impl CodeEditorWidget {
         self.overlay_widgets.borrow().iter().map(|(_, data)| data.clone()).collect()
     }
 
+    /// `changeViewZones(callback)`: `this._modelData.view.change(callback)`, que chama `ViewZones.changeViewZones`
+    /// (o `_scheduleRender` da `View` não existe). Sem modelo o callback não roda.
+    pub fn change_view_zones(&self, callback: &mut dyn FnMut(&mut dyn IViewZoneChangeAccessor)) {
+        if let Some(model_data) = self.model_data() {
+            model_data.view_zones.change_view_zones(callback);
+        }
+    }
+
+    /// `View._viewZones`: a parte `ViewZones` do modelo atual, de onde quem pinta lê as zonas (`render`).
+    pub fn view_zones(&self) -> Option<Rc<ViewZones<EditorViewModel>>> {
+        self.model_data().map(|model_data| model_data.view_zones.clone())
+    }
+
     /// `getOffsetForColumn(lineNumber, column)`: sem `View` real (`hasRealView` falso) é `-1`.
     pub fn get_offset_for_column(&self, _line_number: i32, _column: i32) -> f64 {
         -1.0
@@ -1432,7 +1508,11 @@ impl CodeEditorWidget {
             }
         }));
 
-        *self.model_data.borrow_mut() = Some(Rc::new(ModelData { model, view_model, listeners_to_remove, attached_view }));
+        let view_zones = ViewZones::new(self.configuration.clone(), view_model.clone());
+        let view_zones_handler: Rc<dyn ViewEventHandler> = view_zones.clone();
+        view_model.add_view_event_handler(view_zones_handler);
+
+        *self.model_data.borrow_mut() = Some(Rc::new(ModelData { model, view_model, view_zones, listeners_to_remove, attached_view }));
     }
 
     /// O `switch (e.kind)` do ouvinte de `viewModel.onEvent` em `_attachModel`.

@@ -203,6 +203,8 @@ pub mod view_model_impl_api;
 pub mod editor_browser;
 pub mod hover;
 
+pub mod view_parts;
+
 pub mod code_editor_widget;
 
 pub mod trigger_inline_edit_commands_registry;

@@ -15,16 +15,16 @@
 //!   [`AdditionalLinesData::equals`]. Os valores que o original devolve como objetos novos a cada cálculo são
 //!   `Rc` (a igualdade estrita compara a identidade, como o `===`).
 //! - `StringBuilder` + `innerHTML` de `renderLines`, `ttPolicy` e `applyFontInfo` não existem: a UI é nativa. Quem
-//!   desenha a view zone recebe as [`LineData`] prontas (tokens e decorações de classe) em [`GhostTextViewZone`] e
+//!   desenha a view zone recebe as [`LineData`] prontas (tokens e decorações de classe) em [`GhostTextViewNode`] e
 //!   aplica nelas o `renderViewLine` com as opções do editor (`renderWhitespace` sempre `none`, para não confundir
 //!   com o texto real); o `editorOptionsChanged` do original continua recriando a zona quando uma dessas opções muda,
-//!   para o desenhista ler as novas. O `tabSize` do modelo viaja na zona.
-//! - A `View` e o `IViewZoneChangeAccessor` (`editor.changeViewZones`) e o `onMouseUp` do editor não existem no porte
-//!   do `CodeEditorWidget`: chegam pelo trait [`IGhostTextViewHost`], que quem tem a `View` implementa. O
-//!   `mousedown` com `preventDefault` (para a zona não roubar o foco do editor) e o filtro `isTargetGhostText` do
-//!   `click` são do host: ele só chama `on_click` da zona quando o clique cai num elemento de texto fantasma, e a zona
-//!   não tira o foco do editor. O hover do widget (`isTargetGhostText(p.target.element)`) vira "o alvo é a view zone
-//!   do widget" (`view_zone_id`).
+//!   para o desenhista ler as novas. O `tabSize` do modelo viaja no nó.
+//! - `editor.changeViewZones` e `editor.onMouseUp` são os do [`CodeEditorWidget`], como no original. A view zone é o
+//!   [`GhostTextViewZone`] (`IViewZone`), e o `domNode` que `renderLines` monta é o [`GhostTextViewNode`], que o
+//!   pintor nativo recupera por `downcast` de [`IViewZone::dom_node`]. O `mousedown` com `preventDefault` (para a zona
+//!   não roubar o foco do editor) e o filtro `isTargetGhostText` do `click` são de quem pinta o nó: ele só chama
+//!   `on_click` quando o clique cai num elemento de texto fantasma, e o nó não tira o foco do editor. O hover do
+//!   widget (`isTargetGhostText(p.target.element)`) vira "o alvo é a view zone do widget" (`view_zone_id`).
 //! - O `_viewZoneListener` (um `MutableDisposable` com os ouvintes DOM) não tem análogo: os ouvintes são o `on_click`
 //!   da zona, que sai junto com ela.
 //!
@@ -36,6 +36,7 @@
 //! - O conteúdo do texto injetado vira `String` (`InjectedTextOptions.content`): uma unidade UTF-16 solta (par
 //!   substituto partido) é substituída por U+FFFD na decoração; o texto das linhas adicionais continua [`JsString`].
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -61,7 +62,7 @@ use crate::cursor_common::CursorSimpleModel;
 use crate::edits::edit::BaseEdit;
 use crate::edits::string_edit::{BaseStringEdit, StringEdit, StringReplacement};
 use crate::editor_browser::{
-    ContentWidgetPosition, ContentWidgetPositionPreference, EditorMouseEvent, MouseEvent, MouseTarget,
+    ContentWidgetPosition, ContentWidgetPositionPreference, IViewZone, IViewZoneChangeAccessor, MouseEvent, MouseTarget,
 };
 use crate::inline_completions::ghost_text::{GhostTextLine, GhostTextOrReplacement};
 use crate::inline_completions::inline_completion_view_data::InlineCompletionViewData;
@@ -267,40 +268,49 @@ impl AdditionalLinesData {
     }
 }
 
-/// A view zone do texto fantasma: o que o `addZone` do original recebe, com o `domNode` que `renderLines` monta
-/// trocado pelas linhas prontas para quem desenha.
-pub struct GhostTextViewZone {
-    pub after_line_number: i32,
-    pub height_in_lines: i32,
+/// O `domNode` da view zone do texto fantasma (o que `renderLines` monta): as linhas prontas para quem desenha.
+pub struct GhostTextViewNode {
     /// As linhas a desenhar (`suggest-preview-text`), uma por linha da zona, na ordem.
     pub lines: Rc<Vec<LineData>>,
     /// `tabSize` do modelo, usado no `RenderLineInput` de cada linha.
     pub tab_size: i32,
     /// A classe `clickable` do contêiner das linhas.
     pub is_clickable: bool,
-    pub after_column_affinity: PositionAffinity,
-    /// O `click` do `domNode`, só quando a zona é clicável. O host só o chama quando o alvo é texto fantasma.
+    /// O `click` do `domNode`, só quando a zona é clicável. Quem pinta só o chama quando o alvo é texto fantasma.
     pub on_click: Option<Rc<dyn Fn(&MouseEvent)>>,
+}
+
+/// A view zone do texto fantasma: o `IViewZone` que o `addZone` do original recebe.
+pub struct GhostTextViewZone {
+    pub after_line_number: i32,
+    pub height_in_lines: i32,
+    /// O `domNode`.
+    pub node: Rc<GhostTextViewNode>,
     /// `onComputedHeight`: a altura final da zona em pixels.
     pub on_computed_height: Rc<dyn Fn(f64)>,
 }
 
-/// `IViewZoneChangeAccessor`, só com o que o texto fantasma usa.
-pub trait IViewZoneChangeAccessor {
-    /// `addZone(zone)`: o id da zona.
-    fn add_zone(&mut self, zone: GhostTextViewZone) -> String;
+impl IViewZone for GhostTextViewZone {
+    fn after_line_number(&self) -> i32 {
+        self.after_line_number
+    }
 
-    /// `removeZone(id)`.
-    fn remove_zone(&mut self, id: &str);
-}
+    /// `afterColumnAffinity: PositionAffinity.Right`.
+    fn after_column_affinity(&self) -> Option<PositionAffinity> {
+        Some(PositionAffinity::Right)
+    }
 
-/// O que o `GhostTextView` pede à `View` do editor (ver "Notas de tradução").
-pub trait IGhostTextViewHost {
-    /// `editor.changeViewZones(callback)`.
-    fn change_view_zones(&self, callback: &mut dyn FnMut(&mut dyn IViewZoneChangeAccessor));
+    fn height_in_lines(&self) -> Option<f64> {
+        Some(f64::from(self.height_in_lines))
+    }
 
-    /// `editor.onMouseUp`.
-    fn on_mouse_up(&self) -> Event<EditorMouseEvent>;
+    fn dom_node(&self) -> Rc<dyn Any> {
+        Rc::clone(&self.node) as Rc<dyn Any>
+    }
+
+    fn on_computed_height(&self, height: f64) {
+        (self.on_computed_height)(height);
+    }
 }
 
 /// `{ viewZoneId, heightInLines, lineNumber }` de `_viewZoneInfo`.
@@ -313,7 +323,6 @@ struct ViewZoneInfo {
 /// O estado de `AdditionalLinesWidget` que o autorun, os ouvintes e o hover compartilham.
 struct AdditionalLinesInner {
     editor: Rc<CodeEditorWidget>,
-    host: Rc<dyn IGhostTextViewHost>,
     view_zone_info: RefCell<Option<ViewZoneInfo>>,
     view_zone_height: ISettableObservable<Option<f64>>,
     on_did_click: Rc<Emitter<MouseEvent>>,
@@ -325,7 +334,7 @@ struct AdditionalLinesInner {
 impl AdditionalLinesInner {
     /// `clear()`.
     fn clear(&self) {
-        self.host.change_view_zones(&mut |accessor| {
+        self.editor.change_view_zones(&mut |accessor| {
             self.remove_active_view_zone(accessor);
         });
     }
@@ -339,7 +348,7 @@ impl AdditionalLinesInner {
         let tab_size = text_model.get_options().tab_size;
 
         observable_code_editor(&self.editor).transaction(|_| {
-            self.host.change_view_zones(&mut |accessor| {
+            self.editor.change_view_zones(&mut |accessor| {
                 self.remove_active_view_zone(accessor);
 
                 let height_in_lines = (additional_lines.len() as i32).max(min_reserved_line_count);
@@ -349,17 +358,18 @@ impl AdditionalLinesInner {
                         Rc::new(move |e: &MouseEvent| on_did_click.fire(e.clone())) as Rc<dyn Fn(&MouseEvent)>
                     });
                     let view_zone_height = Rc::clone(&self.view_zone_height);
-                    let id = accessor.add_zone(GhostTextViewZone {
+                    let id = accessor.add_zone(Rc::new(GhostTextViewZone {
                         after_line_number: line_number,
                         height_in_lines,
-                        lines: Rc::clone(additional_lines),
-                        tab_size,
-                        is_clickable: self.is_clickable,
-                        after_column_affinity: PositionAffinity::Right,
-                        on_click,
+                        node: Rc::new(GhostTextViewNode {
+                            lines: Rc::clone(additional_lines),
+                            tab_size,
+                            is_clickable: self.is_clickable,
+                            on_click,
+                        }),
                         // Nota do original: seria possível usar uma transação para evitar cintilação?
                         on_computed_height: Rc::new(move |height| view_zone_height.set(Some(height), None)),
-                    });
+                    }));
 
                     self.keep_cursor_stable(line_number, height_in_lines);
 
@@ -410,7 +420,6 @@ pub struct AdditionalLinesWidget {
 impl AdditionalLinesWidget {
     pub fn new(
         editor: Rc<CodeEditorWidget>,
-        host: Rc<dyn IGhostTextViewHost>,
         lines: IObservable<Option<Rc<AdditionalLinesData>>>,
         should_keep_cursor_stable: bool,
         is_clickable: bool,
@@ -437,7 +446,6 @@ impl AdditionalLinesWidget {
         let on_did_click = Emitter::<MouseEvent>::new();
         let inner = Rc::new(AdditionalLinesInner {
             editor: Rc::clone(&editor),
-            host,
             view_zone_info: RefCell::new(None),
             view_zone_height,
             on_did_click: Rc::clone(&on_did_click),
@@ -601,7 +609,6 @@ pub struct GhostTextView {
 impl GhostTextView {
     pub fn new(
         editor: Rc<CodeEditorWidget>,
-        host: Rc<dyn IGhostTextViewHost>,
         data: IObservable<Option<Rc<dyn IGhostTextWidgetData>>>,
         options: GhostTextViewOptions,
         language_id_codec: Rc<dyn ILanguageIdCodec>,
@@ -793,7 +800,7 @@ impl GhostTextView {
                     })
                 })
             });
-            AdditionalLinesWidget::new(Rc::clone(&editor), Rc::clone(&host), lines, should_keep_cursor_stable, is_clickable)
+            AdditionalLinesWidget::new(Rc::clone(&editor), lines, should_keep_cursor_stable, is_clickable)
         };
         base.register(Rc::clone(&additional_lines_widget) as DisposableRef);
 
@@ -902,7 +909,7 @@ impl GhostTextView {
             base.register(additional_lines_widget.on_did_click().listen(move |e| on_did_click_from_lines.fire(e.clone())));
 
             let (on_did_click_from_text, owner) = (Rc::clone(&on_did_click), Rc::clone(&owner));
-            base.register(host.on_mouse_up().listen(move |e| {
+            base.register(editor.on_mouse_up().listen(move |e| {
                 let MouseTarget::ContentText(target) = &e.target else {
                     return;
                 };
