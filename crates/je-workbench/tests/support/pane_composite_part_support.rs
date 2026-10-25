@@ -8,6 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::common::LeakGuard;
 use je_base::actions::ActionRef;
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableRef, IDisposable, none};
@@ -476,9 +477,10 @@ pub struct PaneTestDeps {
     pub storage_service: Rc<dyn StorageService>,
 }
 
-/// O `TestStorageService` como `IStorageService`.
-pub fn test_storage_service() -> Rc<dyn StorageService> {
-    Rc::new(TestStorageService::new())
+/// O `TestStorageService` como `IStorageService`, registrado no guarda do caso como o `store.add(new TestStorageService())` do
+/// `workbenchInstantiationService` (o serviço é descartado no fim do caso).
+pub fn test_storage_service(guard: &LeakGuard) -> Rc<dyn StorageService> {
+    Rc::new(guard.add_rc(TestStorageService::new()))
 }
 
 /// A barra de composites dos casos: o `createInstance(PaneCompositeBar, ...)` do original cria uma barra real, que aqui não tem

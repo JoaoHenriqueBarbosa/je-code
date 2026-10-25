@@ -446,7 +446,8 @@ impl ICompositePartView for NativeCompositePartView {
         title_label.set_client_width_source(Rc::new(move || ui.tree().bounds(node).width()));
         title_label.set_scroll_width_source(Rc::new(move || {
             let label = width_label.borrow();
-            measure_text(&label.text, &ui_font(TITLE_FONT_SIZE, 400))
+            let shown = if label.uppercase { label.text.to_uppercase() } else { label.text.clone() };
+            measure_text(&shown, &ui_font(TITLE_FONT_SIZE, 400))
         }));
 
         // `setupManagedHover(getDefaultHoverDelegate('mouse'), titleLabel, '')`

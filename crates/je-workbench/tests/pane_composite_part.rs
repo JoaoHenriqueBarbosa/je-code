@@ -121,7 +121,7 @@ fn deps(guard: &LeakGuard) -> PaneTestDeps {
         configuration_service: TestConfigurationService::new(None),
         view_descriptor_service: Rc::new(TestViewDescriptorService { can_move_views: false }),
         extension_service: TestExtensionService::new(),
-        storage_service: test_storage_service(),
+        storage_service: test_storage_service(guard),
     }
 }
 

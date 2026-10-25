@@ -19,8 +19,10 @@
 //! - **`TestAuxiliaryBarMenuService extends MenuService`** é o [`RemappingMenuService`] (só o `createMenu` troca o menu);
 //!   **`TestAuxiliaryBarPart extends AuxiliaryBarPart`** é o [`TestAuxiliaryBarBehavior`], que repassa tudo ao
 //!   [`AuxiliaryBarBehavior`] e troca o `getToolbarResponsiveBehavior` (com o `getAvailableWidth`) e o `shouldShowCompositeBar`
-//!   (por [`AuxiliaryBarPart::extend`]). O `getActiveComposite()` sobrescrito devolve um composite sem `getActionViewItem`, e a vista
-//!   nativa não tem provedor de item de ação (a `ToolBar` desenha cada ação), então não há o que sobrescrever.
+//!   (por [`AuxiliaryBarPart::extend`]). O `getActiveComposite()` sobrescrito é o [`TestActiveComposite`] (`test.chat`, `Chat`), pelo
+//!   gancho `get_active_composite` do comportamento: sem ele a parte se vê vazia e o `layoutEmptyMessage` zera o título. O composite
+//!   não tem `getActionViewItem`, e a vista nativa não tem provedor de item de ação (a `ToolBar` desenha cada ação), então não há o
+//!   que sobrescrever além disso.
 //! - **`ViewDescriptorService`** é o [`TestViewDescriptorService`] (sem contêineres), o que o serviço real também devolve sem
 //!   contribuições carregadas.
 //! - **`IToolBarResponsiveBehaviorOptions.getAvailableWidth`** lê `toolbarAvailableWidth ?? toolBar.getElement().getBoundingClientRect().width ?? 0`.
@@ -47,6 +49,7 @@ use std::rc::{Rc, Weak};
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
 use je_base::actions::{Action, ActionRef, Separator};
 use je_base::dynamic::Dynamic;
+use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::themables::ThemeIcon;
 use je_editor::services::theme_service::IThemeService;
@@ -64,6 +67,7 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_ui::{NodeId, Role, Ui};
 use je_widgets::toolbar::{IToolBarResponsiveBehaviorOptions, ToggleMenuAction};
+use je_workbench::browser::composite::{IComposite, ICompositeControl};
 use je_workbench::browser::parts::auxiliarybar::auxiliary_bar_part::{AuxiliaryBarBehavior, AuxiliaryBarPart, AuxiliaryBarPartServices};
 use je_workbench::browser::parts::composite_part::{ICompositeToolBar, IToolBarItems};
 use je_workbench::browser::parts::native_composite_part_view::{NativeCompositePartView, NativeCompositePartViewServices};
@@ -110,6 +114,37 @@ impl IMenuService for RemappingMenuService {
     fn reset_hidden_states(&self, menu_ids: Option<&[MenuId]>) {
         self.inner.reset_hidden_states(menu_ids);
     }
+}
+
+/// O composite que o `getActiveComposite()` sobrescrito do original devolve (`getId: () => 'test.chat'`, `getTitle: () => 'Chat'`).
+struct TestActiveComposite;
+
+impl IComposite for TestActiveComposite {
+    fn on_did_focus(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn on_did_blur(&self) -> Event<()> {
+        Event::none()
+    }
+
+    fn has_focus(&self) -> bool {
+        false
+    }
+
+    fn get_id(&self) -> String {
+        "test.chat".to_owned()
+    }
+
+    fn get_title(&self) -> Option<String> {
+        Some("Chat".to_owned())
+    }
+
+    fn get_control(&self) -> Option<Rc<dyn ICompositeControl>> {
+        None
+    }
+
+    fn focus(&self) {}
 }
 
 /// `class TestAuxiliaryBarPart extends AuxiliaryBarPart`.
@@ -162,6 +197,10 @@ impl PaneCompositePartBehavior for TestAuxiliaryBarBehavior {
         self.inner.get_composite_bar_options(part)
     }
 
+    fn get_active_composite(&self, _part: &AbstractPaneCompositePart) -> Option<Rc<dyn IComposite>> {
+        Some(Rc::new(TestActiveComposite))
+    }
+
     fn should_show_composite_bar(&self, _part: &AbstractPaneCompositePart) -> bool {
         false
     }
@@ -205,7 +244,7 @@ fn set_title_actions(part: &AuxiliaryBarPart, title: &str, primary: &[ActionRef]
 fn create_test_auxiliary_bar_part(guard: &LeakGuard, ui: &Ui, container: NodeId) -> TestAuxiliaryBarPart {
     let theme_service = guard.add_rc(TestThemeService::new_default());
     let theme_service: Rc<dyn IThemeService> = theme_service;
-    let storage_service = test_storage_service();
+    let storage_service = test_storage_service(guard);
     let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(NoKeybindingService);
     let command_service: Rc<dyn ICommandService> = Rc::new(NoCommandService);
     let configuration_service = TestConfigurationService::new(None);
