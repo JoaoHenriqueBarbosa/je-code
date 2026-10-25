@@ -37,10 +37,10 @@
 //!     `inlineEditsModel`, `theme` e `utils/` com `utils` e `flexBoxLayout`; o `towersLayout` e o `scrollToReveal` do
 //!     `longDistanceHint` seguem em `towers_layout` e `long_distance_hint`), mais o `Rect` de `core_2d` e o
 //!     `getNewLineRanges` e o `toLineEdit` de `edits/line_edit`;
-//!   - 4c-2 (em andamento): as views de inline edits (`inlineEditsViews/*`). Prontas: inserção de palavra, colapsada e
-//!     exclusão (`inline_edits_views/`, com o `NonOverflowOverlayWidget` que as views compartilham). Faltam: inserção
-//!     em linha, inserção em várias linhas, substituição de palavras, substituição de linhas, lado a lado e long
-//!     distance hint;
+//!   - 4c-2 (em andamento): as views de inline edits (`inlineEditsViews/*`). Prontas: inserção de palavra, colapsada,
+//!     exclusão, `jumpToView`, `inlineEditsCustomView` e `originalEditorInlineDiffView` (`inline_edits_views/`, com o
+//!     `NonOverflowOverlayWidget` que as views compartilham). Faltam: inserção em linha, inserção em várias linhas,
+//!     substituição de palavras, substituição de linhas, lado a lado e long distance hint;
 //!   - 4c-3: o gutter indicator (`inlineEditsGutterIndicator` e as partes do gutter);
 //!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
 //!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
