@@ -43,6 +43,8 @@ pub mod history;
 
 // `ILanguageDetectionService` e o `ITextEditorModel`/`ITextModelService` que os modelos de texto do workbench leem.
 pub mod language_detection;
+// `ILanguageStatusService` (`languageStatus/common/languageStatusService.ts`), que o `MainThreadLanguages` lê.
+pub mod language_status;
 pub mod textmodel_resolver;
 
 // `IEditorService` reduzido (o que o `findViewStateForEditor` e o `SideBySideEditorInput` leem).
