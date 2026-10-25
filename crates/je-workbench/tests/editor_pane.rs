@@ -234,7 +234,8 @@ fn editor_pane_api() {
         let group = TestEditorGroupView::new(1);
         let editor = guard.add_rc(EditorPaneDescriptor::new("testEditor", "name").instantiate(group.id()));
         assert_eq!(editor.group_id(), 1);
-        let input: EditorInputRef = guard.add_rc(OtherTestInput::new());
+        let input = guard.add_rc(OtherTestInput::new());
+        let input: EditorInputRef = input;
 
         assert!(!editor.is_visible());
         assert!(editor.input().is_none());
@@ -275,8 +276,10 @@ fn editor_pane_registration() {
     assert_eq!(editor_registry.get_editor_panes().len(), old_editors_cnt + 2);
     assert_eq!(editor_registry.get_editors().len(), old_input_cnt + 3);
 
-    let test_input: EditorInputRef = guard.add_rc(TestInput::new());
-    let other_test_input: EditorInputRef = guard.add_rc(OtherTestInput::new());
+    let test_input = guard.add_rc(TestInput::new());
+    let test_input: EditorInputRef = test_input;
+    let other_test_input = guard.add_rc(OtherTestInput::new());
+    let other_test_input: EditorInputRef = other_test_input;
     assert!(Rc::ptr_eq(&editor_registry.get_editor_pane(&test_input).unwrap(), &editor_descriptor2));
     assert!(Rc::ptr_eq(&editor_registry.get_editor_pane(&other_test_input).unwrap(), &editor_descriptor2));
 
@@ -299,17 +302,19 @@ fn editor_pane_lookup_favors_specific_class_over_superclass_match_on_specific_cl
 
     let group = TestEditorGroupView::new(1);
 
-    let specific: EditorInputRef = guard.add_rc(TestResourceEditorInput::new());
+    let specific = guard.add_rc(TestResourceEditorInput::new());
+    let specific: EditorInputRef = specific;
     let editor = guard.add_rc(editor_registry.get_editor_pane(&specific).unwrap().instantiate(group.id()));
     assert_eq!(editor.get_id(), "testEditor");
 
-    let text_resource: EditorInputRef = guard.add_rc(accessor.instantiation_service.create_instance::<TextResourceEditorInput>((
+    let text_resource = guard.add_rc(accessor.instantiation_service.create_instance::<TextResourceEditorInput>((
         uri_file("/fake"),
         Some("fake".to_string()),
         Some(String::new()),
         None,
         None,
     )));
+    let text_resource: EditorInputRef = text_resource;
     let other_editor = guard.add_rc(editor_registry.get_editor_pane(&text_resource).unwrap().instantiate(group.id()));
     assert_eq!(other_editor.get_id(), "workbench.editors.textResourceEditor");
 }
@@ -325,13 +330,14 @@ fn editor_pane_lookup_favors_specific_class_over_superclass_match_on_super_class
     let group = TestEditorGroupView::new(1);
 
     guard.add(register_text_resource_editor());
-    let text_resource: EditorInputRef = guard.add_rc(accessor.instantiation_service.create_instance::<TextResourceEditorInput>((
+    let text_resource = guard.add_rc(accessor.instantiation_service.create_instance::<TextResourceEditorInput>((
         uri_file("/fake"),
         Some("fake".to_string()),
         Some(String::new()),
         None,
         None,
     )));
+    let text_resource: EditorInputRef = text_resource;
     let editor = guard.add_rc(editor_registry.get_editor_pane(&text_resource).unwrap().instantiate(group.id()));
 
     assert_eq!("workbench.editors.textResourceEditor", editor.get_id());
@@ -340,7 +346,8 @@ fn editor_pane_lookup_favors_specific_class_over_superclass_match_on_super_class
 #[test]
 fn editor_input_serializer() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
-    let test_input: EditorInputRef = guard.add_rc(TestEditorInput::new(uri_file("/fake"), "testTypeId"));
+    let test_input = guard.add_rc(TestEditorInput::new(uri_file("/fake"), "testTypeId"));
+    let test_input: EditorInputRef = test_input;
     let editor_input_registry = editor_factory_registry();
 
     let instantiation_service = InstantiationService::with_options(ServiceCollection::new(), InstantiationOptions { strict: false, parent: None, enable_tracing: false });
@@ -581,7 +588,8 @@ fn workspace_trust_required_editor() {
         guard.add(editor_pane_registry().register_editor_pane(editor_descriptor, vec![TypeId::of::<TrustRequiredTestInput>()]));
 
         let test_input = TrustRequiredTestInput::new();
-        let input: EditorInputRef = guard.add_rc(test_input);
+        let input = guard.add_rc(test_input);
+        let input: EditorInputRef = input;
 
         editor_panes.open_editor(&input, None, EditorOpenContext::default()).await.unwrap();
         assert_eq!(editor_panes.active_editor_pane().unwrap().get_id(), WORKSPACE_TRUST_REQUIRED_EDITOR_ID);
