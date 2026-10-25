@@ -2,12 +2,12 @@
 //! que junta o texto fantasma (um `GhostTextView` por trecho), a `InlineEditsView` (pelo
 //! `InlineEditsViewAndDiffProducer`) e o indicador da margem, e escolhe quando cada um aparece.
 //!
-//! Pendente, ligado por contrato (as duas peças do construtor original que ainda não têm porte):
-//! - `InlineCompletionsHintsWidget` (`hintsWidget/inlineCompletionsHintsWidget.ts`): o original o registra no fim do
-//!   construtor, depois da folha de estilo, com `new InlineCompletionsHintsWidget(editor, model, instantiationService)`. O
-//!   porte recebe o mesmo trio (o `Rc<CodeEditorWidget>`, o `IObservable<Option<Rc<InlineCompletionsModel>>>` e o
-//!   [`InlineEditsViewServices`] de onde sai o que ele pedir) e é registrado no `base` desta view nesse ponto, que fica marcado
-//!   no construtor. Ele traz junto o `StatusBarViewItem` de `utils`;
+//! O `InlineCompletionsHintsWidget` (`hintsWidget/inlineCompletionsHintsWidget.ts`) é criado direto, como no original: depois
+//! da folha de estilo, com `new InlineCompletionsHintsWidget(editor, model, instantiationService)`. O
+//! `@IInstantiationService` é o [`InlineEditsViewServices`], de onde saem os serviços do widget
+//! ([`InlineSuggestionHintsServices::from_view_services`]).
+//!
+//! Pendente, ligado por contrato (a peça do construtor original que ainda não tem porte):
 //! - `InlineEditsOnboardingExperience` (`inlineEditsNewUsers.ts`): o original o cria num `derived` ao fim do construtor, a cada
 //!   `InlineEditsViewAndDiffProducer`, com `w._inlineEditModel` ([`InlineEditsViewAndDiffProducer::inline_edit_model`]), o
 //!   indicador ([`InlineSuggestionsView::indicator`]) e `w.view._inlineCollapsedView`
@@ -43,6 +43,7 @@ use je_base::runtime::date_now;
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::config::editor_options::inline_suggest::INLINE_SUGGEST;
 use crate::inline_completions::ghost_text::GhostTextOrReplacement;
+use crate::inline_completions::hints_widget::inline_completions_hints_widget::{InlineCompletionsHintsWidget, InlineSuggestionHintsServices};
 use crate::inline_completions::inline_completions_model::{InlineCompletionsModel, InlineCompletionsModelState};
 use crate::inline_completions::inline_suggestion_item::{InlineCompletionItem, InlineSuggestionAction, InlineSuggestionItem, InlineSuggestionItemBase};
 use crate::inline_completions::utils::{convert_items_to_stable_observables, dispose_handle};
@@ -158,7 +159,7 @@ impl InlineSuggestionsView {
 
         let font_family: IObservable<String> = editor_obs.get_option(INLINE_SUGGEST).map(|options, _| options.font_family.clone());
 
-        // Ponto de ligação do `InlineCompletionsHintsWidget`: ver o contrato no topo do módulo.
+        base.register(InlineCompletionsHintsWidget::new(Rc::clone(&editor), Rc::clone(&model), InlineSuggestionHintsServices::from_view_services(&services)));
 
         let gutter_indicator_state: IObservable<Option<Rc<GutterIndicatorState>>> = {
             let (model, editor, editor_obs, inline_edit_widget) =

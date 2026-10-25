@@ -59,12 +59,15 @@
 //!     longa distância são criadas direto, como no original; o `InlineEditsViewServices` leva os serviços que as views pedem
 //!     e a `IPreviewTextModelFactory` (o `TextModel` de prévia, que o `IInstantiationService` criava);
 //!   - 4c-5 (em andamento): a `InlineSuggestionsView` (`view/inline_suggestions_view`: junta o `GhostTextView`, o
-//!     `InlineEditsViewAndDiffProducer` e o indicador da margem) está pronta. Faltam, ligados por contrato anotado no `//!` dela:
-//!     o hints widget (`hintsWidget/*`, com o `StatusBarViewItem`), que o construtor registra depois da folha de estilo, e a
-//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que o construtor cria por produtor e que depende do
-//!     armazenamento e da configuração do usuário;
+//!     `InlineEditsViewAndDiffProducer`, o indicador da margem e o hints widget) está pronta. O hints widget
+//!     (`hints_widget/`: `InlineCompletionsHintsWidget`, `InlineSuggestionHintsContentWidget`, `StatusBarViewItem`, o modelo da
+//!     `CustomizedMenuWorkbenchToolBar` sobre o `IMenuService` e `get_action_bar_actions` do `je-platform`, e o
+//!     `InlineCompletionsHoverParticipant`) é criado direto pela view, com os serviços de `InlineEditsViewServices`
+//!     (acrescidos de `command_service` e `menu_service`). Falta, ligada por contrato anotado no `//!` da view, a
+//!     `InlineEditsOnboardingExperience` (`inlineEditsNewUsers`), que depende do armazenamento e da configuração do usuário;
 //!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
-//!     injetados;
+//!     injetados, e os traits que o hover participant pede (`IInlineCompletionsHoverController` e
+//!     `IInlineCompletionsHoverHost`);
 //! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
 //!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
@@ -75,6 +78,7 @@ pub mod controller;
 pub mod edit_kind;
 pub mod ghost_text;
 pub mod graph;
+pub mod hints_widget;
 pub mod inline_completion_is_visible;
 pub mod inline_completion_view_data;
 pub mod inline_completions_model;
