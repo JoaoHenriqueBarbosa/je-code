@@ -1456,7 +1456,7 @@ impl TerminalInstance {
                 executable_is_undefined || this.shell_type.get().is_none_or(|shell_type| !SHELL_INTEGRATION_SUPPORTED_SHELL_TYPES.contains(&shell_type));
             let xterm = this.instantiation_service.create_instance::<XtermTerminal>(XtermTerminalArgs {
                 xterm_ctor,
-                options: IXtermTerminalOptions { cols: this.cols.get(), rows: this.rows.get(), scrollback: None, detached: false },
+                options: IXtermTerminalOptions { cols: this.cols.get(), rows: this.rows.get(), scrollback: None, detached: false, ..Default::default() },
             });
             *this.xterm.borrow_mut() = Some(xterm.clone());
             let raw: Rc<dyn IXtermRaw> = xterm.raw().clone();
