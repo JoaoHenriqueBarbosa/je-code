@@ -13,8 +13,9 @@
 //!   os serviços que o sticky scroll lê chegam por [`StickyScrollControllerServices`]: o `LanguageFeaturesService` é um novo por
 //!   caso (`new LanguageFeaturesService()`), o `ILanguageConfigurationService` é o do editor de teste
 //!   (`TestLanguageConfigurationService`), o `IContextMenuService` é o `mock<IContextMenuService>()` ([`MockContextMenuService`],
-//!   que o caso nunca aciona), o `IContextKeyService` é o `MockContextKeyService` de `je-platform` e a navegação de
-//!   `goToDefinitionWithLocation` (que o caso também nunca aciona) é [`MockDefinitionNavigation`]. O `ILogService`, o
+//!   que o caso nunca aciona), o `IContextKeyService` é o `MockContextKeyService` de `je-platform` e o `IInstantiationService`
+//!   (que só o `goToDefinitionWithLocation` do clique com o modificador usa, e nenhum caso chega lá) é um serviço sem serviços
+//!   registrados. O `ILogService`, o
 //!   `IEnvironmentService` e o `ILanguageFeatureDebounceService` só alimentam o serviço de debounce, que o sticky scroll
 //!   não usa.
 //! - `editor.registerAndInstantiateContribution(StickyScrollController.ID, StickyScrollController)` é
@@ -38,20 +39,18 @@ use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::lifecycle::IDisposable;
 use je_base::promise::Promise;
-use je_editor::click_link_gesture::ClickLinkMouseEvent;
-use je_editor::code_editor_widget::{CodeEditorWidget, ICodeEditor};
+use je_editor::code_editor_widget::ICodeEditor;
 use je_editor::config::editor_options::line_height::LINE_HEIGHT;
 use je_editor::language_configuration_registry::ILanguageConfigurationService;
-use je_editor::language_features_service::{LanguageFeaturesService, Location};
+use je_editor::language_features_service::LanguageFeaturesService;
 use je_editor::language_providers::{DocumentSymbol, DocumentSymbolProvider, ProviderResult, SymbolKind};
 use je_editor::language_selector::LanguageSelector;
 use je_editor::range::Range;
-use je_editor::sticky_scroll::sticky_scroll_controller::{
-    IStickyScrollController, IStickyScrollDefinitionNavigation, StickyScrollController, StickyScrollControllerServices,
-};
+use je_editor::sticky_scroll::sticky_scroll_controller::{IStickyScrollController, StickyScrollController, StickyScrollControllerServices};
 use je_editor::sticky_scroll::sticky_scroll_element::StickyRange;
 use je_editor::sticky_scroll::sticky_scroll_provider::{IStickyLineCandidateProvider, StickyLineCandidate, StickyLineCandidateProvider};
 use je_editor::text_model::TextModel;
+use je_instantiation::{InstantiationService, ServiceCollection};
 use je_platform::contextkey::IContextKeyService;
 use je_platform::contextview::context_view::{ContextMenuRequest, IContextMenuService};
 use je_platform::keybinding::mock_keybinding_service::MockContextKeyService;
@@ -78,15 +77,6 @@ impl IContextMenuService for MockContextMenuService {
     }
 
     fn show_context_menu(&self, _request: ContextMenuRequest) {
-        unimplemented!("mock")
-    }
-}
-
-/// O `goToDefinitionWithLocation` que o controlador chama no clique com o modificador: nenhum caso chega lá.
-struct MockDefinitionNavigation;
-
-impl IStickyScrollDefinitionNavigation for MockDefinitionNavigation {
-    fn go_to_definition_with_location(&self, _event: &ClickLinkMouseEvent, _editor: &Rc<CodeEditorWidget>, _location: &Location) -> Promise<()> {
         unimplemented!("mock")
     }
 }
@@ -223,7 +213,7 @@ impl StickyScrollTestContext {
                     language_features_service,
                     language_configuration_service,
                     context_key_service,
-                    definition_navigation: Rc::new(MockDefinitionNavigation),
+                    instantiation_service: InstantiationService::new(ServiceCollection::new()),
                 },
             )
         })

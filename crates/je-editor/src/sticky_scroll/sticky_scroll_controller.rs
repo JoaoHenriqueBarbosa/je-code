@@ -10,9 +10,8 @@
 //! - Os argumentos injetados do construtor (`@IContextMenuService`, `@ILanguageFeaturesService`, `@IInstantiationService`,
 //!   `@ILanguageConfigurationService`, `@ILanguageFeatureDebounceService` e `@IContextKeyService`) são os
 //!   [`StickyScrollControllerServices`]. O `ILanguageFeatureDebounceService` o original recebe e nunca lê, então não existe
-//!   aqui. O `@IInstantiationService` só serve para `invokeFunction(goToDefinitionWithLocation, ...)`, e essa função
-//!   (`inlayHintsLocations.ts`, que abre o editor de destino ou o peek por `DefinitionAction`, `ITextModelService` e
-//!   `PeekContext`) não tem porte: ela chega como o [`IStickyScrollDefinitionNavigation`] injetado.
+//!   aqui. O `@IInstantiationService` serve para `invokeFunction(goToDefinitionWithLocation, ...)`, a função
+//!   [`go_to_definition_with_location`] de `inlayHintsLocations.ts`.
 //! - O `ClickLinkGesture` é o de [`crate::click_link_gesture`] e o `getDefinitionsAtPosition` é
 //!   [`get_location_links_at_position`] sobre o registro `definition_provider`.
 //! - **Eventos de DOM como métodos.** O original ouve o DOM do widget (`CONTEXT_MENU`, `MOUSE_DOWN`, `CLICK`, o rastreador de
@@ -49,6 +48,7 @@ use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
 use je_base::promise::{MaybePromise, Promise};
+use je_instantiation::InstantiationService;
 use je_platform::actions::MenuActionOptions;
 use je_platform::actions::menu_ids::sticky_scroll_context;
 use je_platform::contextkey::{IContextKey, IContextKeyService};
@@ -75,6 +75,7 @@ use crate::editor_context_keys::{sticky_scroll_focused, sticky_scroll_visible};
 use crate::folding::folding_controller::FoldingController;
 use crate::folding::folding_model::{FoldingModel, toggle_collapse_state};
 use crate::goto_symbol::get_location_links_at_position;
+use crate::inlay_hints_locations::go_to_definition_with_location;
 use crate::language_configuration_registry::ILanguageConfigurationService;
 use crate::language_features_service::{LanguageFeaturesService, Location};
 use crate::multicursor::listen_weak;
@@ -114,12 +115,6 @@ pub trait IStickyScrollController: IDisposable {
     fn on_did_change_sticky_scroll_height(&self) -> Event<StickyScrollHeightChange>;
 }
 
-/// O que o original faz com `goToDefinitionWithLocation(accessor, event, editor, location)` (ver o topo do módulo): abre a
-/// definição de `location` (no editor, ao lado ou no peek, conforme o evento e as opções).
-pub trait IStickyScrollDefinitionNavigation {
-    fn go_to_definition_with_location(&self, event: &ClickLinkMouseEvent, editor: &Rc<CodeEditorWidget>, location: &Location) -> Promise<()>;
-}
-
 /// Os serviços injetados no construtor (ver o topo do módulo).
 pub struct StickyScrollControllerServices {
     /// `@IContextMenuService`.
@@ -130,8 +125,8 @@ pub struct StickyScrollControllerServices {
     pub language_configuration_service: Rc<dyn ILanguageConfigurationService>,
     /// `@IContextKeyService`.
     pub context_key_service: Rc<dyn IContextKeyService>,
-    /// `invokeFunction(goToDefinitionWithLocation, ...)` do `@IInstantiationService`.
-    pub definition_navigation: Rc<dyn IStickyScrollDefinitionNavigation>,
+    /// `@IInstantiationService`.
+    pub instantiation_service: Rc<InstantiationService>,
 }
 
 /// A âncora do menu de contexto: a posição do ponteiro (`getAnchor: () => event`).
@@ -576,7 +571,10 @@ impl StickyScrollController {
             }
             self.reveal_position(Position::new(position.line_number, 1));
         }
-        let _ = self.services.definition_navigation.go_to_definition_with_location(e, &editor, &Location { uri: model.uri(), range });
+        let _ = self
+            .services
+            .instantiation_service
+            .invoke_function(|accessor| go_to_definition_with_location(accessor, e, &editor, &Location { uri: model.uri(), range }));
     }
 
     /// `_toggleFoldingRegionForLine(line)`.

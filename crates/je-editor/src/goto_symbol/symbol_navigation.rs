@@ -3,13 +3,11 @@
 //! `editor.gotoNextSymbolFromResult` (F12) e `editor.gotoNextSymbolFromResult.cancel` (Escape).
 //!
 //! Divergências:
-//! - **`ICodeEditorService`.** O serviço real ainda não foi portado (o recorte de `opener_service` tem só o que o
-//!   `EditorOpener` usa, e `editor_extensions::ICodeEditorLookup` só `getFocusedCodeEditor`/`getActiveCodeEditor`). O que
-//!   a navegação lê dele é o [`ISymbolNavigationEditorService`] (a fatia `onCodeEditorAdd`, `onCodeEditorRemove`,
-//!   `listCodeEditors` e `openCodeEditor`, mais o [`ICodeEditorLookup`] como supertrait), com o id
-//!   [`I_SYMBOL_NAVIGATION_EDITOR_SERVICE`]. O `openCodeEditor({ resource, options: { selection, selectionRevealType } },
-//!   source)` do original só usa `TextEditorSelectionRevealType.NearTopIfOutsideViewport`, então o recorte recebe o recurso
-//!   e a seleção e quem o implementa revela com esse tipo.
+//! - **`ICodeEditorService`.** É o [`ICodeEditorService`] de `opener_service` (`onCodeEditorAdd`, `onCodeEditorRemove`,
+//!   `listCodeEditors`, `getActiveCodeEditor` e `openCodeEditor`), com o id `I_CODE_EDITOR_SERVICE`. O
+//!   `openCodeEditor({ resource, options: { selection, selectionRevealType } }, source)` do original monta o
+//!   [`TextResourceEditorInput`] com a seleção do início da referência e o
+//!   `TextEditorSelectionRevealType.NearTopIfOutsideViewport`.
 //! - **`revealNext`** devolve `Promise<()>` em vez de `Promise<any>`: o único consumidor (o comando F12) descarta o valor.
 //! - **`registerSingleton(ISymbolNavigationService, SymbolNavigationService, InstantiationType.Delayed)`**, o
 //!   `registerEditorCommand` e o `KeybindingsRegistry.registerCommandAndKeybindingRule` do carregamento do módulo são
@@ -21,8 +19,7 @@
 //!   editor por `Weak` (o coletor de lixo do original desfaz o ciclo editor, ouvinte, editor).
 //! - `kb.getLabel()` nulo entra na mensagem como o texto `null`, como a interpolação do original.
 //!
-//! A fatia seguinte do módulo é `goToCommands.ts` (`DefinitionAction` e companhia, com o `goToDefinitionWithLocation` que o
-//! sticky scroll espera pelo trait `IStickyScrollDefinitionNavigation`).
+//! A fatia seguinte do módulo, `goToCommands.ts` (`DefinitionAction` e companhia), é [`super::go_to_commands`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -35,7 +32,6 @@ use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable, combined_disposable};
 use je_base::nls::localize;
 use je_base::promise::Promise;
-use je_base::uri::URI;
 use je_instantiation::{Injectable, InstantiationType, ServicesAccessor, register_singleton, service_id, service_impl};
 use je_platform::contextkey::{IContextKey, IContextKeyService, RawContextKey};
 use je_platform::keybinding::keybinding::IKeybindingService;
@@ -43,11 +39,12 @@ use je_platform::keybinding::keybindings_registry::{
     CommandAndKeybindingRule, KeybindingRule, KeybindingWeight, Keybindings, keybindings_registry,
 };
 use je_platform::notification::{INotificationService, NotificationMessage, StatusHandle};
+use je_platform::opener::editor_types::TextEditorSelectionRevealType;
 
 use super::references_model::{OneReference, ReferencesModel, ext_uri};
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor, IEditorCommand};
-use crate::editor_extensions::{Command, CommandKeybindingsOptions, CommandOptions, EditorCommand, ICodeEditorLookup, register_editor_command};
-use crate::range::Range;
+use crate::editor_extensions::{Command, CommandKeybindingsOptions, CommandOptions, EditorCommand, register_editor_command};
+use crate::opener_service::{ICodeEditorService, TextEditorOptions, TextResourceEditorInput, range_to_text_editor_selection};
 
 thread_local! {
     static CTX_HAS_SYMBOLS: RawContextKey = RawContextKey::new(
@@ -83,28 +80,11 @@ je_instantiation::delayed_proxy!(pub SymbolNavigationServiceProxy for dyn ISymbo
 
 service_id!(pub I_SYMBOL_NAVIGATION_SERVICE: dyn ISymbolNavigationService = "ISymbolNavigationService", proxy SymbolNavigationServiceProxy);
 
-/// A fatia de `ICodeEditorService` que a navegação usa (ver "Divergências").
-pub trait ISymbolNavigationEditorService: ICodeEditorLookup {
-    /// `onCodeEditorAdd`.
-    fn on_code_editor_add(&self) -> Event<Rc<CodeEditorWidget>>;
-
-    /// `onCodeEditorRemove`.
-    fn on_code_editor_remove(&self) -> Event<Rc<CodeEditorWidget>>;
-
-    /// `listCodeEditors()`.
-    fn list_code_editors(&self) -> Vec<Rc<CodeEditorWidget>>;
-
-    /// `openCodeEditor({ resource, options: { selection, selectionRevealType: NearTopIfOutsideViewport } }, source)`.
-    fn open_code_editor(&self, resource: URI, selection: Range, source: &Rc<CodeEditorWidget>) -> Promise<Option<Rc<CodeEditorWidget>>>;
-}
-
-service_id!(pub I_SYMBOL_NAVIGATION_EDITOR_SERVICE: dyn ISymbolNavigationEditorService = "symbolNavigationEditorService");
-
 /// `SymbolNavigationService`.
 pub struct SymbolNavigationService {
     me: Weak<SymbolNavigationService>,
     ctx_has_symbols: Rc<dyn IContextKey>,
-    editor_service: Rc<dyn ISymbolNavigationEditorService>,
+    editor_service: Rc<dyn ICodeEditorService>,
     notification_service: Rc<dyn INotificationService>,
     keybinding_service: Rc<dyn IKeybindingService>,
     current_model: RefCell<Option<Rc<ReferencesModel>>>,
@@ -116,7 +96,7 @@ pub struct SymbolNavigationService {
 
 impl Injectable for SymbolNavigationService {
     type Args = ();
-    type Deps = (Rc<dyn IContextKeyService>, Rc<dyn ISymbolNavigationEditorService>, Rc<dyn INotificationService>, Rc<dyn IKeybindingService>);
+    type Deps = (Rc<dyn IContextKeyService>, Rc<dyn ICodeEditorService>, Rc<dyn INotificationService>, Rc<dyn IKeybindingService>);
 
     fn create(_: (), (context_key_service, editor_service, notification_service, keybinding_service): Self::Deps) -> Rc<Self> {
         let ctx_has_symbols = ctx_has_symbols().bind_to(&*context_key_service);
@@ -243,8 +223,16 @@ impl ISymbolNavigationService for SymbolNavigationService {
         // open editor, ignore events while that happens
         self.ignore_editor_change.set(true);
         let me = self.me.clone();
+        let input = TextResourceEditorInput {
+            resource: reference.uri().clone(),
+            options: Some(TextEditorOptions {
+                selection: Some(range_to_text_editor_selection(&reference.range().collapse_to_start())),
+                selection_reveal_type: Some(TextEditorSelectionRevealType::NearTopIfOutsideViewport),
+                ..TextEditorOptions::default()
+            }),
+        };
         self.editor_service
-            .open_code_editor(reference.uri().clone(), reference.range().collapse_to_start(), source)
+            .open_code_editor(input, Some(Rc::clone(source)), None)
             .finally(move || {
                 if let Some(this) = me.upgrade() {
                     this.ignore_editor_change.set(false);
@@ -324,7 +312,7 @@ struct EditorState {
 }
 
 impl EditorState {
-    fn new(editor_service: &Rc<dyn ISymbolNavigationEditorService>) -> Rc<Self> {
+    fn new(editor_service: &Rc<dyn ICodeEditorService>) -> Rc<Self> {
         let listeners: Rc<Listeners> = Rc::new(RefCell::new(HashMap::new()));
         let on_did_change: Rc<Emitter<Rc<CodeEditorWidget>>> = Emitter::new();
         let disposables = DisposableStore::new();
