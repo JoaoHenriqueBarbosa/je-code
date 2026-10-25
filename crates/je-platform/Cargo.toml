@@ -72,3 +72,6 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# O servidor de recursos remotos do teste do `ProtocolMainService` usa os cabeçalhos de resposta do `je-server`
+# (`getRemoteResourceResponseHeaders`); o ciclo é só de teste, que o cargo permite.
+je-server = { path = "../je-server" }

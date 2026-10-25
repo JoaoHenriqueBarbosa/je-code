@@ -34,7 +34,10 @@ use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_platform::backup::backup_main_service::IBackupMainService;
 use je_platform::backup::{BackupInfo, EmptyWindowBackupInfo, FolderBackupInfo, WorkspaceBackupInfo};
-use je_platform::dialogs::dialog_main_service::{IDialogMainService, MessageBoxOptions, MessageBoxReturnValue};
+use je_platform::dialogs::dialog_main_service::{
+    BrowserWindow, IDialogMainService, MessageBoxOptions, MessageBoxReturnValue, OpenDialogOptions, OpenDialogReturnValue, SaveDialogOptions, SaveDialogReturnValue,
+};
+use je_platform::dialogs::NativeOpenDialogOptions;
 use je_platform::files::file_service::FileService;
 use je_platform::log::NullLogService;
 use je_platform::resources::{ext_uri_biased_ignore_path_case, host_environment, uri_file};
@@ -46,7 +49,31 @@ use je_platform::workspaces::{WorkspaceFolderCreationData, rewrite_workspace_fil
 struct TestDialogMainService;
 
 impl IDialogMainService for TestDialogMainService {
-    fn show_message_box(&self, _options: MessageBoxOptions) -> Promise<MessageBoxReturnValue> {
+    fn pick_file_folder(&self, _options: NativeOpenDialogOptions, _window: Option<BrowserWindow>) -> Promise<Option<Vec<String>>> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_folder(&self, _options: NativeOpenDialogOptions, _window: Option<BrowserWindow>) -> Promise<Option<Vec<String>>> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_file(&self, _options: NativeOpenDialogOptions, _window: Option<BrowserWindow>) -> Promise<Option<Vec<String>>> {
+        panic!("Method not implemented.")
+    }
+
+    fn pick_workspace(&self, _options: NativeOpenDialogOptions, _window: Option<BrowserWindow>) -> Promise<Option<Vec<String>>> {
+        panic!("Method not implemented.")
+    }
+
+    fn show_message_box(&self, _options: MessageBoxOptions, _window: Option<BrowserWindow>) -> Promise<MessageBoxReturnValue> {
+        panic!("Method not implemented.")
+    }
+
+    fn show_save_dialog(&self, _options: SaveDialogOptions, _window: Option<BrowserWindow>) -> Promise<SaveDialogReturnValue> {
+        panic!("Method not implemented.")
+    }
+
+    fn show_open_dialog(&self, _options: OpenDialogOptions, _window: Option<BrowserWindow>) -> Promise<OpenDialogReturnValue> {
         panic!("Method not implemented.")
     }
 }

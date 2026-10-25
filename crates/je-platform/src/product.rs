@@ -141,6 +141,14 @@ pub trait IProductService {
     fn date(&self) -> Option<&str> {
         None
     }
+    /// `target`: o tipo de instalador do produto (`user`, `system`, `archive`), quando ele declara. Padrão: ausente.
+    fn target(&self) -> Option<&str> {
+        None
+    }
+    /// `darwinUniversalAssetId`: o identificador do pacote universal do macOS, quando o produto declara. Padrão: ausente.
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        None
+    }
     /// `trustedExtensionPublishers`: os publishers (em minúsculas) cujas extensões se atualizam sem a espera da
     /// quarentena. Padrão: nenhum.
     fn trusted_extension_publishers(&self) -> Vec<String> {
@@ -221,6 +229,10 @@ pub struct ProductService {
     pub copilot_versions: Option<ICopilotVersions>,
     /// `date`.
     pub date: Option<String>,
+    /// `target`.
+    pub target: Option<String>,
+    /// `darwinUniversalAssetId`.
+    pub darwin_universal_asset_id: Option<String>,
     /// `trustedExtensionPublishers`.
     pub trusted_extension_publishers: Vec<String>,
     /// `extensionKeywords`.
@@ -275,6 +287,8 @@ impl Default for ProductService {
             extensions_gallery: None,
             copilot_versions: None,
             date: None,
+            target: None,
+            darwin_universal_asset_id: None,
             trusted_extension_publishers: Vec::new(),
             extension_keywords: None,
             extension_recommendations: None,
@@ -383,6 +397,12 @@ impl IProductService for ProductService {
     }
     fn date(&self) -> Option<&str> {
         self.date.as_deref()
+    }
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        self.darwin_universal_asset_id.as_deref()
     }
     fn trusted_extension_publishers(&self) -> Vec<String> {
         self.trusted_extension_publishers.clone()
@@ -545,5 +565,14 @@ impl IProductService for je_base::product::IProductConfiguration {
     }
     fn built_in_extensions_enabled_with_auto_updates(&self) -> Vec<String> {
         self.built_in_extensions_enabled_with_auto_updates.clone()
+    }
+    fn date(&self) -> Option<&str> {
+        self.date.as_deref()
+    }
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+    fn darwin_universal_asset_id(&self) -> Option<&str> {
+        self.darwin_universal_asset_id.as_deref()
     }
 }
