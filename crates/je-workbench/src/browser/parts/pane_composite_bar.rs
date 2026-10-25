@@ -9,7 +9,8 @@
 //! - **`HTMLElement`.** O contêiner onde a barra se cria é o [`ContentElement`] da parte (o `.content` do original), um
 //!   estado nativo com o tamanho que `size(element, w, h)` aplica.
 //! - **`fillExtraContextMenuActions(actions, e?: MouseEvent | GestureEvent)`.** O evento do ponteiro não tem equivalente
-//!   nativo neste contrato; o gancho recebe só a lista de ações.
+//!   nativo; do `e?.target` o gancho só precisa saber se o alvo está dentro do menu compacto, e isso é o
+//!   [`ContextMenuTarget`] (ausente quando o menu foi aberto sem ponteiro).
 //! - **`IPaneCompositePart`** traz o que a barra consulta da parte (`partId` e as listas de identificadores).
 
 use std::cell::Cell;
@@ -24,6 +25,13 @@ use je_widgets::action_bar::ActionsOrientation;
 use je_widgets::hover_api::HoverPosition;
 
 use crate::services::layout::layout_service::Parts;
+
+/// O que `fillExtraContextMenuActions` lê do `e.target`: o resultado de `isAncestor(e.target, menuBarContainer)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContextMenuTarget {
+    /// O alvo do ponteiro está dentro do contêiner do menu compacto.
+    pub in_menu_bar_container: bool,
+}
 
 /// `IPaneCompositePart`, no recorte que a barra de painéis lê.
 pub trait IPaneCompositePart {
@@ -106,7 +114,7 @@ pub struct PaneCompositeBarOptions {
     pub activity_hover_options: ActivityHoverOptions,
     pub prevent_loop_navigation: bool,
     pub recompute_sizes: bool,
-    pub fill_extra_context_menu_actions: Rc<dyn Fn(&mut Vec<ActionRef>)>,
+    pub fill_extra_context_menu_actions: Rc<dyn Fn(&mut Vec<ActionRef>, Option<ContextMenuTarget>)>,
     pub composite_size: f64,
     pub colors: Rc<dyn Fn(&dyn IColorTheme) -> CompositeBarColors>,
     pub overflow_action_size: f64,
@@ -141,8 +149,14 @@ pub trait IGlobalCompositeBar: IDisposable {
     /// `element.clientWidth`.
     fn client_width(&self) -> f64;
 
+    /// `create(parent)`.
+    fn create(&self, parent: &Rc<ContentElement>);
+
     /// `focus()`.
     fn focus(&self);
+
+    /// `getContextMenuActions()`.
+    fn get_context_menu_actions(&self) -> Vec<ActionRef>;
 
     /// `onDidChange`.
     fn on_did_change(&self) -> Event<()>;
