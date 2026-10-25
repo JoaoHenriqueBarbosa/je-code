@@ -30,7 +30,9 @@
 //!   (`mtku`) e o tachado (`mtks`) não são desenhados (o parágrafo do `je-ui` não tem decoração de texto). O `white-space: normal`
 //!   do CSS é aplicado ao montar os trechos. O `display: flex; align-items: center` de `.input-collapse-container` e de
 //!   `.cell-collapse-preview` é a posição calculada em `layout_collapsed_children` (ícone do markdown, prévia com `padding: 0 8px` e
-//!   o botão `expandInputIcon` de 16px com `padding: 2px`). O `collapsedCellTTPolicy` (Trusted Types) não existe.
+//!   o botão `expandInputIcon` de 16px com `padding: 2px`). O `collapsedCellTTPolicy` (Trusted Types) não existe. A montagem da prévia
+//!   (os trechos, o botão de expandir e a posição) é compartilhada com `code_cell.rs`: [`collapsed_preview_spans_from_html`],
+//!   [`fill_collapsed_preview`] e [`layout_collapsed_preview`].
 //! - **Prévia para leitor de tela.** `safeSetInnerHtml(container, renderedHtml)` é `sanitize_html` mais
 //!   [`MarkdownView::from_nodes`], o mesmo parágrafo com trechos e quebra do markdown das configurações, anexado ao contêiner de
 //!   acessibilidade. O `DOM.clearNode` do ramo sem leitor de tela repete o `innerText = ''` logo acima e não é repetido.
@@ -73,7 +75,7 @@ use je_platform::keybinding::keybinding::IKeybindingService;
 use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_text::TextStyle;
-use je_ui::{Content, Cursor, NodeId, Paragraph, Role, Span, Ui};
+use je_ui::{Content, Cursor, NodeId, Paragraph, Role, Span, Tree, Ui};
 use je_widgets::dom::{clear_node, create_el, hide, show};
 use je_widgets::icon_labels::{InlineStyle, LabelPart, Rendered, build_parts, render_icon};
 use je_widgets::text::measure_text;
@@ -282,6 +284,149 @@ pub struct MarkupCellStyles {
     pub collapse_preview_line_height: f64,
     /// O estilo do markdown renderizado para leitor de tela.
     pub markdown: MarkdownViewStyles,
+}
+
+impl MarkupCellStyles {
+    /// A fatia dos estilos que a prévia recolhida usa, que a célula de código também usa.
+    pub fn collapsed_preview(&self) -> CollapsedPreviewStyles {
+        CollapsedPreviewStyles {
+            expand_icon_color: self.expand_icon_color,
+            foreground: self.collapse_preview_foreground,
+            font_family: self.collapse_preview_font_family.clone(),
+            font_size: self.collapse_preview_font_size,
+            line_height: self.collapse_preview_line_height,
+        }
+    }
+}
+
+/// As cores, a fonte e as medidas de `.cell-collapse-preview`, comuns à entrada recolhida das células de markup e de código.
+#[derive(Clone)]
+pub struct CollapsedPreviewStyles {
+    /// A cor do glifo `expandInputIcon` (`color: grey`).
+    pub expand_icon_color: Rgba,
+    /// A cor do texto da prévia.
+    pub foreground: Rgba,
+    /// `--notebook-cell-input-preview-font-family`.
+    pub font_family: String,
+    /// `--notebook-cell-input-preview-font-size`.
+    pub font_size: f32,
+    /// A altura da linha do texto da prévia.
+    pub line_height: f64,
+}
+
+/// Os nós de uma prévia recolhida montada por [`fill_collapsed_preview`].
+#[derive(Clone, Copy)]
+pub struct CollapsedPreviewNodes {
+    /// `.cell-collapse-preview`.
+    pub element: NodeId,
+    /// `.monaco-tokenized-source`, o texto da primeira linha.
+    pub source: NodeId,
+    /// `.expandInputIcon`.
+    pub expand_icon: NodeId,
+}
+
+/// `tokenizeToStringSync(languageService, line, language)`: o HTML da linha tokenizada (`<div class="monaco-tokenized-source">` com um
+/// `<span class="mtkN ...">` por token), sobre o suporte de tokenização já resolvido.
+pub fn tokenize_line_to_html(line: &JsString, language_service: &dyn ILanguageService, language: &str) -> JsString {
+    let codec = language_service.language_id_codec();
+    let support = tokenization_registry().get(language);
+    tokenize_to_string_with_support(line, &codec, support.as_ref())
+}
+
+/// O HTML tokenizado de [`tokenize_line_to_html`] (ou o montado por `_getRichTextFromLineTokens`) como os trechos de texto colorido da
+/// prévia.
+pub fn collapsed_preview_spans_from_html(html: &JsString, styles: &CollapsedPreviewStyles) -> Vec<Span> {
+    let color_map = tokenization_registry().get_color_map().unwrap_or_default();
+
+    let mut spans = Vec::new();
+    let mut after_space = true;
+    let source = parse_body(html.units());
+    for node in &source.children {
+        let Node::Element(div) = node else { continue };
+        for token in &div.children {
+            let Node::Element(token) = token else { continue };
+            let text = collapse_white_space(&token.text_content().to_string_lossy(), &mut after_space);
+            if text.is_empty() {
+                continue;
+            }
+
+            let mut color = styles.foreground;
+            let mut weight = 400;
+            let mut italic = false;
+            let classes = token.get_attribute("class").map(|classes| classes.to_string_lossy()).unwrap_or_default();
+            for class in classes.split_whitespace() {
+                match class {
+                    "mtkb" => weight = 700,
+                    "mtki" => italic = true,
+                    _ => {
+                        let mapped = class.strip_prefix("mtk").and_then(|index| index.parse::<usize>().ok()).and_then(|index| color_map.get(index)).and_then(|css| parse_css_hex(css));
+                        if let Some(mapped) = mapped {
+                            color = mapped;
+                        }
+                    }
+                }
+            }
+            let style = TextStyle::new(styles.font_family.clone(), styles.font_size, weight).italic(italic);
+            spans.push(Span::text(text, style, color));
+        }
+    }
+    // `white-space: normal` descarta o espaço no fim da linha.
+    if let Some(last) = spans.last_mut()
+        && last.text.ends_with(' ')
+    {
+        last.text.pop();
+        if last.text.is_empty() {
+            spans.pop();
+        }
+    }
+    spans
+}
+
+/// Monta o conteúdo de um `.cell-collapse-preview` (o texto da primeira linha e o botão `.expandInputIcon`, com a dica do atalho de
+/// expandir quando ele existe): é o `innerHTML = richText` mais `_attachInputExpandButton(element)` das duas células.
+pub fn fill_collapsed_preview(tree: &mut Tree, element: NodeId, spans: Vec<Span>, styles: &CollapsedPreviewStyles, keybinding_label: Option<&str>) -> CollapsedPreviewNodes {
+    let source = create_el(tree, element, Role::Generic, "monaco-tokenized-source");
+    let mut paragraph = Paragraph::new(spans, styles.line_height);
+    paragraph.wrap = true;
+    tree.style_mut(source).content = Content::Paragraph(paragraph);
+    tree.style_mut(source).cursor = Some(Cursor::Pointer);
+
+    let expand_icon = create_el(tree, element, Role::Generic, "expandInputIcon");
+    tree.style_mut(expand_icon).content = Content::Codicon { id: "more".to_owned(), size: EXPAND_GLYPH_SIZE, color: styles.expand_icon_color };
+    if let Some(label) = keybinding_label {
+        tree.set_attribute(element, "title", localize("cellExpandInputButtonLabelWithDoubleClick", "Double-click to expand cell input ({0})", &[label]));
+        tree.set_attribute(expand_icon, "title", localize("cellExpandInputButtonLabel", "Expand Cell Input ({0})", &[label]));
+    }
+    CollapsedPreviewNodes { element, source, expand_icon }
+}
+
+/// O `display: flex; align-items: center` de `.cell-collapse-preview` dentro do contêiner: a prévia começa em `left` (depois dos ícones
+/// que o contêiner tem antes dela), com `padding: 0 8px`, o texto e o botão de expandir logo depois dele, centrados na altura do
+/// contêiner. Devolve a altura do contêiner (a medida, ou a do fluxo normal quando ele ainda não tem caixa).
+pub fn layout_collapsed_preview(tree: &mut Tree, container: NodeId, nodes: &CollapsedPreviewNodes, left: f64, fallback_width: f64, styles: &CollapsedPreviewStyles) -> f64 {
+    let container_bounds = tree.bounds(container);
+    let width = if container_bounds.width() > 0.0 { container_bounds.width() } else { fallback_width };
+    let height = if container_bounds.height() > 0.0 { container_bounds.height() } else { styles.line_height.max(EXPAND_BUTTON_SIZE) };
+
+    let (natural_width, line_height) = match &tree.style(nodes.source).content {
+        Content::Paragraph(paragraph) => (paragraph.spans.iter().map(|span| measure_text(&span.text, &span.style)).sum::<f64>(), paragraph.line_height),
+        _ => (0.0, styles.line_height),
+    };
+    let available = (width - left - 2.0 * PREVIEW_PADDING_X - EXPAND_BUTTON_SIZE).max(0.0);
+    let text_width = natural_width.min(available);
+    let text_height = match &tree.style(nodes.source).content {
+        Content::Paragraph(paragraph) => paragraph.height(text_width).max(line_height),
+        _ => line_height,
+    };
+
+    let element_width = PREVIEW_PADDING_X + text_width + EXPAND_BUTTON_SIZE + PREVIEW_PADDING_X;
+    tree.set_bounds(nodes.element, Rect::new(left, 0.0, left + element_width, height));
+    let text_y = (height - text_height) / 2.0;
+    tree.set_bounds(nodes.source, Rect::new(PREVIEW_PADDING_X, text_y, PREVIEW_PADDING_X + text_width, text_y + text_height));
+    let button_x = PREVIEW_PADDING_X + text_width;
+    let button_y = (height - EXPAND_BUTTON_SIZE) / 2.0;
+    tree.set_bounds(nodes.expand_icon, Rect::new(button_x, button_y, button_x + EXPAND_BUTTON_SIZE, button_y + EXPAND_BUTTON_SIZE));
+    height
 }
 
 /// Os serviços que o `createInstance` do original injetava em `MarkupCell`.
@@ -681,8 +826,9 @@ impl MarkupCell {
         }
         self.set_overflow_widgets_visible(false);
 
-        let preview_spans = self.collapsed_preview_spans();
         let styles = &self.services.styles;
+        let preview_styles = styles.collapsed_preview();
+        let preview_spans = self.collapsed_preview_spans(&preview_styles);
         let keybinding_label = self.services.keybinding_service.lookup_keybinding(EXPAND_CELL_INPUT_COMMAND_ID, None, false).and_then(|keybinding| keybinding.get_label());
 
         {
@@ -693,20 +839,9 @@ impl MarkupCell {
             let markdown_icon = rendered.iter().find_map(|part| if let Rendered::Icon { node } = part { Some(*node) } else { None });
 
             let element = create_el(&mut tree, container, Role::Generic, "cell-collapse-preview");
-            let source = create_el(&mut tree, element, Role::Generic, "monaco-tokenized-source");
-            let mut paragraph = Paragraph::new(preview_spans, styles.collapse_preview_line_height);
-            paragraph.wrap = true;
-            tree.style_mut(source).content = Content::Paragraph(paragraph);
-            tree.style_mut(source).cursor = Some(Cursor::Pointer);
+            let nodes = fill_collapsed_preview(&mut tree, element, preview_spans, &preview_styles, keybinding_label.as_deref());
 
-            let expand_icon = create_el(&mut tree, element, Role::Generic, "expandInputIcon");
-            tree.style_mut(expand_icon).content = Content::Codicon { id: "more".to_owned(), size: EXPAND_GLYPH_SIZE, color: styles.expand_icon_color };
-            if let Some(label) = keybinding_label {
-                tree.set_attribute(element, "title", localize("cellExpandInputButtonLabelWithDoubleClick", "Double-click to expand cell input ({0})", &[label.as_str()]));
-                tree.set_attribute(expand_icon, "title", localize("cellExpandInputButtonLabel", "Expand Cell Input ({0})", &[label.as_str()]));
-            }
-
-            self.layout_collapsed_children(&mut tree, container, markdown_icon, element, source, expand_icon);
+            self.layout_collapsed_children(&mut tree, container, markdown_icon, &nodes, &preview_styles);
         }
 
         self.set_aria_hidden(true);
@@ -716,90 +851,21 @@ impl MarkupCell {
         self.markup.layout_change(CellLayoutChangeEvent::default());
     }
 
-    /// O `display: flex; align-items: center` de `.input-collapse-container` e de `.cell-collapse-preview`: o ícone do markdown, a
-    /// prévia (`padding: 0 8px`, com o texto e o botão de expandir logo depois dele), centrados na altura do contêiner.
-    fn layout_collapsed_children(&self, tree: &mut je_ui::Tree, container: NodeId, markdown_icon: Option<NodeId>, element: NodeId, source: NodeId, expand_icon: NodeId) {
-        let styles = &self.services.styles;
-        let container_bounds = tree.bounds(container);
-        let width = if container_bounds.width() > 0.0 { container_bounds.width() } else { self.markup.layout_info().editor_width };
-        let height = if container_bounds.height() > 0.0 { container_bounds.height() } else { styles.collapse_preview_line_height.max(EXPAND_BUTTON_SIZE) };
-
+    /// O `display: flex; align-items: center` de `.input-collapse-container`: o ícone do markdown e, depois dele, a prévia
+    /// ([`layout_collapsed_preview`]), centrados na altura do contêiner.
+    fn layout_collapsed_children(&self, tree: &mut Tree, container: NodeId, markdown_icon: Option<NodeId>, nodes: &CollapsedPreviewNodes, styles: &CollapsedPreviewStyles) {
+        let height = layout_collapsed_preview(tree, container, nodes, ICON_SIZE, self.markup.layout_info().editor_width, styles);
         if let Some(icon) = markdown_icon {
             let y = (height - ICON_SIZE) / 2.0;
             tree.set_bounds(icon, Rect::new(0.0, y, ICON_SIZE, y + ICON_SIZE));
         }
-
-        let (natural_width, line_height) = match &tree.style(source).content {
-            Content::Paragraph(paragraph) => (paragraph.spans.iter().map(|span| measure_text(&span.text, &span.style)).sum::<f64>(), paragraph.line_height),
-            _ => (0.0, styles.collapse_preview_line_height),
-        };
-        let available = (width - ICON_SIZE - 2.0 * PREVIEW_PADDING_X - EXPAND_BUTTON_SIZE).max(0.0);
-        let text_width = natural_width.min(available);
-        let text_height = match &tree.style(source).content {
-            Content::Paragraph(paragraph) => paragraph.height(text_width).max(line_height),
-            _ => line_height,
-        };
-
-        let element_width = PREVIEW_PADDING_X + text_width + EXPAND_BUTTON_SIZE + PREVIEW_PADDING_X;
-        tree.set_bounds(element, Rect::new(ICON_SIZE, 0.0, ICON_SIZE + element_width, height));
-        let text_y = (height - text_height) / 2.0;
-        tree.set_bounds(source, Rect::new(PREVIEW_PADDING_X, text_y, PREVIEW_PADDING_X + text_width, text_y + text_height));
-        let button_x = PREVIEW_PADDING_X + text_width;
-        let button_y = (height - EXPAND_BUTTON_SIZE) / 2.0;
-        tree.set_bounds(expand_icon, Rect::new(button_x, button_y, button_x + EXPAND_BUTTON_SIZE, button_y + EXPAND_BUTTON_SIZE));
     }
 
     /// `this.getRichText(this.viewCell.textBuffer, this.viewCell.language)`, como os trechos de texto colorido da primeira linha.
-    fn collapsed_preview_spans(&self) -> Vec<Span> {
-        let styles = &self.services.styles;
+    fn collapsed_preview_spans(&self, styles: &CollapsedPreviewStyles) -> Vec<Span> {
         let line = self.markup.text_buffer().borrow().get_line_content(1);
-        let codec = self.services.language_service.language_id_codec();
-        let support = tokenization_registry().get(&self.markup.language());
-        let html = tokenize_to_string_with_support(&line, &codec, support.as_ref());
-        let color_map = tokenization_registry().get_color_map().unwrap_or_default();
-
-        let mut spans = Vec::new();
-        let mut after_space = true;
-        let source = parse_body(html.units());
-        for node in &source.children {
-            let Node::Element(div) = node else { continue };
-            for token in &div.children {
-                let Node::Element(token) = token else { continue };
-                let text = collapse_white_space(&token.text_content().to_string_lossy(), &mut after_space);
-                if text.is_empty() {
-                    continue;
-                }
-
-                let mut color = styles.collapse_preview_foreground;
-                let mut weight = 400;
-                let mut italic = false;
-                let classes = token.get_attribute("class").map(|classes| classes.to_string_lossy()).unwrap_or_default();
-                for class in classes.split_whitespace() {
-                    match class {
-                        "mtkb" => weight = 700,
-                        "mtki" => italic = true,
-                        _ => {
-                            let mapped = class.strip_prefix("mtk").and_then(|index| index.parse::<usize>().ok()).and_then(|index| color_map.get(index)).and_then(|css| parse_css_hex(css));
-                            if let Some(mapped) = mapped {
-                                color = mapped;
-                            }
-                        }
-                    }
-                }
-                let style = TextStyle::new(styles.collapse_preview_font_family.clone(), styles.collapse_preview_font_size, weight).italic(italic);
-                spans.push(Span::text(text, style, color));
-            }
-        }
-        // `white-space: normal` descarta o espaço no fim da linha.
-        if let Some(last) = spans.last_mut()
-            && last.text.ends_with(' ')
-        {
-            last.text.pop();
-            if last.text.is_empty() {
-                spans.pop();
-            }
-        }
-        spans
+        let html = tokenize_line_to_html(&line, &*self.services.language_service, &self.markup.language());
+        collapsed_preview_spans_from_html(&html, styles)
     }
 
     fn view_update_editing(self: &Rc<Self>) {

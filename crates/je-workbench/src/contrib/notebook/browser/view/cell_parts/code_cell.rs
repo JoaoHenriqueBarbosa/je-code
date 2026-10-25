@@ -1,28 +1,26 @@
 //! Porte de `src/vs/workbench/contrib/notebook/browser/view/cellParts/codeCell.ts` (a classe `CodeCell`; o `CodeCellLayout` é de
 //! `code_cell_layout.rs`): liga uma célula de código ao template dela, com o editor da célula, a conta de layout do editor, o foco, as
-//! partes de conteúdo e os ouvintes do editor, do notebook e do view model. **Parte 1 de 2**: os campos, o construtor e tudo o que o
-//! original faz até `shouldPreserveEditor` e `updateEditorForFocusModeChange`.
+//! partes de conteúdo e os ouvintes do editor, do notebook e do view model. A classe inteira está aqui: o construtor e os ouvintes, o
+//! estado recolhido da entrada e da saída (`updateForCollapseState` e a prévia da primeira linha), o layout do editor
+//! (`layoutEditor`, `onCellWidthChange`, `onCellEditorHeightChange` e `relayoutCell`) e o `dispose()` sobrescrito.
 //!
-//! ## O que a parte 2 traz (o resto do arquivo original, `updateForCollapseState` em diante)
-//! Um segundo `impl CodeCell` neste mesmo arquivo, que usa os campos já declarados aqui (`input_collapse_element`,
-//! `rendered_input_collapse_state`, `rendered_output_collapse_state`, `collapsed_execution_icon`, `output_container_renderer`,
-//! `pending_layout`, `is_disposed`) e o contrato abaixo, que a parte 1 já chama:
-//! - `fn update_for_collapse_state(&self) -> bool`, com `_collapseInput`, `_attachInputExpandButton`, `_showInput`, `_getRichText`,
-//!   `_getRichTextFromLineTokens`, `_removeInputCollapsePreview`, `_updateOutputInnerContainer`, `_collapseOutput` e `_showOutput`;
-//! - `fn initial_view_update_expanded(&self)`;
-//! - `fn layout_editor(&self, dimension: CellEditorDimension)` (o `layoutEditor(dimension)` privado da classe, que sai cedo com a
-//!   abordagem nova de layout), `fn on_cell_width_change(&self, reason: CellLayoutChangeReason)`,
-//!   `fn on_cell_editor_height_change(&self, reason: CellLayoutChangeReason)` e `pub fn relayout_cell(&self)`;
-//! - `fn flush_collapsed_input_preview(&self, model: &TextModel)`: o corpo do ouvinte de `onDidChangeTokens` de
-//!   `_reigsterModelListeners` (`innerHTML = richText` do elemento recolhido e `_attachInputExpandButton`). A parte 1 só confere a
-//!   condição `isInputCollapsed && _inputCollapseElement` e chama esta função;
-//! - `impl IDisposable for CodeCell` (o `dispose()` sobrescrito: `_isDisposed`, `editorOverflowWidgets.setVisible(false)`,
-//!   `shouldPreserveEditor` mais `editorPool.preserveFocusedEditor`, `detachTextEditor` pelo [`ICodeCellEditorHost`],
-//!   `_removeInputCollapsePreview`, o descarte do container de saídas e do `pending_layout`, e o descarte do `base`);
-//! - as chaves de estilo da prévia recolhida entram em [`CodeCellStyles`] (hoje só o rótulo do ícone de execução), e os métodos que a
-//!   parte 2 precisar do delegate do notebook entram em [`ICodeCellNotebookEditor`].
+//! Próxima: `cellRenderer.ts` (que cria o template, o editor e as partes de `CodeCellTemplateData`) e os 5 casos de
+//! `cellEditorOverflowWidgets.test.ts`.
 //!
 //! Divergências:
+//! - **A prévia recolhida da entrada** (`_collapseInput`, `_attachInputExpandButton`, `_getRichText`, `_getRichTextFromLineTokens` e o
+//!   ouvinte de `onDidChangeTokens`) usa a montagem de `markup_cell.rs` (a prévia é a mesma `.cell-collapse-preview` das duas
+//!   células): o HTML tokenizado vira os trechos de um parágrafo ([`collapsed_preview_spans_from_html`]), e o `innerHTML = richText`
+//!   mais o `_attachInputExpandButton(element)` são [`fill_collapsed_preview`] (limpar o elemento e montar de novo, o mesmo efeito de
+//!   trocar o `innerHTML`). O `collapsedCellTTPolicy` (Trusted Types) não existe. O `display: flex` do contêiner recolhido põe a
+//!   prévia depois do ícone de execução, se ele estiver visível. `_removeInputCollapsePreview` percorre os filhos com a classe
+//!   `cell-collapse-preview` (`children_with_class`) e esquece o elemento (o original mantém a referência a um elemento já fora da
+//!   árvore, que nenhum ouvinte lê). `_getRichTextFromLineTokens` lê o texto da linha dos próprios tokens da linha 1 (o mesmo
+//!   `getLineContent(1)` do modelo, que o `LineTokens` guarda).
+//! - **`outputContainer.domNode.children`** (`_updateOutputInnerContainer`) são os filhos do `ElementNode` do contêiner de saídas, e
+//!   `DOM.setVisibility` sobre eles é `show` e `hide` do próprio nó. O `viewUpdateHideOuputs` mantém a grafia do original.
+//! - O `${this.templateData.editor.getLayoutInfo()}` que o original interpola num objeto (`[object Object]`) sai com esse mesmo texto
+//!   no `_debug` de `onCellEditorHeightChange`.
 //! - **DOM é a árvore do `je-ui`.** Os elementos do template são [`NodeId`]s do [`CodeCellTemplateData`] (o `CodeCellRenderTemplate`
 //!   completo; o `CodeCellRenderTemplate` de `cell_output.rs` é a fatia dele que as saídas leem e vai dentro como `output`).
 //!   `classList.toggle` é `toggle_class`, `DOM.show` e `DOM.hide` são `show` e `hide`, `DOM.setVisibility` é [`set_visibility`],
@@ -69,6 +67,7 @@
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::{Rc, Weak};
 
+use je_base::JsString;
 use je_base::async_::race_cancellation;
 use je_base::browser::dom::CodeWindow;
 use je_base::cancellation::CancellationTokenSource;
@@ -78,8 +77,10 @@ use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{Disposable, IDisposable, MutableDisposable, to_disposable};
 use je_base::promise::Promise;
 use je_base::scrollable::ScrollEvent;
+use je_base::strings::escape;
 use je_editor::editor_browser::EditorMouseEvent;
 use je_editor::language_service::ILanguageService;
+use je_editor::line_tokens::IViewLineTokens;
 use je_editor::range::Range;
 use je_editor::text_model::TextModel;
 use je_editor::text_model_events::ModelTokensChangedEvent;
@@ -88,7 +89,7 @@ use je_platform::configuration::service::IConfigurationService;
 use je_platform::keybinding::keybinding::IKeybindingService;
 use je_render::kurbo::Rect;
 use je_ui::{Event as UiEvent, EventKind, NodeId, Role, Tree, Ui};
-use je_widgets::dom::{create_el, hide, show};
+use je_widgets::dom::{clear_node, create_el, hide, show};
 use je_widgets::highlighted_label::HighlightedLabelStyles;
 
 use super::cell_editor_options::{CellEditorOptions, ICellEditorBaseOptions};
@@ -99,11 +100,14 @@ use super::code_cell_layout::{
     CellEditorDimension, CellLayoutChangeReason, CodeCellEditorVisibility, CodeCellLayout, ICodeCellLayoutCell, ICodeCellLayoutEditor, ICodeCellLayoutEditorPart,
     ICodeCellLayoutLogService, ICodeCellLayoutNotebook,
 };
-use super::markup_cell::IMarkupCellEditor;
+use super::markup_cell::{
+    CollapsedPreviewNodes, CollapsedPreviewStyles, EXPAND_CELL_INPUT_COMMAND_ID, IMarkupCellEditor, collapsed_preview_spans_from_html, fill_collapsed_preview, layout_collapsed_preview,
+    tokenize_line_to_html,
+};
 use crate::contrib::notebook::browser::notebook_options::{EditorPadding, NotebookOptions};
 use crate::contrib::notebook::browser::notebook_view_events::NotebookLayoutInfo;
 use crate::contrib::notebook::browser::view::cell_part::{CellContentPart, CellPartsCollection, MODIFY_PRIORITY};
-use crate::contrib::notebook::browser::view_model::cell_view_model_types::{CellFocusMode, CodeCellLayoutInfo};
+use crate::contrib::notebook::browser::view_model::cell_view_model_types::{CellFocusMode, CellLayoutChangeEvent, CodeCellLayoutInfo};
 use crate::contrib::notebook::browser::view_model::code_cell_view_model::{CodeCellViewModel, OUTPUT_DISPLAY_LIMIT};
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
 use crate::contrib::notebook::common::notebook_execution_state_service::INotebookExecutionStateService;
@@ -235,10 +239,12 @@ pub struct CodeCellTemplateData {
 }
 
 /// As cores, as fontes e as medidas que o CSS dá aos nós que a célula de código desenha, montadas por quem tem o tema.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct CodeCellStyles {
     /// O estilo do rótulo do `CollapsedCodeCellExecutionIcon`.
     pub collapsed_execution_icon: HighlightedLabelStyles,
+    /// As cores, a fonte e as medidas da prévia recolhida da entrada (`.cell-collapse-preview`).
+    pub collapsed_preview: CollapsedPreviewStyles,
 }
 
 /// Os serviços que o `createInstance` do original injetava em `CodeCell`, mais o pool de editores (argumento `editorPool`).
@@ -968,5 +974,277 @@ impl CodeCell {
 
         self.toggle_container_class("cell-editor-focus", self.code.focus_mode() == CellFocusMode::Editor);
         self.toggle_container_class("cell-output-focus", self.code.focus_mode() == CellFocusMode::Output);
+    }
+}
+
+/// Acrescenta o texto ao HTML em UTF-16.
+fn push_html(out: &mut JsString, text: &str) {
+    out.push_units(&text.encode_utf16().collect::<Vec<u16>>());
+}
+
+impl CodeCell {
+    fn update_for_collapse_state(&self) -> bool {
+        if Some(self.code.is_output_collapsed()) == self.rendered_output_collapse_state.get() && Some(self.code.is_input_collapsed()) == self.rendered_input_collapse_state.get() {
+            return false;
+        }
+
+        self.code.layout_change(CellLayoutChangeEvent { editor_height: true, ..Default::default() });
+
+        if self.code.is_input_collapsed() {
+            self.collapse_input();
+        } else {
+            self.show_input();
+        }
+
+        if self.code.is_output_collapsed() {
+            self.collapse_output();
+        } else {
+            self.show_output(false);
+        }
+
+        self.relayout_cell();
+
+        self.rendered_output_collapse_state.set(Some(self.code.is_output_collapsed()));
+        self.rendered_input_collapse_state.set(Some(self.code.is_input_collapsed()));
+
+        true
+    }
+
+    /// `this._collapsedExecutionIcon.setVisibility(visible)`.
+    fn set_collapsed_execution_icon_visibility(&self, visible: bool) {
+        if let Some(icon) = self.collapsed_execution_icon.get() {
+            icon.set_visibility(visible);
+        }
+    }
+
+    /// `this.keybindingService.lookupKeybinding(EXPAND_CELL_INPUT_COMMAND_ID)?.getLabel()`.
+    fn expand_input_keybinding_label(&self) -> Option<String> {
+        self.services.keybinding_service.lookup_keybinding(EXPAND_CELL_INPUT_COMMAND_ID, None, false).and_then(|keybinding| keybinding.get_label())
+    }
+
+    /// A prévia fica depois dos ícones que o contêiner recolhido tem antes dela (o ícone de execução, quando está visível).
+    fn layout_collapse_preview(&self, tree: &mut Tree, nodes: &CollapsedPreviewNodes) {
+        let container = self.template_data.cell_input_collapsed_container;
+        let left = tree
+            .children_with_class(container, "collapsed-execution-icon")
+            .into_iter()
+            .filter(|icon| tree.style(*icon).visible)
+            .map(|icon| tree.bounds(icon).x1)
+            .fold(0.0, f64::max);
+        layout_collapsed_preview(tree, container, nodes, left, self.code.layout_info().editor_width, &self.services.styles.collapsed_preview);
+    }
+
+    fn collapse_input(&self) {
+        // hide the editor and execution label, keep the run button
+        hide(&mut self.ui.tree_mut(), self.template_data.editor_part);
+        self.template_data.editor_overflow_widgets.set_visible(false);
+        self.toggle_container_class("input-collapsed", true);
+
+        // remove input preview
+        self.remove_input_collapse_preview();
+
+        self.set_collapsed_execution_icon_visibility(true);
+
+        // update preview
+        let editor = &self.template_data.editor;
+        let rich_editor_text = match editor.get_model() {
+            Some(model) if editor.has_model() => Self::rich_text_from_line_tokens(&model),
+            _ => self.rich_text(),
+        };
+        let spans = collapsed_preview_spans_from_html(&rich_editor_text, &self.services.styles.collapsed_preview);
+        let keybinding_label = self.expand_input_keybinding_label();
+
+        let container = self.template_data.cell_input_collapsed_container;
+        let mut tree = self.ui.tree_mut();
+        let element = create_el(&mut tree, container, Role::Generic, "cell-collapse-preview");
+        *self.input_collapse_element.borrow_mut() = Some(element);
+        let nodes = fill_collapsed_preview(&mut tree, element, spans, &self.services.styles.collapsed_preview, keybinding_label.as_deref());
+        self.layout_collapse_preview(&mut tree, &nodes);
+
+        show(&mut tree, container);
+    }
+
+    /// O corpo do ouvinte de `onDidChangeTokens`: reescreve a prévia recolhida com os tokens mais recentes (`innerHTML = richText` e
+    /// `_attachInputExpandButton`).
+    fn flush_collapsed_input_preview(&self, model: &TextModel) {
+        let Some(element) = *self.input_collapse_element.borrow() else { return };
+
+        let content = Self::rich_text_from_line_tokens(model);
+        let spans = collapsed_preview_spans_from_html(&content, &self.services.styles.collapsed_preview);
+        let keybinding_label = self.expand_input_keybinding_label();
+
+        let mut tree = self.ui.tree_mut();
+        if !tree.is_alive(element) {
+            return;
+        }
+        clear_node(&mut tree, element);
+        let nodes = fill_collapsed_preview(&mut tree, element, spans, &self.services.styles.collapsed_preview, keybinding_label.as_deref());
+        self.layout_collapse_preview(&mut tree, &nodes);
+    }
+
+    fn show_input(&self) {
+        self.set_collapsed_execution_icon_visibility(false);
+        show(&mut self.ui.tree_mut(), self.template_data.editor_part);
+        self.template_data.editor_overflow_widgets.set_visible(true);
+        hide(&mut self.ui.tree_mut(), self.template_data.cell_input_collapsed_container);
+    }
+
+    /// `_getRichText(this.viewCell.textBuffer, this.viewCell.language)`: o HTML da primeira linha do buffer.
+    fn rich_text(&self) -> JsString {
+        let line = self.code.text_buffer().borrow().get_line_content(1);
+        tokenize_line_to_html(&line, &*self.services.language_service, &self.code.language())
+    }
+
+    /// `_getRichTextFromLineTokens(model)`: o HTML da primeira linha com as classes dos tokens que o modelo já calculou.
+    fn rich_text_from_line_tokens(model: &TextModel) -> JsString {
+        let mut result = JsString::new();
+        push_html(&mut result, "<div class=\"monaco-tokenized-source\">");
+
+        let first_line_tokens = model.tokenization().get_line_tokens(1);
+        let view_line_tokens = first_line_tokens.inflate();
+        let line = view_line_tokens.get_line_content();
+        let mut start_offset = 0usize;
+        for j in 0..view_line_tokens.get_count() {
+            let class_name = view_line_tokens.get_class_name(j);
+            let end_index = view_line_tokens.get_end_offset(j).max(0) as usize;
+            let end = end_index.min(line.len());
+            let start = start_offset.min(end);
+            push_html(&mut result, &format!("<span class=\"{class_name}\">"));
+            result.push_units(escape(line.slice(start, end).units()).units());
+            push_html(&mut result, "</span>");
+            start_offset = end_index;
+        }
+
+        push_html(&mut result, "</div>");
+        result
+    }
+
+    fn remove_input_collapse_preview(&self) {
+        let container = self.template_data.cell_input_collapsed_container;
+        let mut tree = self.ui.tree_mut();
+        if tree.is_alive(container) {
+            for element in tree.children_with_class(container, "cell-collapse-preview") {
+                tree.remove(element);
+            }
+        }
+        *self.input_collapse_element.borrow_mut() = None;
+    }
+
+    /// `_updateOutputInnerContainer(hide)`.
+    fn update_output_inner_container(&self, hide: bool) {
+        for child in self.template_data.output.output_container.children() {
+            if child.class_name().split_whitespace().any(|class_name| class_name == "output-inner-container") {
+                if hide {
+                    child.hide();
+                } else {
+                    child.show();
+                }
+            }
+        }
+    }
+
+    fn collapse_output(&self) {
+        self.toggle_container_class("output-collapsed", true);
+        show(&mut self.ui.tree_mut(), self.template_data.cell_output_collapsed_container);
+        self.update_output_inner_container(true);
+        self.output_container_renderer.view_update_hide_ouputs();
+    }
+
+    fn show_output(&self, init_rendering: bool) {
+        self.toggle_container_class("output-collapsed", false);
+        hide(&mut self.ui.tree_mut(), self.template_data.cell_output_collapsed_container);
+        self.update_output_inner_container(false);
+        self.output_container_renderer.view_update_show_outputs(init_rendering);
+    }
+
+    fn initial_view_update_expanded(&self) {
+        self.toggle_container_class("input-collapsed", false);
+        show(&mut self.ui.tree_mut(), self.template_data.editor_part);
+        hide(&mut self.ui.tree_mut(), self.template_data.cell_input_collapsed_container);
+        self.toggle_container_class("output-collapsed", false);
+        self.show_output(true);
+    }
+
+    fn layout_editor(&self, dimension: CellEditorDimension) {
+        if USE_NEW_APPROACH_FOR_EDITOR_LAYOUT {
+            return;
+        }
+        let editor_layout = self.notebook_editor.get_layout_info();
+        let max_height = (editor_layout.height - editor_layout.sticky_height - NOTEBOOK_TOOLBAR_HEIGHT).min(dimension.height);
+        self.debug(&format!(
+            "Layout Editor: Width = {}, Height = {} (Requested: {}, Editor Layout Height: {}, Sticky: {})",
+            dimension.width, max_height, dimension.height, editor_layout.height, editor_layout.sticky_height
+        ));
+        self.template_data.editor.layout(CellEditorDimension { width: dimension.width, height: max_height });
+    }
+
+    fn on_cell_width_change(&self, reason: CellLayoutChangeReason) {
+        let editor = &self.template_data.editor;
+        self.debug(&format!("Cell Editor Width Change, {}, Content Height = {}", reason.as_str(), editor.get_content_height()));
+        let height = editor.get_content_height();
+        let editor_width = self.code.layout_info().editor_width;
+        if editor.has_model() {
+            self.debug(&format!(
+                "**** Updating Cell Editor Height (1), ContentHeight: {height}, CodeCellLayoutInfo.EditorWidth {editor_width}, EditorLayoutInfo {} ****",
+                editor.get_layout_info().height
+            ));
+            self.code.set_editor_height(height);
+            self.relayout_cell();
+            self.layout_editor(CellEditorDimension { width: self.code.layout_info().editor_width, height });
+        } else {
+            self.debug(&format!(
+                "Cell Editor Width Change without model, return (1), ContentHeight: {height}, CodeCellLayoutInfo.EditorWidth {editor_width}, EditorLayoutInfo {}",
+                editor.get_layout_info().height
+            ));
+        }
+        self.cell_layout.layout_editor(reason);
+    }
+
+    fn on_cell_editor_height_change(&self, reason: CellLayoutChangeReason) {
+        let editor = &self.template_data.editor;
+        let height = editor.get_content_height();
+        let editor_width = self.code.layout_info().editor_width;
+        if !editor.has_model() {
+            // O original interpola o objeto inteiro do `getLayoutInfo()`, que vira "[object Object]".
+            self.debug(&format!("Cell Editor Height Change without model, return (2), ContentHeight: {height}, CodeCellLayoutInfo.EditorWidth {editor_width}, EditorLayoutInfo [object Object]"));
+        }
+        self.debug(&format!("Cell Editor Height Change ({}): {height}", reason.as_str()));
+        self.debug(&format!(
+            "**** Updating Cell Editor Height (2), ContentHeight: {height}, CodeCellLayoutInfo.EditorWidth {editor_width}, EditorLayoutInfo {} ****",
+            editor.get_layout_info().height
+        ));
+        let view_layout = editor.get_layout_info();
+        self.code.set_editor_height(height);
+        self.relayout_cell();
+        self.layout_editor(CellEditorDimension { width: view_layout.width, height });
+        self.cell_layout.layout_editor(reason);
+    }
+
+    pub fn relayout_cell(&self) {
+        self.notebook_editor.layout_notebook_cell(&self.code, self.code.layout_info().total_height);
+    }
+}
+
+impl IDisposable for CodeCell {
+    fn dispose(&self) {
+        self.is_disposed.set(true);
+        self.template_data.editor_overflow_widgets.set_visible(false);
+
+        // move focus back to the cell list otherwise the focus goes to body
+        if self.should_preserve_editor() {
+            // now the focus is on the monaco editor for the cell but detached from the rows.
+            self.services.editor_pool.preserve_focused_editor(&self.view_cell);
+        }
+
+        self.services.editor_host.detach_text_editor(&self.view_cell);
+        self.remove_input_collapse_preview();
+        self.output_container_renderer.dispose();
+        self.pending_layout.dispose();
+
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "CodeCell"
     }
 }
