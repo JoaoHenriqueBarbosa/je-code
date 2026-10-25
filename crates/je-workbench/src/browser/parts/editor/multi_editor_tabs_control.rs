@@ -4287,6 +4287,126 @@ pub fn connected_overflow_edge_style(edge: &ConnectedOverflowEdge, inherited_bor
     }
 }
 
+/// As cores que as regras da aresta de rolagem leem das variáveis do grupo (`.title.tabs`), já resolvidas pelo tema. `None` é a
+/// variável indefinida.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnectedOverflowColors {
+    /// `--modern-ui-connected-tab-active-background`.
+    pub active_background: Option<Color>,
+    /// `--modern-ui-connected-tab-active-hover-background`.
+    pub active_hover_background: Option<Color>,
+    /// `var(--modern-ui-connected-tab-strip-background, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)))`:
+    /// a máscara do `::after` da ponta direita (`connectedEditorTabs.css` L622).
+    pub strip_mask: Option<Color>,
+}
+
+/// Um pseudoelemento (`::before` ou `::after`) do `.tab-connected-overflow-edge`, com o que as regras das linhas 432 a 469 e 618 a
+/// 624 de `connectedEditorTabs.css` computam nele.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedOverflowCapBox {
+    pub width: f64,
+    pub border_top_left_radius: f64,
+    pub border_top_right_radius: f64,
+    pub border_left_width: f64,
+    pub border_right_width: f64,
+    pub border_top_width: f64,
+    pub background: Option<Color>,
+}
+
+/// O `.tab-connected-overflow-edge` como o `getComputedStyle` o lê: o `display` e o `z-index` do elemento e os dois pseudoelementos
+/// (`None` é o pseudoelemento sem `content`, que não existe).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedOverflowEdgeBox {
+    pub display: &'static str,
+    pub z_index: Option<i32>,
+    pub before: Option<ConnectedOverflowCapBox>,
+    pub after: Option<ConnectedOverflowCapBox>,
+}
+
+/// A caixa da aresta de rolagem (L423 a L469 e L618 a L624): `display: block` e `z-index: 8` com a aba ativa cortada de um dos lados; o
+/// `::before` é a tampa esquerda (sem o traço da esquerda ao lado das abas fixadas, e com o fundo de `:hover` da aba) e o `::after` é a
+/// máscara da direita, que cobre o ombro mais a tampa e zera a borda. Sem corte o elemento fica em `display: none`.
+pub fn connected_overflow_edge_box(
+    edge: &ConnectedOverflowEdge,
+    wrapping: bool,
+    upper_bar: bool,
+    spacing: &ModernSpacing,
+    colors: &ConnectedOverflowColors,
+) -> ConnectedOverflowEdgeBox {
+    let clipped = edge.left_clipped || edge.right_clipped;
+    let cap = spacing.cap_radius(wrapping, upper_bar);
+    let before = edge.left_clipped.then(|| ConnectedOverflowCapBox {
+        width: cap,
+        border_top_left_radius: cap,
+        border_top_right_radius: 0.0,
+        border_left_width: if edge.adjacent_sticky { 0.0 } else { spacing.stroke },
+        border_right_width: 0.0,
+        border_top_width: spacing.stroke,
+        background: if edge.hovered { colors.active_hover_background.clone() } else { colors.active_background.clone() },
+    });
+    let after = edge.right_clipped.then(|| ConnectedOverflowCapBox {
+        width: spacing.shoulder_radius() + cap,
+        border_top_left_radius: 0.0,
+        border_top_right_radius: 0.0,
+        border_left_width: 0.0,
+        border_right_width: 0.0,
+        border_top_width: 0.0,
+        background: colors.strip_mask.clone(),
+    });
+
+    ConnectedOverflowEdgeBox { display: if clipped { "block" } else { "none" }, z_index: clipped.then_some(8), before, after }
+}
+
+/// O `.tab-connected-overflow-right` (a ponta direita da aresta, L626 a L691): o `::before` é a tampa (`right` no ombro, borda direita
+/// transparente porque o traço é do `.tab-connected-overflow-right-edge`), o `::after` é o ombro e o recorte do traço deixa a altura do
+/// ombro de fora.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectedOverflowRightBox {
+    pub cap_right: f64,
+    pub cap_bottom: f64,
+    pub cap_width: f64,
+    pub cap_border_right_width: f64,
+    pub cap_border_right_color: Color,
+    pub cap_background: Option<Color>,
+    pub shoulder_right: f64,
+    pub shoulder_width: f64,
+    pub shoulder_height: f64,
+    /// A cor do `box-shadow` do ombro.
+    pub shoulder_shadow: Option<Color>,
+    /// `clip-path: inset(0 0 <altura do ombro>)` do `.tab-connected-overflow-right-edge`.
+    pub edge_clip_bottom: f64,
+}
+
+/// A ponta direita da aresta, ou `None` quando a aba ativa não está cortada à direita (`.connected-tab-right-clipped >
+/// .tab-connected-overflow-right`).
+pub fn connected_overflow_right_box(
+    edge: &ConnectedOverflowEdge,
+    wrapping: bool,
+    upper_bar: bool,
+    spacing: &ModernSpacing,
+    colors: &ConnectedOverflowColors,
+) -> Option<ConnectedOverflowRightBox> {
+    if !edge.right_clipped {
+        return None;
+    }
+    let shoulder = spacing.shoulder_radius();
+    let current = if edge.hovered { colors.active_hover_background.clone() } else { colors.active_background.clone() };
+
+    Some(ConnectedOverflowRightBox {
+        cap_right: shoulder,
+        cap_bottom: 0.0,
+        cap_width: spacing.cap_radius(wrapping, upper_bar),
+        cap_border_right_width: spacing.stroke,
+        cap_border_right_color: Color::transparent_color(),
+        cap_background: current.clone(),
+        shoulder_right: 0.0,
+        shoulder_width: shoulder + spacing.stroke,
+        shoulder_height: shoulder,
+        shoulder_shadow: current,
+        edge_clip_bottom: shoulder,
+    })
+}
+
 /// `getBoundingClientRect()` do `.tab-connected-edge`, ou `None` com `display: none` (a aba que não é a ativa, a pílula de cima e fora
 /// do estilo conectado, `multieditortabscontrol.css` L126 e `connectedEditorTabs.css` L845). A aresta da aba ativa tem `top` no recuo
 /// de bloco do preenchimento, `inset-inline: 0`, `bottom: calc(-1 * strokeThickness)` e o `left` que a aba que abre a linha recebe
