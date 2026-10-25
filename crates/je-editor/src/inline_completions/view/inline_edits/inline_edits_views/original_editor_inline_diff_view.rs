@@ -32,7 +32,7 @@ use je_base::observable::{IObservable, IReader, Observable, ObservableExt, autor
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::diff::range_mapping::DetailedLineRangeMapping;
-use crate::diff_editor_view_zones::range_is_single_line;
+use crate::diff_editor::components::diff_editor_view_zones::range_is_single_line;
 use crate::editor_browser::MouseTarget;
 use crate::inline_completions::provide_inline_completions::InlineCompletionEditorType;
 use crate::model::{
