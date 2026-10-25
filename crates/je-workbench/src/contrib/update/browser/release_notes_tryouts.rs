@@ -3,14 +3,18 @@
 //! ativação com cancelamento e a devolução do foco).
 //!
 //! Recorte declarado (a UI é nativa, sem DOM nem webview HTML no caminho de pintura):
-//! - Ficam de fora `render(container)`, `applyReleaseNotesTryoutState`, `initializeReleaseNotesTryouts` e `getScript()`:
-//!   as três primeiras inspecionam um `Document` serializado dentro do webview e `getScript()` serializa essas funções
-//!   para rodar lá com `toString()`. Nada disso tem equivalente sem DOM e sem JavaScript no produto. O que `render`
-//!   decide por link (manter, trocar por texto inerte, ou virar um controle com índice e estado) é
-//!   [`ReleaseNotesTryouts::render_link`], que recebe o `href` e o texto do link já sanitizado e devolve a decisão; quem
-//!   monta a árvore nativa aplica o [`RenderedLink`].
-//! - A limpeza dos atributos `data-release-notes-tryout-*` forjados no HTML buscado também é DOM, e fica com quem
-//!   monta a árvore.
+//! - O documento é a árvore [`Element`]/[`Node`] do `html_parser`: [`ReleaseNotesTryouts::render`] percorre o contêiner e troca
+//!   cada `a[href]` como o `render(container)` do original (manter, virar texto inerte, ou virar o controle
+//!   `span.release-notes-tryout` com o índice e o estado), com a decisão por link em [`ReleaseNotesTryouts::render_link`], e
+//!   [`apply_release_notes_tryout_state`] é a função do mesmo nome. O foco (`document.activeElement`, `focus()`) não existe na
+//!   árvore: a parte de `applyReleaseNotesTryoutState` que devolve o foco, e a mensagem `releaseNotesTryoutFocus` do
+//!   documento, não têm o que fazer.
+//! - `initializeReleaseNotesTryouts` e `getScript()` (o `toString()` das funções, que roda como JavaScript dentro do webview)
+//!   são o [`ReleaseNotesTryoutsClient`]: o lado do documento que posta `releaseNotesTryoutsReady`, converte o clique num
+//!   controle em `releaseNotesTryout` (com `run` ou `setup`) e aplica as mensagens `releaseNotesTryouts`. O clique entra
+//!   pelo caminho do alvo na árvore (os índices em `children`), como o widget nativo entrega.
+//! - A limpeza dos atributos `data-release-notes-tryout-*` forjados é a primeira passada de `render`.
+//! - O `stub(tryouts, 'render').callThrough()` do teste é [`ReleaseNotesTryouts::render_count`].
 //!
 //! Divergências:
 //! - O `IWebview` do porte não tem `focus()`, que o original chama. O recorte do que a classe usa do webview é o trait
@@ -30,17 +34,20 @@ use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 
 use je_base::async_::async_fn;
+use je_base::browser::html_parser::{Attribute, Element, Node};
 use je_base::cancellation::CancellationTokenSource;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error, is_cancellation_error};
 use je_base::event::Event;
 use je_base::lifecycle::{DisposableStore, IDisposable, MutableDisposable, to_disposable};
+use je_base::markdown::dom::{remove_attribute, set_attribute};
 use je_base::network::schemas;
 use je_base::nls::localize;
 use je_base::promise::Promise;
 use je_base::strings::escape;
 use je_base::uri::URI;
 use je_base::uuid::generate_uuid;
+use je_base::JsString;
 use je_platform::commands::ICommandService;
 use je_platform::log::{LogArg, LogMessage, LogServiceRef};
 use je_platform::notification::{INotificationService, NotificationMessage};
@@ -201,6 +208,7 @@ pub struct ReleaseNotesTryouts {
     availability_listener: Rc<MutableDisposable<dyn IDisposable>>,
     interaction_target: RefCell<Option<(String, ReleaseNotesTryoutAction)>>,
     interaction_seq: Cell<u64>,
+    render_count: Cell<usize>,
     webview: RefCell<Option<Rc<dyn ReleaseNotesTryoutsWebview>>>,
     can_restore_focus: RefCell<Option<Rc<dyn Fn() -> bool>>>,
     ready: Cell<bool>,
@@ -230,6 +238,7 @@ impl ReleaseNotesTryouts {
             availability_listener,
             interaction_target: RefCell::new(None),
             interaction_seq: Cell::new(0),
+            render_count: Cell::new(0),
             webview: RefCell::new(None),
             can_restore_focus: RefCell::new(None),
             ready: Cell::new(false),
@@ -296,6 +305,54 @@ impl ReleaseNotesTryouts {
             position = value_start + length + 1;
         }
         false
+    }
+
+    /// `render(container)`: tira os atributos `data-release-notes-tryout-*` forjados do conteúdo buscado e troca cada `a[href]`
+    /// (em ordem de documento) pelo que [`Self::render_link`] decide.
+    pub fn render(&self, container: &mut Element) {
+        self.render_count.set(self.render_count.get() + 1);
+        strip_tryout_attributes(&mut container.children);
+        let children = std::mem::take(&mut container.children);
+        container.children = self.render_links(children);
+    }
+
+    /// Quantas vezes [`Self::render`] foi chamado (o `callCount` do `stub(tryouts, 'render').callThrough()`).
+    pub fn render_count(&self) -> usize {
+        self.render_count.get()
+    }
+
+    /// O `querySelectorAll('a[href]')` estático de `render`: o que substitui um link não é visitado de novo.
+    fn render_links(&self, nodes: Vec<Node>) -> Vec<Node> {
+        let mut out = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let mut element = match node {
+                Node::Element(element) => element,
+                text => {
+                    out.push(text);
+                    continue;
+                }
+            };
+            let href = if element.tag_name == "a" { element.get_attribute("href").map(JsString::to_string_lossy) } else { None };
+            if let Some(href) = href {
+                let text = element.text_content().to_string_lossy();
+                match self.render_link(&href, &text, has_class(&element, "release-notes-tryout-shorthand")) {
+                    RenderedLink::Unchanged => {}
+                    RenderedLink::Fallback(fallback) => {
+                        let mut span = Element::new("span", Vec::new());
+                        span.children = vec![Node::Text(JsString::from(fallback.as_str()))];
+                        out.push(Node::Element(span));
+                        continue;
+                    }
+                    RenderedLink::Tryout { index, state } => {
+                        out.push(Node::Element(tryout_control(index, &state)));
+                        continue;
+                    }
+                }
+            }
+            element.children = self.render_links(std::mem::take(&mut element.children));
+            out.push(Node::Element(element));
+        }
+        out
     }
 
     /// A decisão que `render` toma para um `a[href]`: `text_content` é o `textContent` do link e `is_shorthand` diz se
@@ -637,5 +694,233 @@ impl IDisposable for ReleaseNotesTryouts {
         self.states.borrow_mut().clear();
         self.links.borrow_mut().clear();
         self.store.dispose();
+    }
+}
+
+fn attribute(name: &str, value: &str) -> Attribute {
+    Attribute { name: name.to_owned(), value: JsString::from(value) }
+}
+
+/// `element.classList.contains(class)`.
+fn has_class(element: &Element, class: &str) -> bool {
+    element.get_attribute("class").is_some_and(|value| value.to_string_lossy().split_ascii_whitespace().any(|name| name == class))
+}
+
+/// `removeAttribute('data-release-notes-tryout-id' e '-index')` em todos os descendentes.
+fn strip_tryout_attributes(nodes: &mut [Node]) {
+    for node in nodes {
+        if let Node::Element(element) = node {
+            remove_attribute(element, "data-release-notes-tryout-id");
+            remove_attribute(element, "data-release-notes-tryout-index");
+            strip_tryout_attributes(&mut element.children);
+        }
+    }
+}
+
+/// O controle que substitui o link: `span.release-notes-tryout` com o link, a mensagem e o botão de preparação.
+fn tryout_control(index: usize, state: &ReleaseNotesTryoutState) -> Element {
+    let link = Element::new("a", vec![attribute("class", "release-notes-tryout-link"), attribute("role", "link"), attribute("tabindex", "0")]);
+    let message = Element::new("span", vec![attribute("class", "release-notes-tryout-message")]);
+    let setup = Element::new("button", vec![attribute("class", "release-notes-tryout-setup"), attribute("type", "button")]);
+    let mut element = Element::new(
+        "span",
+        vec![
+            attribute("class", "release-notes-tryout"),
+            attribute("data-release-notes-tryout-id", &state.id),
+            attribute("data-release-notes-tryout-index", &index.to_string()),
+        ],
+    );
+    element.children = vec![Node::Element(link), Node::Element(message), Node::Element(setup)];
+    apply_release_notes_tryout_state(&mut element, state);
+    element
+}
+
+/// O caminho (índices em `children`) do primeiro descendente que satisfaz `matches`, em ordem de documento.
+fn find_path(element: &Element, matches: &dyn Fn(&Element) -> bool) -> Option<Vec<usize>> {
+    for (index, child) in element.children.iter().enumerate() {
+        if let Node::Element(child) = child {
+            if matches(child) {
+                return Some(vec![index]);
+            }
+            if let Some(mut rest) = find_path(child, matches) {
+                rest.insert(0, index);
+                return Some(rest);
+            }
+        }
+    }
+    None
+}
+
+fn element_at_mut<'a>(element: &'a mut Element, path: &[usize]) -> Option<&'a mut Element> {
+    let Some((first, rest)) = path.split_first() else { return Some(element) };
+    match element.children.get_mut(*first)? {
+        Node::Element(child) => element_at_mut(child, rest),
+        Node::Text(_) => None,
+    }
+}
+
+fn descendant_with_class_mut<'a>(element: &'a mut Element, class: &str) -> Option<&'a mut Element> {
+    let path = find_path(element, &|candidate| has_class(candidate, class))?;
+    element_at_mut(element, &path)
+}
+
+/// `element.textContent = text`.
+fn set_text_content(element: &mut Element, text: &str) {
+    element.children = if text.is_empty() { Vec::new() } else { vec![Node::Text(JsString::from(text))] };
+}
+
+/// `element.hidden = hidden`.
+fn set_hidden(element: &mut Element, hidden: bool) {
+    if hidden {
+        set_attribute(element, "hidden", JsString::new());
+    } else {
+        remove_attribute(element, "hidden");
+    }
+}
+
+/// `applyReleaseNotesTryoutState(element, state)`, sem a parte que devolve o foco (ver o cabeçalho do módulo).
+pub fn apply_release_notes_tryout_state(element: &mut Element, state: &ReleaseNotesTryoutState) {
+    set_hidden(element, state.kind == ReleaseNotesTryoutKind::Hidden);
+    if let Some(link) = descendant_with_class_mut(element, "release-notes-tryout-link") {
+        set_text_content(link, &state.label);
+        set_attribute(link, "aria-label", JsString::from(state.aria_label.as_str()));
+        set_attribute(link, "aria-disabled", JsString::from(if state.kind == ReleaseNotesTryoutKind::Ready { "false" } else { "true" }));
+        if state.href.is_empty() {
+            remove_attribute(link, "href");
+        } else {
+            set_attribute(link, "href", JsString::from(state.href.as_str()));
+        }
+    }
+    if let Some(message) = descendant_with_class_mut(element, "release-notes-tryout-message") {
+        set_text_content(message, &state.message);
+        set_hidden(message, state.message.is_empty());
+    }
+    if let Some(setup) = descendant_with_class_mut(element, "release-notes-tryout-setup") {
+        set_text_content(setup, &state.setup_label);
+        set_attribute(setup, "aria-label", JsString::from(state.setup_aria_label.as_str()));
+        set_hidden(setup, state.setup_label.is_empty());
+    }
+}
+
+/// `Number(text)` de um `dataset`: o texto vazio é `0` e o que não é número é `NaN`.
+fn parse_number(text: &str) -> f64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() { 0.0 } else { trimmed.parse().unwrap_or(f64::NAN) }
+}
+
+fn dataset(element: &Element, name: &str) -> Option<String> {
+    element.get_attribute(name).map(JsString::to_string_lossy)
+}
+
+impl ReleaseNotesTryoutState {
+    /// O estado que veio numa mensagem `releaseNotesTryouts` (o inverso de `to_dynamic`).
+    fn from_dynamic(value: &Dynamic) -> Option<Self> {
+        let text = |key: &str| match value.get_str(key) {
+            Dynamic::String(text) => Some(text.to_string_lossy()),
+            _ => None,
+        };
+        let Dynamic::Number(index) = value.get_str("index") else { return None };
+        let kind = match text("kind")?.as_str() {
+            "ready" => ReleaseNotesTryoutKind::Ready,
+            "hidden" => ReleaseNotesTryoutKind::Hidden,
+            "unavailable" => ReleaseNotesTryoutKind::Unavailable,
+            _ => return None,
+        };
+        Some(Self {
+            id: text("id")?,
+            index: index as usize,
+            kind,
+            label: text("label")?,
+            aria_label: text("ariaLabel")?,
+            href: text("href")?,
+            message: text("message")?,
+            setup_label: text("setupLabel")?,
+            setup_aria_label: text("setupAriaLabel")?,
+        })
+    }
+}
+
+/// `initializeReleaseNotesTryouts(targetDocument, documentId, vscode)`: o lado do documento. No original é um script
+/// serializado que roda no webview; aqui é o objeto que o widget nativo do documento chama com os cliques e as mensagens.
+pub struct ReleaseNotesTryoutsClient {
+    document_id: String,
+    post_message: Rc<dyn Fn(Dynamic)>,
+    aborted: Cell<bool>,
+}
+
+impl ReleaseNotesTryoutsClient {
+    /// Registra o cliente e posta `releaseNotesTryoutsReady`.
+    pub fn initialize(document_id: &str, post_message: Rc<dyn Fn(Dynamic)>) -> Rc<Self> {
+        let client = Rc::new(Self { document_id: document_id.to_owned(), post_message, aborted: Cell::new(false) });
+        (client.post_message)(Dynamic::object([("type", Dynamic::string("releaseNotesTryoutsReady")), ("documentId", Dynamic::string(document_id))]));
+        client
+    }
+
+    /// O ouvinte de `click` da captura: `target_path` é o caminho do alvo a partir de `root`. Devolve se o clique foi tratado
+    /// (o `preventDefault` e o `stopImmediatePropagation`).
+    pub fn click(&self, root: &Element, target_path: &[usize]) -> bool {
+        if self.aborted.get() {
+            return false;
+        }
+        let mut chain: Vec<&Element> = vec![root];
+        for &index in target_path {
+            let Some(Node::Element(next)) = chain.last().and_then(|element| element.children.get(index)) else { return false };
+            chain.push(next);
+        }
+        // `event.target.closest('a, button')` e `control.closest('[data-release-notes-tryout-id]')`
+        let Some(control_position) = chain.iter().rposition(|element| matches!(element.tag_name.as_str(), "a" | "button")) else { return false };
+        let control = chain[control_position];
+        let Some(element) = chain[..=control_position].iter().rev().find(|element| element.get_attribute("data-release-notes-tryout-id").is_some()) else {
+            return false;
+        };
+        let aria_disabled = control.get_attribute("aria-disabled").is_some_and(|value| *value == "true");
+        if element.get_attribute("hidden").is_some() || aria_disabled {
+            return true;
+        }
+        let index = parse_number(&dataset(element, "data-release-notes-tryout-index").unwrap_or_default());
+        (self.post_message)(Dynamic::object([
+            ("type", Dynamic::string("releaseNotesTryout")),
+            ("documentId", Dynamic::string(&self.document_id)),
+            ("id", Dynamic::string(&dataset(element, "data-release-notes-tryout-id").unwrap_or_default())),
+            ("index", Dynamic::Number(index)),
+            ("action", Dynamic::string(if control.tag_name == "button" { "setup" } else { "run" })),
+        ]));
+        true
+    }
+
+    /// O ouvinte de `message`: aplica os estados de `releaseNotesTryouts` aos controles (a mensagem `releaseNotesTryoutFocus`
+    /// só move o foco, que a árvore não tem).
+    pub fn handle_message(&self, root: &mut Element, message: &Dynamic) {
+        if self.aborted.get() {
+            return;
+        }
+        match message.get_str("documentId") {
+            Dynamic::String(document_id) if document_id.to_string_lossy() == self.document_id => {}
+            _ => return,
+        }
+        let is_states = matches!(message.get_str("type"), Dynamic::String(kind) if kind == "releaseNotesTryouts");
+        let Dynamic::Array(states) = message.get_str("states") else { return };
+        if !is_states {
+            return;
+        }
+        for value in states.to_vec() {
+            let Some(state) = ReleaseNotesTryoutState::from_dynamic(&value) else { continue };
+            let wanted = state.index as f64;
+            let path = find_path(root, &|candidate| {
+                dataset(candidate, "data-release-notes-tryout-id").is_some()
+                    && parse_number(&dataset(candidate, "data-release-notes-tryout-index").unwrap_or_default()) == wanted
+            });
+            let Some(path) = path else { continue };
+            if let Some(element) = element_at_mut(root, &path)
+                && dataset(element, "data-release-notes-tryout-id").as_deref() == Some(state.id.as_str())
+            {
+                apply_release_notes_tryout_state(element, &state);
+            }
+        }
+    }
+
+    /// O `AbortController.abort()` (do `pagehide` ou da função devolvida): os ouvintes saem.
+    pub fn dispose(&self) {
+        self.aborted.set(true);
     }
 }

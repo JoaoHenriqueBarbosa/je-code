@@ -12,9 +12,11 @@
 //! - o algoritmo de adoção de agência (elementos de formatação mal aninhados) e a reconstrução dos
 //!   elementos de formatação ativos não existem: uma tag de fim fecha o elemento aberto de mesmo nome
 //!   mais próximo (e tudo que estiver dentro dele), como o "qualquer outra tag de fim" do HTML5;
-//! - a árvore de tabelas não é reparada (sem `tbody` implícito nem foster parenting); `td`, `th`, `tr`,
+//! - a árvore de tabelas é reparada só no que o `DOMParser` faz sem ninguém pedir: um `tr`, `td` ou `th` direto sob
+//!   `table` ganha o `tbody` (e o `tr`) implícito; não há foster parenting, e `td`, `th`, `tr`,
 //!   `tbody`, `thead` e `tfoot` fecham os irmãos abertos, e o conteúdo fica na ordem do texto;
-//! - conteúdo estrangeiro (`svg`, `math`) é tratado como HTML comum;
+//! - conteúdo estrangeiro (`svg`, `math`) é tratado como HTML comum, só com os nomes de atributo de SVG que têm maiúsculas
+//!   (`viewBox`) restaurados;
 //! - os atributos de `html` e `body` são descartados (a conversão nunca os lê) e o `head` não é
 //!   representado: o que o HTML5 poria nele (`title`, `meta`, `link`, `style`, `script` antes do corpo)
 //!   é consumido e descartado;
@@ -55,7 +57,8 @@ pub struct Element {
 }
 
 impl Element {
-    fn new(tag_name: &str, attributes: Vec<Attribute>) -> Self {
+    /// Um elemento sem filhos, como o `document.createElement` (e o `$` de `dom.ts`).
+    pub fn new(tag_name: &str, attributes: Vec<Attribute>) -> Self {
         Self { tag_name: tag_name.to_owned(), attributes, children: Vec::new() }
     }
 
@@ -276,6 +279,17 @@ const SCOPED_END_TAGS: &[&str] = &[
 ];
 
 const TABLE_END_TAGS: &[&str] = &["caption", "colgroup", "table", "tbody", "td", "tfoot", "th", "thead", "tr"];
+
+/// A tabela "adjust SVG attributes" do HTML5: os atributos de SVG com maiúsculas.
+const SVG_ATTRIBUTE_NAMES: &[&str] = &[
+    "attributeName", "attributeType", "baseFrequency", "baseProfile", "calcMode", "clipPathUnits", "diffuseConstant", "edgeMode", "filterUnits",
+    "glyphRef", "gradientTransform", "gradientUnits", "kernelMatrix", "kernelUnitLength", "keyPoints", "keySplines", "keyTimes", "lengthAdjust",
+    "limitingConeAngle", "markerHeight", "markerUnits", "markerWidth", "maskContentUnits", "maskUnits", "numOctaves", "pathLength",
+    "patternContentUnits", "patternTransform", "patternUnits", "pointsAtX", "pointsAtY", "pointsAtZ", "preserveAlpha", "preserveAspectRatio",
+    "primitiveUnits", "refX", "refY", "repeatCount", "repeatDur", "requiredExtensions", "requiredFeatures", "specularConstant",
+    "specularExponent", "spreadMethod", "startOffset", "stdDeviation", "stitchTiles", "surfaceScale", "systemLanguage", "tableValues", "targetX",
+    "targetY", "textLength", "viewBox", "viewTarget", "xChannelSelector", "yChannelSelector", "zoomAndPan",
+];
 
 fn is_heading(tag: &str) -> bool {
     matches!(tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
@@ -643,9 +657,18 @@ impl Parser {
         }
     }
 
-    fn start_tag(&mut self, name: String, attributes: Vec<Attribute>) {
+    fn start_tag(&mut self, name: String, mut attributes: Vec<Attribute>) {
         // o `image` é um apelido de `img` no corpo
         let tag = if name == "image" { "img" } else { name.as_str() };
+
+        // "adjust SVG attributes": dentro de `svg` os nomes de atributo recuperam as maiúsculas (`viewBox`)
+        if tag == "svg" || self.stack.iter().any(|open| open.tag_name == "svg") {
+            for attribute in &mut attributes {
+                if let Some(adjusted) = SVG_ATTRIBUTE_NAMES.iter().find(|candidate| candidate.eq_ignore_ascii_case(&attribute.name)) {
+                    attribute.name = (*adjusted).to_owned();
+                }
+            }
+        }
 
         if !self.in_body {
             match tag {
@@ -696,6 +719,14 @@ impl Parser {
         }
         if matches!(tag, "pre" | "listing") {
             self.skip_line_feed = true;
+        }
+
+        if matches!(tag, "tr" | "td" | "th") && self.stack.last().is_some_and(|top| top.tag_name == "table") {
+            // "in table": o `tbody` implícito (e o `tr`, antes de uma célula)
+            self.insert_element("tbody", Vec::new());
+            if tag != "tr" {
+                self.insert_element("tr", Vec::new());
+            }
         }
 
         self.insert_element(tag, attributes);
