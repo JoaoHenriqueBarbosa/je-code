@@ -11,20 +11,22 @@
 //!   [`EditorState`] guarda o texto pronto, como o original.
 //! - `Selection.equalsRange` compara só o intervalo; o estado guarda a seleção como [`Range`] (a mesma conversão
 //!   implícita do `Selection extends Range`).
-//! - `EditorStateCancellationTokenSource` não foi portado: estende `EditorKeybindingCancellationTokenSource`
-//!   (`keybindingCancellation.ts`, que precisa de `IContextKeyService` e de `IKeybindingService`) e ouve
-//!   `onDidChangeCursorSelection`/`onDidScrollChange` do `IActiveCodeEditor`, que o porte do editor não expõe como
-//!   evento assinável de fora. Quem precisar dele chega junto da contribuição que o usa.
+//! - `EditorStateCancellationTokenSource` estende [`EditorKeybindingCancellationTokenSource`]: aqui é o [`Deref`] para
+//!   ela (e, por ela, para a fonte). Recebe o `range` opcional como `Option<Range>` e ouve os eventos do
+//!   [`CodeEditorWidget`] (`onDidChangeCursorPosition`, `onDidChangeCursorSelection`, `onDidScrollChange`,
+//!   `onDidChangeModel` e `onDidChangeModelContent`); o `IActiveCodeEditor` do original é o widget com modelo.
 //! - `TextModelCancellationTokenSource` estende `CancellationTokenSource`: aqui é o [`Deref`] para a fonte, e o
 //!   `dispose` que o original sobrescreve é o [`IDisposable`] desta estrutura.
 
 use std::ops::Deref;
+use std::rc::Rc;
 
 use je_base::cancellation::{CancellationToken, CancellationTokenSource};
-use je_base::lifecycle::{DisposableRef, IDisposable};
+use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::uri::URI;
 
-use crate::code_editor_widget::ICodeEditor;
+use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
+use crate::keybinding_cancellation::{EditorCancellationTokens, EditorKeybindingCancellationTokenSource};
 use crate::position::Position;
 use crate::range::Range;
 use crate::text_model::TextModel;
@@ -126,6 +128,70 @@ impl EditorState {
 
     pub fn validate(&self, editor: &dyn EditorStateSource) -> bool {
         self.equals(&EditorState::new(editor, self.flags))
+    }
+}
+
+/// `EditorStateCancellationTokenSource`: uma fonte de cancelamento que cancela quando o editor muda, como expressam as
+/// `flags`. Com `range`, mudanças de posição e de seleção dentro dele não cancelam.
+pub struct EditorStateCancellationTokenSource {
+    base: EditorKeybindingCancellationTokenSource,
+    listener: Rc<DisposableStore>,
+}
+
+impl EditorStateCancellationTokenSource {
+    pub fn new(
+        editor: &CodeEditorWidget,
+        tokens: &EditorCancellationTokens,
+        flags: u32,
+        range: Option<Range>,
+        parent: Option<&CancellationToken>,
+    ) -> Self {
+        let base = EditorKeybindingCancellationTokenSource::new(editor, tokens, parent);
+        let listener = DisposableStore::new();
+        let source: CancellationTokenSource = (*base).clone();
+
+        if flags & code_editor_state_flag::POSITION != 0 {
+            let to_cancel = source.clone();
+            listener.add(editor.on_did_change_cursor_position().listen(move |e| {
+                if !range.is_some_and(|range| range.contains_position(&e.position)) {
+                    to_cancel.cancel();
+                }
+            }));
+        }
+        if flags & code_editor_state_flag::SELECTION != 0 {
+            let to_cancel = source.clone();
+            listener.add(editor.on_did_change_cursor_selection().listen(move |e| {
+                if !range.is_some_and(|range| range.contains_range(&e.selection)) {
+                    to_cancel.cancel();
+                }
+            }));
+        }
+        if flags & code_editor_state_flag::SCROLL != 0 {
+            let to_cancel = source.clone();
+            listener.add(editor.on_did_scroll_change().listen(move |_| to_cancel.cancel()));
+        }
+        if flags & code_editor_state_flag::VALUE != 0 {
+            let to_cancel = source.clone();
+            listener.add(editor.on_did_change_model().listen(move |_| to_cancel.cancel()));
+            let to_cancel = source.clone();
+            listener.add(editor.on_did_change_model_content().listen(move |_| to_cancel.cancel()));
+        }
+        Self { base, listener }
+    }
+}
+
+impl Deref for EditorStateCancellationTokenSource {
+    type Target = CancellationTokenSource;
+
+    fn deref(&self) -> &CancellationTokenSource {
+        &self.base
+    }
+}
+
+impl IDisposable for EditorStateCancellationTokenSource {
+    fn dispose(&self) {
+        self.listener.dispose();
+        self.base.dispose();
     }
 }
 
