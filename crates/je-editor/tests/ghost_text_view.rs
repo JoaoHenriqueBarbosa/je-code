@@ -23,6 +23,7 @@ mod support;
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use je_base::observable::SettableExt;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::to_disposable;
 use je_base::observable::base::IObservable;

@@ -44,6 +44,7 @@ use je_base::JsString;
 use je_base::event::{Emitter, Event};
 use je_base::js_string;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
+use je_base::observable::SettableExt;
 use je_base::observable::base::{IObservable, ISettableObservable};
 use je_base::observable::debug_name::{DebugNameOptions, DebugNameSource};
 use je_base::observable::deps::EqualityComparer;
@@ -455,7 +456,7 @@ impl AdditionalLinesWidget {
         });
 
         let hover_store = DisposableStore::new();
-        base.register(Rc::clone(&hover_store));
+        base.register(hover_store.clone());
         let is_hovered = observable_code_editor(&editor).is_target_hovered(
             {
                 let inner = Rc::clone(&inner);
@@ -805,7 +806,7 @@ impl GhostTextView {
         base.register(Rc::clone(&additional_lines_widget) as DisposableRef);
 
         let hover_store = DisposableStore::new();
-        base.register(Rc::clone(&hover_store));
+        base.register(hover_store.clone());
         let is_inline_text_hovered = {
             let owner = Rc::clone(&owner);
             editor_obs.is_target_hovered(
