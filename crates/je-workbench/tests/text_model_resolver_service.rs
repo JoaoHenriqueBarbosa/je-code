@@ -1,8 +1,8 @@
 //! Porte de `src/vs/workbench/services/textmodelResolver/test/browser/textModelResolverService.test.ts` (suíte `Workbench - TextModelResolverService`), caso a caso e na mesma ordem.
 //!
-//! Casos de fora (sete `#[test]` expandidos, quatro `test(...)` do original), todos porque dependem da
-//! `MultiDiffEditorViewModel` do editor de diff múltiplo (`multiDiffEditorViewModel.ts`), do `DiffItemSource`, do `RefCounted` e
-//! do `TestDiffProviderFactoryService`, que ainda não existem no porte; sem eles o caso não pode ser fiel:
+//! Casos de fora (sete `#[test]` expandidos, quatro `test(...)` do original), todos porque dependem do
+//! `TestDiffProviderFactoryService` (`editor/test/browser/diff/testDiffProviderFactoryService.ts`), que ainda não existe no porte
+//! (o `MultiDiffEditorViewModel`, o `DiffItemSource` e o `RefCounted` já existem); sem ele o caso não pode ser fiel:
 //! - `multi-diff synthetic side shares its lifetime with document references (added: false)` e `(added: true)`;
 //! - `multi-diff releases pending synthetic sides (dispose parent: false, side: 1)`, `(false, 2)`, `(true, 1)` e `(true, 2)`;
 //! - `multi-diff releases a partially resolved item when remaining resolution fails after disposal`.

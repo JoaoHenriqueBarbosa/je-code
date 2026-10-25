@@ -13,3 +13,5 @@ pub mod element_size_observer;
 pub mod font_info_from_settings;
 pub mod migrate_options;
 pub mod tab_focus;
+
+pub mod diff_editor;

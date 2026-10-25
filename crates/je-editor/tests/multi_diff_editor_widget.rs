@@ -1,6 +1,7 @@
 //! Porte de `src/vs/editor/test/browser/widget/multiDiffEditorWidget.test.ts` (suíte `MultiDiffEditorWidget`), caso a caso e
-//! na mesma ordem. Só o primeiro caso está portado: os outros nove dependem do `MultiDiffEditorWidget`, do `DiffEditorWidget`
-//! e do `MultiDiffEditorViewModel`, que ainda não existem em `je-editor` (ver o relatório do lote).
+//! na mesma ordem. Só o primeiro caso está portado: os outros nove dependem do `MultiDiffEditorWidget` e do `DiffEditorWidget`
+//! (nenhum deles usa só o view model, que já existe em `je_workbench::contrib::multi_diff_editor::browser`), que ainda não
+//! existem no porte (ver o relatório do lote).
 //!
 //! Notas de tradução:
 //! - O `deepStrictEqual` sobre objetos vira a comparação de tuplas de campos.
