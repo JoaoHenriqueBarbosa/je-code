@@ -58,10 +58,9 @@
 //! - **`perf.mark`.** É [`je_base::performance::mark`].
 //! - **`DelayedDragHandler` e `dragHandler`.** O arrasto sobre o cabeçalho não existe (ver acima), então `dispose` não o libera.
 //! - **Ações do arquivo.** As quatro `registerAction2` do fim (`createFileFromExplorer`, `createFolderFromExplorer`,
-//!   `refreshFilesExplorer` e `collapseExplorerFolders`) não entram aqui: a última chama `collapseAll` na vista achada por
-//!   `IViewsService.getViewWithId`, e o [`IViewPane`](crate::services::views::views_service::IViewPane) do porte só expõe
-//!   `setExpanded` e `focus`; elas entram com o contrato de views que devolve a `ExplorerView`. `ExplorerResourceWritableContext`
-//!   (`ExplorerResourceReadonlyContext.toNegated()`) e os ícones dessas ações também ainda não existem.
+//!   `refreshFilesExplorer` e `collapseExplorerFolders`) estão em [`explorer_view_actions`](super::explorer_view_actions). O
+//!   `view as ExplorerView` da última é o `downcast_ref` de um `&dyn Any`: o [`IViewPane`](crate::services::views::views_service::IViewPane)
+//!   tem `Any` como supertrait e o [`ExplorerView`] o implementa.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -426,6 +425,9 @@ pub fn file_copied_context() -> je_platform::contextkey::contextkey::RawContextK
 
 /// `NEW_FILE_COMMAND_ID` (`fileActions.ts`).
 pub const NEW_FILE_COMMAND_ID: &str = "explorer.newFile";
+
+/// `NEW_FOLDER_COMMAND_ID` (`fileActions.ts`).
+pub const NEW_FOLDER_COMMAND_ID: &str = "explorer.newFolder";
 
 /// `IExplorerViewContainerDelegate`.
 pub trait IExplorerViewContainerDelegate {
@@ -2077,6 +2079,17 @@ impl IExplorerView for ExplorerView {
     /// `hasPhantomElements()`.
     fn has_phantom_elements(&self) -> bool {
         self.is_showing_filter_results()
+    }
+}
+
+/// O `ExplorerView` é a vista que `IViewsService.getViewWithId` devolve; `setExpanded` é o da `ViewPane` de que ele herda.
+impl crate::services::views::views_service::IViewPane for ExplorerView {
+    fn set_expanded(&self, expanded: bool) -> bool {
+        self.pane.set_expanded(expanded)
+    }
+
+    fn focus(&self) {
+        ExplorerView::focus(self);
     }
 }
 

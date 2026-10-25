@@ -49,8 +49,13 @@ use je_base::lifecycle::IDisposable;
 use je_base::path::{PathModule, ProcessEnvironment};
 use je_base::promise::Promise;
 use je_base::runtime::date_now;
+use je_base::themables::ThemeIcon;
 use je_base::uri::{Field, URI, UriChange};
+use je_platform::action::{CommandActionTitle, Icon, LocalizedString, Title};
+use je_platform::actions::{AnyMenuItem, menu_ids, menu_registry};
+use je_platform::commands::CommandDescription;
 use je_platform::configuration::service::IConfigurationService;
+use je_platform::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression};
 use je_platform::configuration::test_configuration_service::TestConfigurationService;
 use je_platform::environment::environment::EnvironmentService;
 use je_platform::files::i_file_service::IFileService;
@@ -58,6 +63,7 @@ use je_platform::resources::{join_path, uri_file};
 use je_platform::workspace::{IWorkspace, WorkbenchState, WorkspaceFolder};
 use je_workbench::contrib::files::browser::views::explorer_decorations_provider::{LIST_INVALID_ITEM_FOREGROUND, provide_decorations};
 use je_workbench::contrib::files::browser::views::explorer_view::{self, CompressedNavigationControllerProvider, should_preserve_workspace_name_case};
+use je_workbench::contrib::files::browser::views::explorer_view_actions::register_explorer_view_actions;
 use je_workbench::contrib::files::browser::views::explorer_viewer::{CompressedNavigationController, ICompressedNavigationController};
 use je_workbench::contrib::files::browser_files::{ExplorerReveal, IExplorerView};
 use je_workbench::contrib::files::explorer_model::ExplorerItem;
@@ -571,4 +577,103 @@ fn compressed_navigation_controller() {
     assert!(Rc::ptr_eq(&navigation_controller.current(), &s2));
     navigation_controller.set_index(44);
     assert!(Rc::ptr_eq(&navigation_controller.current(), &s2));
+}
+
+// As quatro `registerAction2` do fim de `explorerView.ts` não têm caso no mocha: os testes abaixo conferem o registro de cada uma
+// (id, título, ícone, `precondition`, item do `MenuId.ViewTitle` e `f1`) contra o `super({...})` do original.
+
+/// `ContextKeyExpr.and(...)` de termos que existem.
+fn all_of<const N: usize>(items: [ContextKeyExpression; N]) -> ContextKeyExpression {
+    ContextKeyExpr::and(items).expect("a conjunção tem termos")
+}
+
+/// Registra as ações do título do explorador, confere o que o `super({...})` da ação `command_id` descreve e as descarta.
+/// `f1_description` é a `metadata.description` da ação com `f1: true`; `None` é `f1: false` e sem `metadata`.
+fn assert_explorer_title_action(command_id: &str, title: Title, icon: &str, precondition: Option<ContextKeyExpression>, order: f64, f1_description: Option<&str>) {
+    let registration = register_explorer_view_actions();
+
+    let item = menu_registry()
+        .get_menu_items(&menu_ids::view_title())
+        .into_iter()
+        .find_map(|item| match item {
+            AnyMenuItem::Menu(item) if item.command.id == command_id => Some(item),
+            _ => None,
+        })
+        .expect("a ação tem um item no ViewTitle");
+    assert_eq!(item.command.title, title);
+    assert_eq!(item.command.icon, Some(Icon::Theme(ThemeIcon::from_id(icon))));
+    assert_eq!(item.command.precondition.as_ref().map(ContextKeyExpression::serialize), precondition.as_ref().map(ContextKeyExpression::serialize));
+    assert_eq!(item.group.as_deref(), Some("navigation"));
+    assert_eq!(item.order, Some(order));
+    assert_eq!(item.when.as_ref().map(ContextKeyExpression::serialize), Some(ContextKeyExpr::equals("view", "workbench.explorer.fileView").serialize()));
+    assert!(item.alt.is_none());
+
+    let in_command_palette = menu_registry().get_command(command_id);
+    match f1_description {
+        Some(description) => {
+            let command = in_command_palette.expect("f1: true registra a ação na paleta");
+            let localized = LocalizedString { value: description.to_string(), original: description.to_string() };
+            assert_eq!(command.metadata.map(|metadata| metadata.description), Some(CommandDescription::Localized(localized)));
+        }
+        None => assert!(in_command_palette.is_none()),
+    }
+
+    registration.dispose();
+}
+
+/// `CanCreateContext`, escrito com os nomes das chaves do original.
+fn can_create_context() -> ContextKeyExpression {
+    ContextKeyExpr::or([
+        all_of([ContextKeyExpr::has("explorerResourceIsFolder"), ContextKeyExpr::not("explorerResourceReadonly")]),
+        all_of([ContextKeyExpr::not("explorerResourceIsFolder"), ContextKeyExpr::not("explorerResourceParentReadonly")]),
+    ])
+    .expect("a disjunção tem termos")
+}
+
+#[test]
+fn create_file_from_explorer_registration() {
+    assert_explorer_title_action(
+        "workbench.files.action.createFileFromExplorer",
+        Title::Plain("New File...".to_string()),
+        "new-file",
+        Some(can_create_context()),
+        10.0,
+        None,
+    );
+}
+
+#[test]
+fn create_folder_from_explorer_registration() {
+    assert_explorer_title_action(
+        "workbench.files.action.createFolderFromExplorer",
+        Title::Plain("New Folder...".to_string()),
+        "new-folder",
+        Some(can_create_context()),
+        20.0,
+        None,
+    );
+}
+
+#[test]
+fn refresh_files_explorer_registration() {
+    assert_explorer_title_action(
+        "workbench.files.action.refreshFilesExplorer",
+        Title::Localized(CommandActionTitle { value: "Refresh Explorer".to_string(), original: "Refresh Explorer".to_string(), mnemonic_title: None }),
+        "refresh",
+        Some(ContextKeyExpr::not("explorerFindProviderActive")),
+        30.0,
+        Some("Forces a refresh of the Explorer."),
+    );
+}
+
+#[test]
+fn collapse_explorer_folders_registration() {
+    assert_explorer_title_action(
+        "workbench.files.action.collapseExplorerFolders",
+        Title::Localized(CommandActionTitle { value: "Collapse Folders in Explorer".to_string(), original: "Collapse Folders in Explorer".to_string(), mnemonic_title: None }),
+        "collapse-all",
+        None,
+        40.0,
+        Some("Folds all folders in the Explorer."),
+    );
 }

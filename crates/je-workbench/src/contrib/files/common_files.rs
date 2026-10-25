@@ -220,6 +220,11 @@ explorer_boolean_context_key!(
     "True when a workspace in the EXPLORER view has some collapsible root child."
 );
 
+/// `ExplorerResourceWritableContext`: `ExplorerResourceReadonlyContext.toNegated()`.
+pub fn explorer_resource_writable_context() -> je_platform::contextkey::contextkey::ContextKeyExpression {
+    explorer_resource_readonly_context().to_negated()
+}
+
 /// `ExplorerResourceAvailableEditorIdsContext`: `new RawContextKey<string>('explorerResourceAvailableEditorIds', '')`, sem
 /// metadado.
 pub fn explorer_resource_available_editor_ids_context() -> je_platform::contextkey::contextkey::RawContextKey {
