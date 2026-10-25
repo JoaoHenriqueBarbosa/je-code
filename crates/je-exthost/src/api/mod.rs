@@ -26,6 +26,7 @@ pub mod environment_variable_collection;
 pub mod extension_context;
 pub mod events;
 pub mod extensions;
+pub mod telemetry_logger;
 pub mod file_system;
 pub mod file_system_events;
 pub mod l10n;

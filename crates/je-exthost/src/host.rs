@@ -377,6 +377,8 @@ impl ExtensionHost {
 
             env_services.environment = binder.host_environment();
             env_services.clipboard = binder.clipboard_service();
+            env_services.telemetry = binder.telemetry();
+            env_services.log_service = Some(log_service.clone());
             if provided(MainContext::MAIN_THREAD_WINDOW.sid) {
                 env_services.window = Some(ExtHostWindow::new(bridged_ref, None));
             }
@@ -712,10 +714,10 @@ impl ExtensionHost {
         members.extend([
             ("commands".to_owned(), commands::namespace(runner, &commands, &table)),
             ("l10n".to_owned(), l10n::namespace(runner)),
-            ("extensions".to_owned(), extensions::namespace(runner, &extension_slot)),
+            ("extensions".to_owned(), extensions::namespace(runner, &extension_slot, &table)),
         ]);
         if env_services.is_any() {
-            members.push(("env".to_owned(), env::namespace(runner, &env_services)));
+            members.push(("env".to_owned(), env::namespace(runner, &env_services, &table)));
         }
         let vscode = JsData::Object(members);
         runner.register_module("vscode", &vscode);

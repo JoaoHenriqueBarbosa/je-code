@@ -83,6 +83,8 @@ use je_workbench::api::common::ext_host_protocol::{
 };
 use je_platform::files::files::{FileDeleteOptions, FileOpenOptions, FileOperation, FileOverwriteOptions, FileType, FileWriteOptions, Stat, WatchOptions};
 
+use je_workbench::api::common::ext_host_telemetry::ExtHostTelemetry;
+
 use crate::api::env::HostEnvironment;
 use crate::extension_storage_paths::ExtensionStorageEnvironment;
 use crate::local_context::LocalContext;
@@ -118,6 +120,13 @@ pub trait IMainThreadBinder {
     /// Os valores de `vscode.env` que o original lê do `initData` (`appName`, `appRoot`, `language`, `machineId`, `sessionId`,
     /// `uriScheme`, `shell`, `uiKind`). Sem eles esses membros não existem em `vscode.env`.
     fn host_environment(&self) -> Option<HostEnvironment> {
+        None
+    }
+
+    /// O `ExtHostTelemetry` do host (`isTelemetryEnabled`, `onDidChangeTelemetryEnabled` e `createTelemetryLogger`). Quem o cria também
+    /// registra o encaminhador `ExtHostTelemetryShape` no contexto, para o nível de telemetria chegar a ele. Sem ele esses membros não
+    /// existem em `vscode.env`.
+    fn telemetry(&self) -> Option<Rc<ExtHostTelemetry>> {
         None
     }
 

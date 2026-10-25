@@ -55,13 +55,27 @@ pub fn convert_maybe<T: Clone + 'static, U: Clone + 'static>(value: MaybePromise
 
 /// Uma promessa do Rust como a promessa JavaScript que assenta quando ela assentar.
 pub fn promise_to_js<T: Clone + 'static>(runner: &NodeRunner, promise: Promise<T>, convert: impl Fn(&T) -> JsData + 'static) -> JsData {
+    promise_outcome_to_js(runner, promise, move |outcome| outcome.map(&convert).map_err(error_to_js))
+}
+
+/// Como [`promise_to_js`], mas `convert` decide o desfecho da promessa do JavaScript a partir do resultado inteiro (um `catch` do
+/// original que recupera a rejeição, por exemplo): `Ok` resolve com o valor e `Err` rejeita com o motivo.
+pub fn promise_outcome_to_js<T: Clone + 'static>(
+    runner: &NodeRunner,
+    promise: Promise<T>,
+    convert: impl Fn(Result<&T, &je_base::errors::Error>) -> Result<JsData, JsData> + 'static,
+) -> JsData {
     let target = Rc::new(runner.new_promise());
     let runner = runner.clone();
     let settled = target.clone();
     let _ = promise.then_result(move |outcome| {
-        match outcome {
-            Ok(value) => runner.resolve_promise(&settled, &convert(&value)),
-            Err(error) => runner.reject_promise(&settled, &error_to_js(&error)),
+        let result = match &outcome {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error),
+        };
+        match convert(result) {
+            Ok(value) => runner.resolve_promise(&settled, &value),
+            Err(reason) => runner.reject_promise(&settled, &reason),
         };
         Ok(())
     });
