@@ -22,7 +22,7 @@ use je_render::kurbo::Rect;
 use je_ui::{Border, EventKind, NodeId, Role, Ui};
 
 use super::flex::{FlexItem, resolve_flexible_lengths};
-use super::{Attributes, Button, ButtonBox, ButtonEvent, ButtonLabel, ButtonOptions, ButtonTitle, IButton, IButtonWithDescription, LabelPart, INHERITED_FOREGROUND, layout_row, rebuild_label_parts};
+use super::{Button,ButtonBox, ButtonEvent, ButtonLabel, ButtonOptions, ButtonTitle, IButton, IButtonWithDescription, LabelPart, INHERITED_FOREGROUND, layout_row, rebuild_label_parts};
 use crate::common::registered_emitter;
 use crate::context_view_api::Anchor;
 use crate::dom::{StandardKeyboardEvent, create_el};
@@ -345,7 +345,6 @@ pub struct ButtonWithDescription {
     description_element: NodeId,
     description: RefCell<Vec<LabelPart>>,
     foreground: Cell<Option<Rgba>>,
-    attributes: Attributes,
     disposed: Cell<bool>,
 }
 
@@ -366,7 +365,7 @@ impl ButtonWithDescription {
             tree.append_child(container, element);
             node
         };
-        Rc::new(ButtonWithDescription { base, ui: ui.clone(), options, element, button, description_element, description: RefCell::new(Vec::new()), foreground: Cell::new(None), attributes: Attributes::default(), disposed: Cell::new(false) })
+        Rc::new(ButtonWithDescription { base, ui: ui.clone(), options, element, button, description_element, description: RefCell::new(Vec::new()), foreground: Cell::new(None), disposed: Cell::new(false) })
     }
 
     pub fn button(&self) -> &Rc<Button> {
@@ -383,8 +382,14 @@ impl ButtonWithDescription {
         self.layout(None);
     }
 
-    pub fn attributes(&self) -> &Attributes {
-        &self.attributes
+    /// `getAttribute` do elemento da descrição.
+    pub fn attribute(&self, name: &str) -> Option<String> {
+        self.ui.tree().attribute(self.element, name).map(str::to_owned)
+    }
+
+    /// `setAttribute` do elemento da descrição.
+    pub fn set_attribute(&self, name: &str, value: impl Into<String>) {
+        self.ui.tree_mut().set_attribute(self.element, name, value);
     }
 
     /// O texto da descrição (o `textContent`).

@@ -50,7 +50,7 @@ use je_ui::{Border, Content, Cursor, EventKind, NodeId, PointerEvents, Role, Ui}
 
 use crate::action_bar::IActionViewItemProvider;
 use crate::action_view_items::{BaseActionViewItem, IActionViewItem, IActionViewItemOptions, ItemSize};
-use crate::button::{Attributes, INHERITED_FOREGROUND, OutlineSpec, update_outline};
+use crate::button::{INHERITED_FOREGROUND, OutlineSpec, update_outline};
 use crate::common::registered_emitter;
 use crate::dom::{StandardKeyboardEvent, create_detached_el};
 use crate::hover_api::{HoverContent, HoverStyle, HoverTarget, IHoverLifecycleOptions, IHoverOptions, get_base_layer_hover_delegate};
@@ -177,7 +177,6 @@ pub struct Toggle {
     action_classes: Vec<String>,
     checked: Cell<bool>,
     tab_index: Cell<i32>,
-    attributes: Attributes,
     inline: Cell<InlineStyle>,
     /// A variável `--monaco-custom-toggle-border-color`.
     border_color_variable: Cell<Option<Rgba>>,
@@ -225,7 +224,6 @@ impl Toggle {
             action_classes,
             checked: Cell::new(opts.is_checked),
             tab_index: Cell::new(if opts.not_focusable { -1 } else { 0 }),
-            attributes: Attributes::default(),
             inline: Cell::new(InlineStyle::default()),
             border_color_variable: Cell::new(None),
             pointer_over: Cell::new(false),
@@ -237,7 +235,7 @@ impl Toggle {
             opts: opts.clone(),
             base,
         });
-        this.attributes.set("aria-checked", this.checked.get().to_string());
+        this.set_attribute("aria-checked", this.checked.get().to_string());
         this.set_title(opts.title);
         this.apply_styles();
 
@@ -308,7 +306,7 @@ impl Toggle {
     }
 
     pub fn enabled(&self) -> bool {
-        self.attributes.get("aria-disabled").as_deref() != Some("true")
+        self.attribute("aria-disabled").as_deref() != Some("true")
     }
 
     pub fn focus(&self) {
@@ -322,7 +320,7 @@ impl Toggle {
     /// `set checked`: não dispara `onChange`.
     pub fn set_checked(&self, checked: bool) {
         self.checked.set(checked);
-        self.attributes.set("aria-checked", checked.to_string());
+        self.set_attribute("aria-checked", checked.to_string());
         self.ui.tree_mut().toggle_class(self.dom_node, "checked", checked);
         self.apply_styles();
         self.refresh();
@@ -369,7 +367,7 @@ impl Toggle {
     }
 
     pub fn enable(&self) {
-        self.attributes.set("aria-disabled", "false");
+        self.set_attribute("aria-disabled", "false");
         self.ui.tree_mut().remove_class(self.dom_node, "disabled");
         if !self.opts.not_focusable {
             self.tab_index.set(0);
@@ -378,7 +376,7 @@ impl Toggle {
     }
 
     pub fn disable(&self) {
-        self.attributes.set("aria-disabled", "true");
+        self.set_attribute("aria-disabled", "true");
         self.ui.tree_mut().add_class(self.dom_node, "disabled");
         if !self.opts.not_focusable {
             self.tab_index.set(-1);
@@ -395,8 +393,7 @@ impl Toggle {
         };
         let label = get_codicon_aria_label(Some(&aria_label.encode_utf16().collect::<Vec<_>>())).to_string_lossy();
         *self.title.borrow_mut() = new_title;
-        self.attributes.set("aria-label", label.clone());
-        self.ui.tree_mut().set_label(self.dom_node, label);
+        self.set_attribute("aria-label", label);
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -416,8 +413,13 @@ impl Toggle {
         self.tab_index.set(value);
     }
 
+    /// `setAttribute`: o atributo vive no nó da árvore.
+    fn set_attribute(&self, name: &str, value: impl Into<String>) {
+        self.ui.tree_mut().set_attribute(self.dom_node, name, value);
+    }
+
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.dom_node, name).map(str::to_owned)
     }
 
     /// `style.left` e `style.top` (o `float: left` e a `margin-left` são do dono).

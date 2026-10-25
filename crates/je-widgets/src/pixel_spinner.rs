@@ -8,8 +8,7 @@
 //!   com `contain: paint` (`clip`); cada `span.monaco-pixel-spinner-dot` é um nó de `2px` com raio `50%` (`1px`),
 //!   posto na grade `repeat(2, 2px) / repeat(3, 2px)` com `gap` de `2px`, centrada (`place-content: center`).
 //! - O original mostra `aria-hidden="true"` sem `ariaLabel` (nó de papel `Presentation`) e `role="status"` com
-//!   `aria-label` com ele (o rótulo do nó). O `je-ui` não guarda atributos: [`PixelSpinner::attribute`] devolve os
-//!   que o original escreveria.
+//!   `aria-label` com ele (o rótulo do nó). Os atributos vivem no nó: [`PixelSpinner::attribute`] os lê de lá.
 //! - A cor é `currentColor`: [`PixelSpinner::set_color`] é o `color` herdado do pai (sem valor, a cor do texto
 //!   herdada do botão, [`INHERITED_FOREGROUND`](crate::button)).
 //!
@@ -27,7 +26,7 @@ use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_ui::{NodeId, Role, Ui};
 
-use crate::button::{Attributes, INHERITED_FOREGROUND};
+use crate::button::INHERITED_FOREGROUND;
 use crate::dom::{create_detached_el, create_el};
 
 /// A largura e a altura do spinner (`width: 16px; height: 16px`).
@@ -63,7 +62,6 @@ pub struct PixelSpinner {
     ui: Ui,
     element: NodeId,
     dots: Vec<NodeId>,
-    attributes: Attributes,
     disposed: Cell<bool>,
 }
 
@@ -80,7 +78,7 @@ impl PixelSpinner {
 
     /// `getAttribute`: `aria-hidden`, ou `role` e `aria-label`.
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.element, name).map(str::to_owned)
     }
 
     /// `style.color`: a cor dos pontos (`currentColor`).
@@ -109,7 +107,6 @@ impl IDisposable for PixelSpinner {
 pub fn create_pixel_spinner(ui: &Ui, parent: Option<NodeId>, options: Option<IPixelSpinnerOptions>) -> Rc<PixelSpinner> {
     let options = options.unwrap_or_default();
     let root_class = if options.variant == PixelSpinnerVariant::Ring { "monaco-pixel-spinner monaco-pixel-spinner-ring" } else { "monaco-pixel-spinner" };
-    let attributes = Attributes::default();
     let decorative = options.aria_label.as_deref().is_none_or(str::is_empty);
     let (element, dots) = {
         let mut tree = ui.tree_mut();
@@ -135,20 +132,17 @@ pub fn create_pixel_spinner(ui: &Ui, parent: Option<NodeId>, options: Option<IPi
             style.opacity = 1.0; // o quadro de `prefers-reduced-motion: reduce`
             dots.push(dot);
         }
-        if let Some(label) = options.aria_label.as_deref().filter(|label| !label.is_empty()) {
-            tree.set_label(element, label);
+        match options.aria_label.as_deref().filter(|label| !label.is_empty()) {
+            Some(label) => {
+                tree.set_attribute(element, "role", "status");
+                tree.set_attribute(element, "aria-label", label);
+            }
+            None => tree.set_attribute(element, "aria-hidden", "true"),
         }
         (element, dots)
     };
-    match options.aria_label.as_deref().filter(|label| !label.is_empty()) {
-        Some(label) => {
-            attributes.set("role", "status");
-            attributes.set("aria-label", label);
-        }
-        None => attributes.set("aria-hidden", "true"),
-    }
     if let Some(parent) = parent {
         ui.tree_mut().append_child(parent, element);
     }
-    Rc::new(PixelSpinner { ui: ui.clone(), element, dots, attributes, disposed: Cell::new(false) })
+    Rc::new(PixelSpinner { ui: ui.clone(), element, dots, disposed: Cell::new(false) })
 }

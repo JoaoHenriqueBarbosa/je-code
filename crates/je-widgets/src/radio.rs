@@ -39,7 +39,7 @@ use je_theme::ColorTheme;
 use je_ui::{Border, EventKind, NodeId, Role, Ui};
 
 use crate::button::flex::{FlexItem, resolve_flexible_lengths};
-use crate::button::{Attributes, Button, ButtonBox, ButtonCss, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
+use crate::button::{Button,ButtonBox, ButtonCss, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
 use crate::common::{registered_emitter, throw};
 use crate::dom::{StandardKeyboardEvent, create_detached_el, create_el};
 use crate::hover_api::{IHoverDelegate, create_instant_hover_delegate};
@@ -201,8 +201,6 @@ pub struct Radio {
     selection_indicator: Option<NodeId>,
     selection_indicator_bounds: Cell<Option<SelectionBounds>>,
     width: Cell<Option<f64>>,
-    attributes: Attributes,
-    indicator_attributes: Attributes,
     on_did_select: Rc<Emitter<usize>>,
     on_did_activate: Rc<Emitter<usize>>,
     disposed: Cell<bool>,
@@ -231,6 +229,7 @@ impl Radio {
             let indicator = segmented.then(|| {
                 let node = create_el(&mut tree, dom_node, Role::Presentation, "monaco-radio-selection");
                 tree.style_mut(node).visible = false;
+                tree.set_attribute(node, "aria-hidden", "true");
                 node
             });
             (dom_node, indicator)
@@ -250,19 +249,13 @@ impl Radio {
             selection_indicator,
             selection_indicator_bounds: Cell::new(None),
             width: Cell::new(None),
-            attributes: Attributes::default(),
-            indicator_attributes: Attributes::default(),
             on_did_select: registered_emitter(&base),
             on_did_activate: registered_emitter(&base),
             disposed: Cell::new(false),
             base,
         });
-        if segmented {
-            this.indicator_attributes.set("aria-hidden", "true");
-        }
         if let Some(label) = &opts.aria_label {
-            this.attributes.set("aria-label", label);
-            this.ui.tree_mut().set_label(dom_node, label.clone());
+            this.ui.tree_mut().set_attribute(dom_node, "aria-label", label.clone());
         }
         this.set_items(opts.items);
         this
@@ -273,7 +266,7 @@ impl Radio {
     }
 
     pub fn attribute(&self, name: &str) -> Option<String> {
-        self.attributes.get(name)
+        self.ui.tree().attribute(self.dom_node, name).map(str::to_owned)
     }
 
     pub fn on_did_select(&self) -> BaseEvent<usize> {
@@ -302,7 +295,7 @@ impl Radio {
 
     /// Um atributo do indicador (o `aria-hidden` que o construtor escreve).
     pub fn selection_indicator_attribute(&self, name: &str) -> Option<String> {
-        self.indicator_attributes.get(name)
+        self.selection_indicator.and_then(|node| self.ui.tree().attribute(node, name).map(str::to_owned))
     }
 
     /// O retângulo em que o indicador está (o `transform`, `width` e `height` do original).
