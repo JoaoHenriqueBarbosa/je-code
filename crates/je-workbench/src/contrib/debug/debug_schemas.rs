@@ -1,6 +1,8 @@
 //! Porte do trecho "debug general schema" de `src/vs/workbench/contrib/debug/common/debugSchemas.ts`: o
 //! `presentationSchema` e o `launchSchema`, o esquema JSON do `launch.json`.
 //!
+//! Traz também o `INTERNAL_CONSOLE_OPTIONS_SCHEMA` de `common/debug.ts`, que só o gerenciador de adaptadores usa.
+//!
 //! Ficam de fora (ainda não portados): os pontos de extensão `debuggers` e `breakpoints` e o `DebuggersDataRenderer`.
 //!
 //! Divergências:
@@ -226,6 +228,16 @@ thread_local! {
         get_json_contribution_registry().register_schema(LAUNCH_SCHEMA_ID, Dynamic::Object(schema.clone()), None);
         schema
     };
+}
+
+/// `INTERNAL_CONSOLE_OPTIONS_SCHEMA` (`common/debug.ts`): o esquema da propriedade `internalConsoleOptions`, que o
+/// gerenciador de adaptadores põe nas propriedades comuns do `launch.json`.
+pub fn internal_console_options_schema() -> Dynamic {
+    Dynamic::object([
+        ("enum", Dynamic::array([text("neverOpen"), text("openOnSessionStart"), text("openOnFirstSessionStart")])),
+        ("default", text("openOnFirstSessionStart")),
+        ("description", Dynamic::string(&localize("internalConsoleOptions", "Controls when the internal Debug Console should open.", &[]))),
+    ])
 }
 
 /// `launchSchema`: o objeto único da thread, que o gerenciador de configurações e o de adaptadores mutam.
