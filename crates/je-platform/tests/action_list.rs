@@ -40,13 +40,15 @@ use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::{Emitter, Event};
 use je_base::key_codes::KeyCode;
-use je_base::layout::{AnchorPosition, IAnchor};
+use je_base::layout::{AnchorPosition, IAnchor, IRect};
+use je_base::lifecycle::IDisposable;
 use je_base::promise::{DeferredPromise, Promise};
 use je_platform::action_widget::action_list::{
     ACCEPT_SELECTED_ACTION_COMMAND, ACTION_WIDGET_VERTICAL_CHROME_HEIGHT, ActionList, ActionListBadge, ActionListGroup, ActionListItemData, ActionListItemKind,
     ActionListWidget, CssColor, FilterRequest, HoverContent, HoverElement, IActionListDelegate, IActionListHeaderLink, IActionListItem, IActionListItemHover,
-    IActionListItemInlineToggle, IActionListOptions, IActionListUpdateOptions, KeyTarget, KeybindingResolver, LIST_VERTICAL_SCROLLBAR_SIZE, OnRemove, PointerEvent,
-    PointerTarget, REMOVE_TOOLBAR_ACTION_ID, RemovableAction, ReserveSubmenuSpace, RowState, SubmenuGutter, action_item_badge_metrics, toggle_info_icon_center_offset,
+    IActionListItemInlineToggle, IActionListOptions, IActionListUpdateOptions, IHoverAction, KeyTarget, KeybindingResolver, LIST_VERTICAL_SCROLLBAR_SIZE, OnRemove,
+    PointerEvent, PointerTarget, REMOVE_TOOLBAR_ACTION_ID, RemovableAction, ReserveSubmenuSpace, RowState, SUBMENU_PANEL_CLIPS_OVERFLOW, SUBMENU_PANEL_PADDING,
+    SubmenuGutter, action_item_badge_metrics, toggle_info_icon_center_offset,
 };
 use je_base::uri::URI;
 use je_platform::contextview::context_view::{AnchorTarget, IContextViewDelegate, IContextViewService};
@@ -3956,5 +3958,838 @@ fn opening_the_checked_hover_reveals_a_model_in_a_collapsed_section() {
     widget.show_hover_for_checked_item();
 
     assert_eq!((focused_id(&widget), widget.panel_text()), (Some("active".to_owned()), "Active model details".to_owned()));
+}
+
+/// `window.innerHeight` padrão da janela do widget.
+const WINDOW_DEFAULT_INNER_HEIGHT: f64 = 800.0;
+
+/// `hover: { content, ...flags }` com o conteúdo `HTMLElement` do caso.
+fn element_hover(content: &Rc<HoverElement>) -> IActionListItemHover {
+    IActionListItemHover { content: Some(HoverContent::Element(content.clone())), ..IActionListItemHover::default() }
+}
+
+/// O conteúdo de hover de `width: Wpx; height: Hpx`.
+fn sized_content(text: &str, width: f64, height: f64) -> Rc<HoverElement> {
+    let content = HoverElement::new(text);
+    content.set_size(width, height);
+    content
+}
+
+/// `popup.style.cssText = position: fixed; top; left; width; padding: 8px; zoom`: o `.action-widget` com a lista dentro do padding
+/// dele. A geometria que o motor de layout do DOM calcularia: `top`, `left` e as medidas viram pixels da tela (vezes o zoom).
+fn zoomed_popup(widget: &Widget, top: f64, left: f64, width: f64, zoom: f64) -> Rc<ViewElement> {
+    let popup = ViewElement::with_classes(&["action-widget"]);
+    let list_height = widget.dom_node().size().height;
+    popup.set_position(top * zoom, left * zoom);
+    popup.set_size((width + 16.0) * zoom, (list_height + 16.0) * zoom);
+    widget.dom_node().set_parent(Some(popup.clone()));
+    widget.set_zoom_level(zoom);
+    widget.dom_node().set_position((top + 8.0) * zoom, (left + 8.0) * zoom);
+    widget.dom_node().set_size(width * zoom, list_height * zoom);
+    popup
+}
+
+fn width_measurement_keeps_the_hover_anchored_to_the_visible_item(active_index: usize) {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let content = sized_content("Model details", 120.0, 80.0);
+        let mut items: Vec<TestItem> = (0..10)
+            .map(|index| {
+                if index == active_index {
+                    IActionListItem {
+                        item: Some(Item { id: "active".to_owned(), checked: true }),
+                        hover: Some(IActionListItemHover { align_to_parent: true, ..element_hover(&content) }),
+                        ..action("active")
+                    }
+                } else {
+                    action(&format!("visible-{index}"))
+                }
+            })
+            .collect();
+        items.extend((0..20).map(|index| IActionListItem { section: Some("other".to_owned()), ..action(&format!("hidden-{index}")) }));
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions {
+                    show_filter: false,
+                    collapsed_by_default: Some(std::collections::BTreeSet::from(["other".to_owned()])),
+                    ..IActionListOptions::default()
+                },
+                ..config(items)
+            },
+        );
+        // popup: position: fixed; top: 160px; left: 40px; width: 260px; padding: 8px.
+        let popup = zoomed_popup(&widget, 160.0, 40.0, 260.0, 1.0);
+        widget.layout(120.0, Some(240.0));
+        popup.set_size(276.0, 136.0);
+        widget.dom_node().set_position(168.0, 48.0);
+        widget.focus();
+        widget.show_hover_for_checked_item();
+
+        let measure = || {
+            let index = widget.focused_index();
+            let row = index.map(|index| widget.visible_row_rect(index));
+            let list = widget.dom_node().rect();
+            let panel = widget.panel_rect().expect("o painel está posicionado");
+            (
+                row.is_some_and(|row| row.top >= list.top && row.top + row.height <= list.top + list.height),
+                row.is_some_and(|row| (row.top + row.height / 2.0 - panel.top - panel.height / 2.0).abs() < 1.0),
+                index.and_then(|index| widget.row_state(index)).and_then(|row| row.aria_expanded),
+                focused_id(&widget),
+            )
+        };
+        settle_layout().await;
+        let before = measure();
+        widget.compute_max_width(240.0);
+        widget.layout(120.0, Some(240.0));
+        content.set_size(120.0, 100.0);
+        settle_layout().await;
+
+        let expected = (true, true, Some("true".to_owned()), Some("active".to_owned()));
+        assert_eq!((before, measure()), (expected.clone(), expected));
+    });
+}
+
+#[test]
+fn width_measurement_keeps_the_hover_anchored_to_visible_item_2() {
+    width_measurement_keeps_the_hover_anchored_to_the_visible_item(2);
+}
+
+#[test]
+fn width_measurement_keeps_the_hover_anchored_to_visible_item_8() {
+    width_measurement_keeps_the_hover_anchored_to_the_visible_item(8);
+}
+
+/// O corpo de `resizable hover keeps its ${side} anchor at ${zoom} zoom${nearBottom ? ' near the viewport bottom' : ''}`.
+fn resizable_hover_keeps_its_anchor(side: &str, zoom: f64, near_bottom: bool) {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let content = sized_content("", 120.0, 80.0);
+        // O botão `Pricing details` é o primeiro filho do conteúdo: a origem do conteúdo é a origem dele.
+        let button = HoverElement::new("Pricing details");
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { show_filter: false, persistent_hover: true, ..IActionListOptions::default() },
+                ..config(vec![IActionListItem {
+                    item: Some(Item { id: "active".to_owned(), checked: true }),
+                    hover: Some(IActionListItemHover { align_to_parent: true, preserve_vertical_position: true, ..element_hover(&content) }),
+                    ..action("active")
+                }])
+            },
+        );
+        widget.layout(24.0, Some(240.0));
+        let left = if side == "left" { (WINDOW_INNER_WIDTH - 320.0) / zoom } else { 40.0 };
+        let top = if near_bottom { (WINDOW_DEFAULT_INNER_HEIGHT - 100.0) / zoom } else { 100.0 };
+        let _popup = zoomed_popup(&widget, top, left, 260.0, zoom);
+        widget.focus();
+        widget.show_hover_for_checked_item();
+        settle_layout().await;
+
+        widget.focus_control(button.clone());
+        let before = widget.panel_rect().expect("o painel está posicionado");
+        let before_button = widget.panel_content_rect().expect("o conteúdo está no painel");
+        content.set_size(120.0, if near_bottom { WINDOW_DEFAULT_INNER_HEIGHT } else { 160.0 });
+        settle_layout().await;
+        let expanded = widget.panel_rect().expect("o painel está posicionado");
+        let expanded_button = widget.panel_content_rect().expect("o conteúdo está no painel");
+        let scrolls = widget.panel_scrolls();
+        let page_down = dispatch_key(&widget, key_with_code("PageDown", KeyCode::PageDown), KeyTarget::SubmenuPanel);
+        let scrolled = widget.panel_scroll_top() > 0.0;
+        dispatch_key(&widget, key_with_code("PageUp", KeyCode::PageUp), KeyTarget::SubmenuPanel);
+        let page_up_restored = widget.panel_scroll_top() == 0.0;
+        dispatch_key(&widget, key_with_code("PageDown", KeyCode::PageDown), KeyTarget::SubmenuPanel);
+        content.set_size(120.0, 80.0);
+        settle_layout().await;
+        let collapsed = widget.panel_rect().expect("o painel está posicionado");
+        let same_origin = |rect: IRect| (rect.left - before.left).abs() < 1.0 && (rect.top - before.top).abs() < 1.0 && (rect.width - before.width).abs() < 1.0;
+
+        assert_eq!(
+            (
+                same_origin(expanded),
+                (expanded_button.left - before_button.left).abs() < 1.0 && (expanded_button.top - before_button.top).abs() < 1.0,
+                expanded.height > before.height,
+                expanded.top + expanded.height <= WINDOW_DEFAULT_INNER_HEIGHT - 7.0,
+                scrolls,
+                scrolled,
+                page_down.default_prevented(),
+                page_up_restored,
+                same_origin(collapsed),
+                (collapsed.height - before.height).abs() < 1.0,
+                widget.panel_scroll_top() == 0.0,
+                widget.is_control_focused(&button),
+            ),
+            (true, true, true, true, near_bottom, near_bottom, true, true, true, true, true, true),
+        );
+    });
+}
+
+macro_rules! resizable_hover_cases {
+    ($($name:ident: ($side:expr, $zoom:expr, $near_bottom:expr)),* $(,)?) => {
+        $(
+            #[test]
+            fn $name() {
+                resizable_hover_keeps_its_anchor($side, $zoom, $near_bottom);
+            }
+        )*
+    };
+}
+
+resizable_hover_cases! {
+    resizable_hover_keeps_its_left_anchor_at_1_zoom: ("left", 1.0, false),
+    resizable_hover_keeps_its_left_anchor_at_1_zoom_near_the_viewport_bottom: ("left", 1.0, true),
+    resizable_hover_keeps_its_left_anchor_at_1_25_zoom: ("left", 1.25, false),
+    resizable_hover_keeps_its_left_anchor_at_1_25_zoom_near_the_viewport_bottom: ("left", 1.25, true),
+    resizable_hover_keeps_its_right_anchor_at_1_zoom: ("right", 1.0, false),
+    resizable_hover_keeps_its_right_anchor_at_1_zoom_near_the_viewport_bottom: ("right", 1.0, true),
+    resizable_hover_keeps_its_right_anchor_at_1_25_zoom: ("right", 1.25, false),
+    resizable_hover_keeps_its_right_anchor_at_1_25_zoom_near_the_viewport_bottom: ("right", 1.25, true),
+}
+
+/// O item de `{ ...action('active'), hover: { content, expandable: true, showIndicator: false, tabThroughPanel: true, ... } }`.
+fn tab_through_item(content: &Rc<HoverElement>, tabbable: Vec<Rc<HoverElement>>) -> TestItem {
+    IActionListItem {
+        hover: Some(IActionListItemHover {
+            expandable: true,
+            show_indicator: Some(false),
+            tab_through_panel: true,
+            get_tabbable_elements: Some(Rc::new(move || tabbable.clone())),
+            content_owns_padding: true,
+            ..element_hover(content)
+        }),
+        ..action("active")
+    }
+}
+
+/// `listOptions: { showFilter: false, reserveSubmenuSpace: false }`.
+fn no_reserved_submenu_space() -> IActionListOptions {
+    IActionListOptions { show_filter: false, reserve_submenu_space: Some(ReserveSubmenuSpace::Never), ..IActionListOptions::default() }
+}
+
+fn tab_through_panel_hover_stays_row_aligned(near_bottom: bool) {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let content = sized_content("", 120.0, 40.0);
+        let reference = HoverElement::new("reference");
+        let widget = create_action_list_widget(
+            &guard,
+            Config { list_options: no_reserved_submenu_space(), ..config(vec![tab_through_item(&content, vec![reference.clone()])]) },
+        );
+        widget.layout(24.0, Some(240.0));
+        // popup: position: fixed; top: ...; left: 40px; width: 260px.
+        widget.dom_node().set_position(if near_bottom { WINDOW_DEFAULT_INNER_HEIGHT - 120.0 } else { 100.0 }, 40.0);
+        widget.dom_node().set_size(260.0, 24.0);
+        widget.focus();
+        dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+        settle_layout().await;
+
+        let row = widget.visible_row_rect(widget.focused_index().expect("a linha está focada"));
+        let panel = widget.panel_rect().expect("o painel está posicionado");
+        let chrome_height = panel.height - widget.panel_viewport_height().expect("o painel tem viewport");
+        let heights = [160.0, 400.0, WINDOW_DEFAULT_INNER_HEIGHT + 100.0, 40.0];
+        let mut actual = Vec::new();
+        for height in heights {
+            content.set_size(120.0, height);
+            settle_layout().await;
+            let rect = widget.panel_rect().expect("o painel está posicionado");
+            let desired_height = height + chrome_height;
+            let mut expected_top = row.top + (row.height - desired_height) / 2.0;
+            if expected_top + desired_height > WINDOW_DEFAULT_INNER_HEIGHT {
+                expected_top = WINDOW_DEFAULT_INNER_HEIGHT - desired_height - 8.0;
+            }
+            expected_top = expected_top.max(0.0);
+            actual.push((
+                (rect.top - expected_top).abs() < 1.0,
+                widget.panel_viewport_height().expect("o painel tem viewport").round(),
+                rect.top >= 0.0 && rect.top + rect.height <= WINDOW_DEFAULT_INNER_HEIGHT,
+                widget.is_control_focused(&reference),
+            ));
+        }
+
+        let expected: Vec<(bool, f64, bool, bool)> =
+            heights.iter().map(|height| (true, f64::min(*height, WINDOW_DEFAULT_INNER_HEIGHT - 8.0 - chrome_height).round(), true, true)).collect();
+        assert_eq!(actual, expected);
+    });
+}
+
+#[test]
+fn tab_through_panel_hover_stays_row_aligned_as_content_grows_and_shrinks() {
+    tab_through_panel_hover_stays_row_aligned(false);
+}
+
+#[test]
+fn tab_through_panel_hover_stays_row_aligned_as_content_grows_and_shrinks_near_the_viewport_bottom() {
+    tab_through_panel_hover_stays_row_aligned(true);
+}
+
+/// O corpo de `rich preview resizes beside a lower row at ${left} and preserves focus on resize`.
+fn rich_preview_resizes_beside_a_lower_row(left: f64) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = sized_content("", 520.0, 80.0);
+    let button = HoverElement::new("Details");
+    let items = (0..15)
+        .map(|index| IActionListItem {
+            hover: Some(IActionListItemHover { tab_through_panel: true, expandable: true, content_owns_padding: true, ..element_hover(&content) }),
+            ..action(&format!("item-{index}"))
+        })
+        .collect();
+    let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(items) });
+    widget.set_window_size(800.0, 800.0);
+    widget.layout(360.0, Some(280.0));
+    widget.dom_node().set_position(80.0, left);
+    widget.focus();
+    widget.focus_item_by_id("item-10");
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let row = widget.visible_row_rect(10);
+    widget.focus_control(button.clone());
+    let before = widget.panel_rect().expect("o painel está posicionado");
+    let parent = widget.dom_node().rect();
+    widget.set_window_size(1100.0, 800.0);
+    widget.window_resized();
+    let after = widget.panel_rect().expect("o painel está posicionado");
+
+    assert_eq!(
+        (
+            if left == 80.0 { before.left >= parent.left + parent.width } else { before.left + before.width <= parent.left },
+            (before.top + before.height / 2.0 - row.top - row.height / 2.0).abs() < 1.0,
+            before.width >= 240.0,
+            before.width < 530.0,
+            after.width >= before.width,
+            widget.is_control_focused(&button),
+            widget.panel_contains(&content),
+        ),
+        (true, true, true, true, true, true, true),
+    );
+}
+
+#[test]
+fn rich_preview_resizes_beside_a_lower_row_at_80_and_preserves_focus_on_resize() {
+    rich_preview_resizes_beside_a_lower_row(80.0);
+}
+
+#[test]
+fn rich_preview_resizes_beside_a_lower_row_at_480_and_preserves_focus_on_resize() {
+    rich_preview_resizes_beside_a_lower_row(480.0);
+}
+
+#[test]
+fn oversized_rich_preview_scrolls_inside_a_short_viewport() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = sized_content("", 520.0, 400.0);
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                hover: Some(IActionListItemHover { tab_through_panel: true, expandable: true, ..element_hover(&content) }),
+                ..action("reference")
+            }])
+        },
+    );
+    widget.set_window_size(375.0, 200.0);
+    widget.layout(24.0, Some(260.0));
+    widget.dom_node().set_position(80.0, 20.0);
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let bounds = widget.panel_rect().expect("o painel está posicionado");
+
+    assert_eq!(
+        (bounds.top >= 0.0 && bounds.top + bounds.height <= 200.0 && bounds.left >= 0.0 && bounds.left + bounds.width <= 375.0, widget.panel_scrolls()),
+        (true, true),
+    );
+}
+
+fn tab_through_panel_hover_clamps_its_width_within_a_mobile_viewport(width: f64) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = sized_content("", 480.0, 80.0);
+    let widget = create_action_list_widget(
+        &guard,
+        Config { list_options: no_reserved_submenu_space(), ..config(vec![tab_through_item(&content, Vec::new())]) },
+    );
+    widget.set_window_size(width, WINDOW_DEFAULT_INNER_HEIGHT);
+    // Simulates the outer dropdown (`.action-widget`, capped at 80vw) occupying most of a narrow phone viewport, leaving little to
+    // no room on either side for the hover panel to open beside it.
+    let popup_width = (width * 0.8).round();
+    widget.layout(24.0, Some(popup_width - 16.0));
+    widget.dom_node().set_position(40.0, 8.0);
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let panel_rect = widget.panel_rect().expect("o painel está posicionado");
+
+    assert_eq!(
+        (widget.panel_displayed(), panel_rect.width, panel_rect.left >= 0.0, panel_rect.left + panel_rect.width <= width),
+        (true, width - 8.0, true, true),
+    );
+}
+
+#[test]
+fn tab_through_panel_hover_panel_clamps_its_width_within_a_320px_mobile_viewport() {
+    tab_through_panel_hover_clamps_its_width_within_a_mobile_viewport(320.0);
+}
+
+#[test]
+fn tab_through_panel_hover_panel_clamps_its_width_within_a_375px_mobile_viewport() {
+    tab_through_panel_hover_clamps_its_width_within_a_mobile_viewport(375.0);
+}
+
+#[test]
+fn hover_panel_expands_after_its_viewport_grows() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = sized_content("", 480.0, 80.0);
+    let item = rc(tab_through_item(&content, Vec::new()));
+    let widget = create_action_list_widget(&guard, Config { list_options: no_reserved_submenu_space(), ..config(vec![(*item).clone()]) });
+    widget.layout(24.0, Some(240.0));
+    // popup: position: fixed; top: 40px; left: 8px; width: 256px, e a lista ocupa a largura dele.
+    widget.dom_node().set_position(40.0, 8.0);
+    widget.dom_node().set_size(256.0, 24.0);
+    widget.set_window_size(320.0, WINDOW_DEFAULT_INNER_HEIGHT);
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let narrow_width = widget.panel_rect().expect("o painel está posicionado").width;
+    widget.set_window_size(640.0, WINDOW_DEFAULT_INNER_HEIGHT);
+    widget.update_items(&[item], None, Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }));
+
+    assert_eq!((narrow_width, widget.panel_rect().expect("o painel está posicionado").width), (312.0, 368.0));
+}
+
+#[test]
+fn hover_resize_restores_its_preferred_width_without_changing_focus() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let content = sized_content("", 120.0, 80.0);
+        let control = HoverElement::new("Open");
+        let widget = create_action_list_widget(
+            &guard,
+            Config { list_options: no_reserved_submenu_space(), ..config(vec![tab_through_item(&content, vec![control.clone()])]) },
+        );
+        widget.focus();
+        dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+        widget.focus_control(control.clone());
+        settle_layout().await;
+
+        let preferred_width = widget.panel_rect().expect("o painel está posicionado").width;
+        widget.set_panel_width(80.0);
+        settle_layout().await;
+        let restored_width = widget.panel_rect().expect("o painel está posicionado").width;
+        settle_layout().await;
+
+        assert_eq!(
+            (restored_width, widget.panel_rect().expect("o painel está posicionado").width, widget.is_control_focused(&control)),
+            (preferred_width, preferred_width, true),
+        );
+    });
+}
+
+/// `{ commandId, label, run: () => runs.push(id) }`.
+fn hover_action(command_id: &str, label: &str, runs: &Rc<RefCell<Vec<String>>>, id: &str) -> IHoverAction {
+    let (runs, id) = (runs.clone(), id.to_owned());
+    IHoverAction { command_id: command_id.to_owned(), label: label.to_owned(), icon_class: None, run: Rc::new(move || runs.borrow_mut().push(id.clone())) }
+}
+
+#[test]
+fn hover_actions_use_the_standard_hover_footer() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = HoverElement::new("Rich reference metadata");
+    let runs = Rc::new(RefCell::new(Vec::<String>::new()));
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_reserved_submenu_space(),
+            ..config(vec![IActionListItem {
+                hover: Some(IActionListItemHover {
+                    expandable: true,
+                    show_indicator: Some(false),
+                    tab_through_panel: true,
+                    actions: vec![hover_action("copy", "Copy URL", &runs, "copy"), hover_action("remove", "Remove", &runs, "remove")],
+                    ..element_hover(&content)
+                }),
+                ..action("active")
+            }])
+        },
+    );
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+
+    let footer = widget.panel_footer().expect("o painel tem o rodapé");
+    widget.click_hover_action(1);
+    let panel = widget.panel_rect().expect("o painel está posicionado");
+    let border = 1.0;
+    let inner = (panel.left + border, panel.left + panel.width - border, panel.top + panel.height - border);
+    let footer_edges = (footer.rect.left, footer.rect.left + footer.rect.width, footer.rect.top + footer.rect.height);
+
+    assert_eq!(
+        (
+            footer.class_name,
+            footer.actions,
+            format!("{SUBMENU_PANEL_PADDING}px"),
+            SUBMENU_PANEL_CLIPS_OVERFLOW,
+            ((footer_edges.0 - inner.0).abs() < 1.0, (footer_edges.1 - inner.1).abs() < 1.0, (footer_edges.2 - inner.2).abs() < 1.0),
+            runs.borrow().clone(),
+        ),
+        (
+            "hover-row status-bar".to_owned(),
+            strings(&["Copy URL", "Remove"]),
+            "4px".to_owned(),
+            true,
+            (true, true, true),
+            strings(&["remove"]),
+        ),
+    );
+}
+
+#[test]
+fn the_initially_focused_row_opens_its_interactive_hover_and_tabs_to_the_footer_action() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = HoverElement::new("");
+    let runs = Rc::new(RefCell::new(Vec::<String>::new()));
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_reserved_submenu_space(),
+            ..config(vec![IActionListItem {
+                hover: Some(IActionListItemHover {
+                    expandable: true,
+                    show_indicator: Some(false),
+                    tab_through_panel: true,
+                    actions: vec![hover_action("copyRelativePath", "Copy relative path", &runs, "copy")],
+                    ..element_hover(&content)
+                }),
+                ..action("image")
+            }])
+        },
+    );
+
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let footer_action = widget.hover_action_elements().remove(0);
+    let arrow_right_focused = widget.is_control_focused(&footer_action);
+    widget.click_hover_action(0);
+    dispatch_key(&widget, key_event("ArrowLeft"), KeyTarget::SubmenuPanel);
+    dispatch_key(&widget, key_event("Tab"), KeyTarget::DomNode);
+    let reopened_footer_action = widget.hover_action_elements().remove(0);
+    let tab_focused = widget.is_control_focused(&reopened_footer_action);
+    widget.click_hover_action(0);
+
+    assert_eq!(
+        (widget.panel_displayed(), arrow_right_focused, tab_focused, runs.borrow().clone()),
+        (true, true, true, strings(&["copy", "copy"])),
+    );
+}
+
+#[test]
+fn refresh_does_not_reopen_a_dismissed_tab_through_hover() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = HoverElement::new("");
+    let control = HoverElement::new("");
+    let item = || tab_through_item(&content, vec![control.clone()]);
+    let widget = create_action_list_widget(&guard, Config { list_options: no_reserved_submenu_space(), ..config(vec![item()]) });
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    dispatch_key(&widget, key_event("ArrowLeft"), KeyTarget::SubmenuPanel);
+    widget.update_items(&[rc(item())], None, Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }));
+
+    assert_eq!((focused_id(&widget), widget.panel_displayed()), (Some("active".to_owned()), false));
+}
+
+/// Conta as chamadas de `dispose` (`{ dispose: () => count++ }`).
+struct DisposeCounter(Rc<Cell<usize>>);
+
+impl IDisposable for DisposeCounter {
+    fn dispose(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+/// O item de substituição de `refresh disposes a rejected hover ...`: o conteúdo vem de uma função e quem o constrói o descarta.
+fn replacement_hover(replacement: &Rc<HoverElement>, dispose_count: &Rc<Cell<usize>>, descriptor_dispose_count: &Rc<Cell<usize>>) -> IActionListItemHover {
+    let (built, disposed) = (replacement.clone(), replacement.clone());
+    let dispose_count = dispose_count.clone();
+    IActionListItemHover {
+        content: Some(HoverContent::Lazy(Rc::new(move || built.clone()))),
+        dispose_content: Some(Rc::new(move |content: &Rc<HoverElement>| {
+            assert!(Rc::ptr_eq(content, &disposed));
+            dispose_count.set(dispose_count.get() + 1);
+        })),
+        disposable: Some(Rc::new(DisposeCounter(descriptor_dispose_count.clone()))),
+        expandable: true,
+        ..IActionListItemHover::default()
+    }
+}
+
+#[test]
+fn refresh_disposes_a_rejected_hover_preservation_candidate() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let current_content = HoverElement::new("");
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem { hover: Some(IActionListItemHover { expandable: true, ..element_hover(&current_content) }), ..action("active") }])
+        },
+    );
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let (dispose_count, descriptor_dispose_count) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let replacement_content = HoverElement::new("");
+
+    widget.update_items(
+        &[rc(IActionListItem { hover: Some(replacement_hover(&replacement_content, &dispose_count, &descriptor_dispose_count)), ..action("active") })],
+        None,
+        Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }),
+    );
+
+    assert_eq!(
+        (dispose_count.get(), descriptor_dispose_count.get(), widget.panel_contains(&replacement_content)),
+        (1, 0, false),
+    );
+}
+
+#[test]
+fn refresh_disposes_a_rejected_hover_candidate_while_preserving_a_submenu() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let current_content = HoverElement::new("");
+    let submenu_action = to_action_with("child", "Child", None, None, noop());
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                hover: Some(element_hover(&current_content)),
+                submenu_actions: Some(vec![submenu_action.clone()]),
+                ..action("active")
+            }])
+        },
+    );
+    widget.focus();
+    dispatch_key(&widget, key_event("ArrowRight"), KeyTarget::DomNode);
+    let (dispose_count, descriptor_dispose_count) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let replacement_content = HoverElement::new("");
+
+    widget.update_items(
+        &[rc(IActionListItem {
+            hover: Some(IActionListItemHover { expandable: false, ..replacement_hover(&replacement_content, &dispose_count, &descriptor_dispose_count) }),
+            submenu_actions: Some(vec![submenu_action]),
+            ..action("active")
+        })],
+        None,
+        Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }),
+    );
+
+    assert_eq!((dispose_count.get(), widget.panel_displayed()), (1, true));
+}
+
+fn refresh_retains_the_live_hover_while_the_focused_row_moves(zoom: f64) {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let content = sized_content("", 120.0, 80.0);
+        let button = HoverElement::new("Pin Model");
+        let item = |id: &str, label: &str| {
+            let content = content.clone();
+            rc(IActionListItem {
+                label: Some(label.to_owned()),
+                item: Some(Item { id: id.to_owned(), checked: true }),
+                hover: Some(IActionListItemHover {
+                    content: Some(HoverContent::Lazy(Rc::new(move || content.clone()))),
+                    expandable: true,
+                    align_to_parent: true,
+                    preserve_vertical_position: true,
+                    ..IActionListItemHover::default()
+                }),
+                ..action(id)
+            })
+        };
+        let others: Vec<Rc<TestItem>> = ["one", "two", "three", "four"].into_iter().map(|id| rc(action(id))).collect();
+        let mut initial = others.clone();
+        initial.push(item("model", "model"));
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { show_filter: false, persistent_hover: true, ..IActionListOptions::default() },
+                ..config(initial.iter().map(|item| (**item).clone()).collect())
+            },
+        );
+        widget.layout(160.0, Some(200.0));
+        let _popup = zoomed_popup(&widget, 80.0, 40.0, 200.0, zoom);
+        widget.show_hover_for_checked_item();
+        settle_layout().await;
+        widget.focus_control(button.clone());
+        let before = widget.panel_rect().expect("o painel está posicionado");
+        let preserve = |animate_item_move: bool| Some(IActionListUpdateOptions { preserve_hover: true, animate_item_move, ..IActionListUpdateOptions::default() });
+        let mut moved_first = vec![item("model", "model")];
+        moved_first.extend(others.iter().cloned());
+        widget.update_items(&moved_first, Some("model"), preserve(true));
+        let move_timing = widget.item_move_animations();
+        widget.finish_item_move_animations();
+        settle_layout().await;
+        let after_move = widget.panel_rect().expect("o painel está posicionado");
+        let mut renamed = others.clone();
+        renamed.push(item("model-fast", "Fast Model"));
+        widget.update_items(&renamed, Some("model-fast"), preserve(false));
+        settle_layout().await;
+        let after_variant = widget.panel_rect().expect("o painel está posicionado");
+        let stationary = |rect: IRect| (rect.left - before.left).abs() < 1.0 && (rect.top - before.top).abs() < 1.0 && (rect.width - before.width).abs() < 1.0;
+
+        assert_eq!(
+            (
+                widget.panel_displayed(),
+                widget.panel_contains(&content),
+                widget.is_control_focused(&button),
+                stationary(after_move),
+                stationary(after_variant),
+                focused_id(&widget),
+                widget.panel_aria_label(),
+                move_timing,
+            ),
+            (
+                true,
+                true,
+                true,
+                true,
+                true,
+                Some("model-fast".to_owned()),
+                Some("Fast Model".to_owned()),
+                vec![(160, "cubic-bezier(0.2, 0.8, 0.2, 1)".to_owned())],
+            ),
+        );
+    });
+}
+
+#[test]
+fn refresh_retains_the_live_hover_and_its_origin_while_the_focused_row_moves_at_1_zoom() {
+    refresh_retains_the_live_hover_while_the_focused_row_moves(1.0);
+}
+
+#[test]
+fn refresh_retains_the_live_hover_and_its_origin_while_the_focused_row_moves_at_1_25_zoom() {
+    refresh_retains_the_live_hover_while_the_focused_row_moves(1.25);
+}
+
+#[test]
+fn preserving_a_hover_reveals_its_row_in_a_collapsed_section_without_reporting_a_user_toggle() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = HoverElement::new("Unpin Model");
+    let item = IActionListItem {
+        item: Some(Item { id: "model".to_owned(), checked: true }),
+        hover: Some(IActionListItemHover { expandable: true, preserve_vertical_position: true, ..element_hover(&content) }),
+        ..action("model")
+    };
+    let toggles = Rc::new(RefCell::new(Vec::<bool>::new()));
+    let recorded = toggles.clone();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: false,
+                persistent_hover: true,
+                collapsed_by_default: Some(std::collections::BTreeSet::from(["other".to_owned()])),
+                on_did_toggle_section: Some(Rc::new(move |_: &str, collapsed: bool| recorded.borrow_mut().push(collapsed))),
+                ..IActionListOptions::default()
+            },
+            ..config(vec![item.clone()])
+        },
+    );
+    widget.show_hover_for_checked_item();
+    widget.focus_control(content.clone());
+    widget.update_items(
+        &rcs(vec![action("first"), IActionListItem { section: Some("other".to_owned()), ..item }]),
+        Some("model"),
+        Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }),
+    );
+
+    assert_eq!(
+        (visible_row_text(&widget), toggles.borrow().clone(), focused_id(&widget), widget.is_control_focused(&content), widget.panel_displayed()),
+        (strings(&["first", "model"]), Vec::<bool>::new(), Some("model".to_owned()), true, true),
+    );
+}
+
+#[test]
+fn a_removed_hover_is_not_retained_by_an_item_with_the_same_id_but_different_content() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = HoverElement::new("Configure");
+    let item = IActionListItem {
+        item: Some(Item { id: "model".to_owned(), checked: true }),
+        hover: Some(IActionListItemHover { expandable: true, ..element_hover(&content) }),
+        ..action("model")
+    };
+    let widget = create_action_list_widget(
+        &guard,
+        Config { list_options: IActionListOptions { show_filter: false, persistent_hover: true, ..IActionListOptions::default() }, ..config(vec![item.clone()]) },
+    );
+    widget.show_hover_for_checked_item();
+    widget.focus_control(content.clone());
+    widget.update_items(
+        &[rc(IActionListItem { hover: None, ..item })],
+        None,
+        Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }),
+    );
+
+    assert_eq!((widget.panel_contains(&content), !widget.panel_displayed()), (false, true));
+}
+
+fn hover_aligns_with_the_outer_border(side: &str, zoom: f64) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let content = sized_content("Model details", 120.0, 80.0);
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![IActionListItem {
+                item: Some(Item { id: "active".to_owned(), checked: true }),
+                hover: Some(IActionListItemHover { align_to_parent: true, ..element_hover(&content) }),
+                ..action("active")
+            }])
+        },
+    );
+    widget.layout(24.0, Some(240.0));
+    let left = if side == "left" { (WINDOW_INNER_WIDTH - 320.0) / zoom } else { 0.0 };
+    let popup = zoomed_popup(&widget, 120.0, left, 240.0, zoom);
+    widget.focus();
+    let focus_before = widget.is_list_focused();
+
+    widget.show_hover_for_checked_item();
+
+    let parent_bounds = popup.rect();
+    let panel_bounds = widget.panel_rect().expect("o painel está posicionado");
+    let gap = if side == "left" { parent_bounds.left - (panel_bounds.left + panel_bounds.width) } else { panel_bounds.left - (parent_bounds.left + parent_bounds.width) };
+    assert_eq!((widget.panel_displayed(), gap.abs() < 1.0, widget.is_list_focused() == focus_before), (true, true, true));
+}
+
+#[test]
+fn hover_aligns_with_the_outer_left_border_at_1_zoom() {
+    hover_aligns_with_the_outer_border("left", 1.0);
+}
+
+#[test]
+fn hover_aligns_with_the_outer_left_border_at_1_25_zoom() {
+    hover_aligns_with_the_outer_border("left", 1.25);
+}
+
+#[test]
+fn hover_aligns_with_the_outer_right_border_at_1_zoom() {
+    hover_aligns_with_the_outer_border("right", 1.0);
+}
+
+#[test]
+fn hover_aligns_with_the_outer_right_border_at_1_25_zoom() {
+    hover_aligns_with_the_outer_border("right", 1.25);
+}
+
+#[test]
+fn consumes_initial_focus_before_later_filtering_and_refocusing() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, initial_focus_item_id: Some("match-initial".to_owned()), ..IActionListOptions::default() },
+            ..config(vec![action("match-first"), action("match-initial"), action("other")])
+        },
+    );
+
+    widget.focus();
+    widget.focus_previous();
+    widget.filter_input_input("match");
+    widget.focus();
+
+    assert_eq!(focused_id(&widget), Some("match-first".to_owned()));
 }
 
