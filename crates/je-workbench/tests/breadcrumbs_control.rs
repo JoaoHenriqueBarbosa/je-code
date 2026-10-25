@@ -1,12 +1,28 @@
-//! Teste de `breadcrumbsControl.ts` (parte portada). Os 12 casos de `breadcrumbsControl.test.ts` dirigem o picker real
-//! (`BreadcrumbsPicker`, `ResourceLabels`, `IContextViewService` com `source`), que ainda não existem em `crates/`; aqui
-//! ficam as contas e os marcadores que esses casos exercitam (payloads, destino de grupo, geometria do picker) e o
-//! serviço `BreadcrumbsService`.
+//! Teste de `breadcrumbsControl.ts`. Os 12 casos de `breadcrumbsControl.test.ts` (`file picker keeps focus with {mouse,
+//! keyboard} input and editor focus delivery {before,after} loading`, `outline picker activates its group without focusing
+//! the editor`, `{Alt-clicking,clicking} a {symbol,file} in the picker`, `picking a {symbol,file} closes the picker and
+//! reveals the selection`, `{symbol,file} quick access activates its group without focusing the editor`, `revealing a
+//! {symbol,file} {to the side,in place} still focuses the editor`, `revealing a folder opens the next picker without
+//! focusing the editor`, `Alt-clicking a folder only expands the hierarchy`, `Alt-clicking a symbol twistie only expands
+//! the hierarchy`, `Escape returns focus to the owning editor`, `moving focus outside still dismisses the picker` e
+//! `repeatedly opening the picker in the active group does not focus the editor`) dirigem o controle sobre o
+//! `workbenchInstantiationService` (cerca de quinze serviços reais: `IContextViewService`, `IFileService` com `resolve`
+//! substituído, `IConfigurationService`, `IEditorService`, `IThemeService`, `IDecorationsService`, `ITextFileService`...)
+//! e disparam `MouseEvent` de clique, de clique duplo e de Alt em linhas das árvores dos seletores, além de `FocusEvent`
+//! de foco e perda. O porte ainda não tem esse harness (`workbench_instantiation_service`, o `IContextViewService` sobre
+//! `NodeId` sem implementação de menu, e a injeção de `PointerData` com `altKey` em linhas de árvore do `je-ui`), então os
+//! 12 casos entram quando ele existir; nenhum foi excluído do oráculo.
+//!
+//! Aqui ficam as contas e os marcadores que esses casos exercitam (payloads, destino de grupo, geometria do picker), o serviço
+//! `BreadcrumbsService`, o registro dos comandos (`CommandsRegistry.getCommand('breadcrumbs.selectEditor')` do caso
+//! `Escape returns focus to the owning editor`) e o rótulo do seletor de tipo de editor.
 
+use je_base::lifecycle::IDisposable;
 use je_base::scrollable::ScrollbarVisibility;
+use je_platform::commands::commands_registry;
 use je_workbench::browser::parts::editor::breadcrumbs::{BreadcrumbsService, IBreadcrumbsService};
 use je_workbench::browser::parts::editor::breadcrumbs_control::{
-    BreadcrumbsControl, EditorGroupTarget, ItemRect, compute_picker_placement, editor_group_target, is_payload_pick, payload_pick, payload_reveal,
+    BreadcrumbsControl, EditorGroupTarget, register_breadcrumbs_commands, ItemRect, compute_picker_placement, editor_group_target, is_payload_pick, payload_pick, payload_reveal,
     payload_reveal_aside,
 };
 
@@ -70,4 +86,28 @@ fn picker_placement_clamps_to_window_and_mouse_arrow() {
 fn breadcrumbs_service_starts_empty() {
     let service = BreadcrumbsService::new();
     assert!(service.get_widget(1).is_none());
+}
+
+#[test]
+fn commands_are_registered_with_the_original_ids() {
+    let registrations = register_breadcrumbs_commands();
+    for id in [
+        "breadcrumbs.toggle",
+        "breadcrumbs.focusAndSelect",
+        "breadcrumbs.focus",
+        "breadcrumbs.toggleToOn",
+        "breadcrumbs.focusNext",
+        "breadcrumbs.focusPrevious",
+        "breadcrumbs.focusNextWithPicker",
+        "breadcrumbs.focusPreviousWithPicker",
+        "breadcrumbs.selectFocused",
+        "breadcrumbs.revealFocused",
+        "breadcrumbs.selectEditor",
+        "breadcrumbs.revealFocusedFromTreeAside",
+        "breadcrumbs.copyPath",
+    ] {
+        assert!(commands_registry().get_command(id).is_some(), "comando {id} não registrado");
+    }
+    registrations.dispose();
+    assert!(commands_registry().get_command("breadcrumbs.selectEditor").is_none());
 }

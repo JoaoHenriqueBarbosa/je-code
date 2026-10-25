@@ -174,6 +174,12 @@ pub trait IEditorPane {
         None
     }
 
+    /// `focus()`: move o foco do teclado para o painel (`IEditorPane.focus`). Sem implementação lança o `Method not implemented.`
+    /// do dublê do original.
+    fn focus(&self) {
+        je_base::errors::throw(je_base::errors::Error::new("Method not implemented."))
+    }
+
     /// `getSelection()` (`IEditorPaneWithSelection`): a seleção atual do painel, ou `None` quando não há (o padrão).
     fn get_selection(&self) -> Option<Rc<dyn IEditorPaneSelection>> {
         None
