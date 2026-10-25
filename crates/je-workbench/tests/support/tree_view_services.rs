@@ -18,7 +18,7 @@ use je_platform::log::NullLogService;
 use je_platform::progress::progress::{IProgress, IProgressService, Progress, ProgressOptions, ProgressStep, ProgressTask};
 use je_platform::telemetry::telemetry_utils::NullTelemetryServiceShape;
 use je_workbench::browser::parts::views::tree_view::CustomTreeViewServices;
-use je_workbench::services::activity::activity::{IActivity, IActivityService};
+use je_workbench::services::activity::activity::{ActivityChangeTarget, IActivity, IActivityService};
 use je_workbench::services::extensions::extensions::{ActivationKind, IExtensionDescription, IExtensionService};
 
 /// `TestExtensionService`: as extensões já estão registradas.
@@ -60,12 +60,36 @@ impl IProgressService for TestProgressService {
     }
 }
 
-/// O `TestActivityService`: o selo não aparece em lugar nenhum.
+/// O `TestActivityService` de `workbenchTestServices.ts`: o selo não aparece em lugar nenhum.
 pub struct TestActivityService;
 
 impl IActivityService for TestActivityService {
+    fn on_did_change_activity(&self) -> Event<ActivityChangeTarget> {
+        Event::none()
+    }
+
+    fn show_view_container_activity(&self, _view_container_id: &str, _badge: IActivity) -> DisposableRef {
+        none()
+    }
+
+    fn get_view_container_activities(&self, _view_container_id: &str) -> Vec<IActivity> {
+        Vec::new()
+    }
+
     fn show_view_activity(&self, _view_id: &str, _badge: IActivity) -> DisposableRef {
         none()
+    }
+
+    fn show_accounts_activity(&self, _activity: IActivity) -> DisposableRef {
+        none()
+    }
+
+    fn show_global_activity(&self, _activity: IActivity) -> DisposableRef {
+        none()
+    }
+
+    fn get_activity(&self, _id: &str) -> Vec<IActivity> {
+        Vec::new()
     }
 }
 

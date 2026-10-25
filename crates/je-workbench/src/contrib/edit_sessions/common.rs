@@ -9,8 +9,15 @@
 //!   (`je_platform::user_data_sync::user_data_sync::SyncResource`), com a conversão para o `ServerResource` do cliente.
 //! - `EDIT_SESSION_SYNC_CATEGORY`, `EDIT_SESSIONS_TITLE` (`ILocalizedString`), `EDIT_SESSIONS_SIGNED_IN`,
 //!   `EDIT_SESSIONS_PENDING` e `EDIT_SESSIONS_SHOW_VIEW` (`RawContextKey`) são funções, que criam o valor (e registram a chave de
-//!   contexto) no primeiro uso, como as demais chaves do porte. `EDIT_SESSIONS_VIEW_ICON` fica para a fatia das vistas, que usa o
-//!   registro de ícones.
+//!   contexto) no primeiro uso, como as demais chaves do porte. `EDIT_SESSIONS_VIEW_ICON` é [`edit_sessions_view_icon`]: o
+//!   `registerIcon` devolve o `ThemeIcon` com o id dado (o registro de ícones ainda não foi portado, como em `default_view_icon`).
+//! - `JSON.parse(content) as EditSession` é [`EditSession::parse`]: o original lê o objeto sem checar a forma (um campo
+//!   ausente só falha no primeiro uso), e o porte checa a forma na leitura e devolve `TypeError` com o campo que falta. O
+//!   `fileType` desconhecido é lido como `File` (o único valor do `enum`, que nada consulta) e um `type` que não é `Addition` nem
+//!   `Deletion` é erro.
+//! - [`command_title`] é o `title: localize2(...)` de um `IAction2Options`, [`action2_options`] monta as opções de um comando sem
+//!   menu e [`FnAction`] é o `registerAction2(class extends Action2 { ... })` das fatias do `editSessions`: a classe anônima do
+//!   original fecha sobre o `that` da contribuição, e aqui o fecho do `run` faz o mesmo.
 //! - `lastReadResources` e `lastWrittenResources` são `Map` compartilhados e mutáveis no original (o consumidor chama `set` em um
 //!   e `get` no outro), então o contrato devolve o mesmo [`EditSessionResourceMap`] (`Rc<RefCell<..>>`) a cada chamada.
 //! - `storeClient` (propriedade com leitura e escrita) é o par [`IEditSessionsStorageService::store_client`] e
@@ -31,11 +38,16 @@ use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::event::Event;
 use je_base::hash::StringSha1;
+use je_base::json::{Object, Value};
+use je_base::lifecycle::DisposableRef;
 use je_base::promise::Promise;
-use je_instantiation::service_id;
-use je_platform::action::{LocalizedString, localize2};
+use je_base::themables::ThemeIcon;
+use je_instantiation::{ServicesAccessor, service_id};
+use je_platform::action::{CommandAction, CommandActionTitle, LocalizedString, Title, localize2};
+use je_platform::actions::actions::{Action2, Action2Options, register_action2};
 use je_platform::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
 use je_platform::log::LogService;
+use je_platform::user_data_sync::abstract_synchronizer::parse_json;
 use je_platform::user_data_sync::user_data_sync::{IResourceRefHandle, ServerResource, SyncResource as SettingsSyncResource};
 
 use super::edit_sessions_storage_client::EditSessionsStoreClient;
@@ -43,6 +55,41 @@ use super::edit_sessions_storage_client::EditSessionsStoreClient;
 /// `EDIT_SESSION_SYNC_CATEGORY`.
 pub fn edit_session_sync_category() -> LocalizedString {
     localize2("cloud changes", "Cloud Changes")
+}
+
+/// O `title: ILocalizedString` de um `IAction2Options` (o `localize2(...)`) como título do comando.
+pub fn command_title(localized: LocalizedString) -> Title {
+    Title::Localized(CommandActionTitle { value: localized.value, original: localized.original, mnemonic_title: None })
+}
+
+/// O `IAction2Options` de um comando sem menu nem atalho (só o `f1` opcional).
+pub fn action2_options(command: CommandAction, f1: bool) -> Action2Options {
+    Action2Options { command, menu: Vec::new(), keybinding: Vec::new(), f1 }
+}
+
+/// `registerAction2(class extends Action2 { constructor() { super(options) } run(accessor, ...args) { ... } })`: a ação que as
+/// fatias do `editSessions` registram, com as opções e o corpo do `run` dados (a classe anônima do original fecha sobre o `that`
+/// da contribuição; aqui é o fecho que o faz).
+pub struct FnAction {
+    options: Action2Options,
+    run: Box<dyn Fn(&ServicesAccessor, &[Dynamic])>,
+}
+
+impl FnAction {
+    /// `registerAction2(new FnAction(...))`.
+    pub fn register(options: Action2Options, run: impl Fn(&ServicesAccessor, &[Dynamic]) + 'static) -> DisposableRef {
+        register_action2(Rc::new(Self { options, run: Box::new(run) }))
+    }
+}
+
+impl Action2 for FnAction {
+    fn desc(&self) -> Action2Options {
+        self.options.clone()
+    }
+
+    fn run(&self, accessor: &ServicesAccessor, args: &[Dynamic]) {
+        (self.run)(accessor, args);
+    }
 }
 
 /// `SyncResource` (`'editSessions' | 'workspaceState'`).
@@ -235,6 +282,85 @@ impl EditSession {
     }
 }
 
+/// O `TypeError` de um campo que falta (ou tem outro tipo) no objeto de `JSON.parse(content)`.
+fn shape_error(owner: &str, key: &str, expected: &str) -> Error {
+    Error::named("TypeError", format!("Invalid edit session content: {owner}.{key} is not {expected}"))
+}
+
+fn as_object<'a>(value: &'a Value, owner: &str) -> Result<&'a Object, Error> {
+    match value {
+        Value::Object(object) => Ok(object),
+        _ => Err(Error::named("TypeError", format!("Invalid edit session content: {owner} is not an object"))),
+    }
+}
+
+fn required_string(object: &Object, owner: &str, key: &str) -> Result<String, Error> {
+    match object.get(key) {
+        Some(Value::String(text)) => Ok(text.to_string_lossy()),
+        _ => Err(shape_error(owner, key, "a string")),
+    }
+}
+
+fn optional_string(object: &Object, key: &str) -> Option<String> {
+    match object.get(key) {
+        Some(Value::String(text)) => Some(text.to_string_lossy()),
+        _ => None,
+    }
+}
+
+fn required_array<'a>(object: &'a Object, owner: &str, key: &str) -> Result<&'a [Value], Error> {
+    match object.get(key) {
+        Some(Value::Array(items)) => Ok(items),
+        _ => Err(shape_error(owner, key, "an array")),
+    }
+}
+
+impl Change {
+    /// O `Change` que o objeto do `JSON.parse` descreve.
+    fn from_json(value: &Value) -> Result<Self, Error> {
+        let object = as_object(value, "change")?;
+        let relative_file_path = required_string(object, "change", "relativeFilePath")?;
+        match object.get("type") {
+            Some(Value::Number(number)) if *number == f64::from(ChangeType::Addition as i32) => {
+                Ok(Self::Addition { relative_file_path, file_type: FileType::File, contents: required_string(object, "change", "contents")? })
+            }
+            Some(Value::Number(number)) if *number == f64::from(ChangeType::Deletion as i32) => Ok(Self::Deletion { relative_file_path, file_type: FileType::File }),
+            _ => Err(shape_error("change", "type", "a ChangeType")),
+        }
+    }
+}
+
+impl Folder {
+    /// A `Folder` que o objeto do `JSON.parse` descreve.
+    fn from_json(value: &Value) -> Result<Self, Error> {
+        let object = as_object(value, "folder")?;
+        Ok(Self {
+            name: required_string(object, "folder", "name")?,
+            canonical_identity: optional_string(object, "canonicalIdentity"),
+            working_changes: required_array(object, "folder", "workingChanges")?.iter().map(Change::from_json).collect::<Result<_, _>>()?,
+            absolute_uri: optional_string(object, "absoluteUri"),
+        })
+    }
+}
+
+impl EditSession {
+    /// `JSON.parse(content) as EditSession` (ver as divergências do módulo).
+    pub fn parse(content: &str) -> Result<Self, Error> {
+        let value = parse_json(content)?;
+        let object = as_object(&value, "editSession")?;
+        let version = match object.get("version") {
+            Some(Value::Number(number)) if number.fract() == 0.0 && *number >= 0.0 && *number <= f64::from(u32::MAX) => *number as u32,
+            _ => return Err(shape_error("editSession", "version", "a version number")),
+        };
+        Ok(Self {
+            version,
+            workspace_state_id: optional_string(object, "workspaceStateId"),
+            machine: optional_string(object, "machine"),
+            folders: required_array(object, "editSession", "folders")?.iter().map(Folder::from_json).collect::<Result<_, _>>()?,
+        })
+    }
+}
+
 pub const EDIT_SESSIONS_SIGNED_IN_KEY: &str = "editSessionsSignedIn";
 
 /// `EDIT_SESSIONS_SIGNED_IN`.
@@ -257,6 +383,11 @@ pub const EDIT_SESSIONS_DATA_VIEW_ID: &str = "workbench.views.editSessions.data"
 /// `EDIT_SESSIONS_TITLE`.
 pub fn edit_sessions_title() -> LocalizedString {
     localize2("cloud changes", "Cloud Changes")
+}
+
+/// `EDIT_SESSIONS_VIEW_ICON`.
+pub fn edit_sessions_view_icon() -> ThemeIcon {
+    ThemeIcon::from_id("edit-sessions-view-icon")
 }
 
 /// `EDIT_SESSIONS_SHOW_VIEW`.
