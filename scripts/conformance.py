@@ -31,6 +31,17 @@ LAYERS.append(('extensions', 'extensions'))
 SHELL_EXCLUDE = ['workbench/services', 'workbench/api', 'workbench/contrib']
 EXTENSIONS_OUT_OF_SCOPE = ['extensions/copilot/']
 TEST_RE = re.compile(r'^\s*test\(', re.M)
+# Num arquivo que declara um auxiliar local `function test(...)` (o `keyCodes.test.ts`), as chamadas desse auxiliar não são casos
+# do mocha: ali só conta a chamada `test(` com o nome do caso em texto literal.
+LOCAL_TEST_HELPER_RE = re.compile(r'\bfunction\s+test\s*\(')
+NAMED_TEST_RE = re.compile(r'^\s*test\(\s*[\'"`]', re.M)
+
+
+def oracle_cases(text):
+    """Os casos do mocha de um arquivo de teste do oráculo."""
+    if LOCAL_TEST_HELPER_RE.search(text):
+        return len(NAMED_TEST_RE.findall(text))
+    return len(TEST_RE.findall(text))
 PORT_RE = re.compile(r'Porte de `((?:src/vs|extensions)/[^`]+\.test\.ts)`')
 
 
@@ -113,7 +124,7 @@ def main():
         files = sorted(p for p in (source / folder).rglob('*.test.ts') if in_scope(p))
         cases = ported_cases = ported_files = 0
         for f in files:
-            n = len(TEST_RE.findall(f.read_text(encoding='utf-8', errors='replace')))
+            n = oracle_cases(f.read_text(encoding='utf-8', errors='replace'))
             cases += n
             key = str(f.relative_to(source))
             if key in done:
