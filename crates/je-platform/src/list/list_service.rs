@@ -14,6 +14,7 @@
 use std::any::Any;
 use std::rc::Rc;
 
+use je_base::errors::Error;
 use je_instantiation::service_id;
 
 /// A lista que o [`IListService`] guarda (ver a nota do módulo).
@@ -24,6 +25,30 @@ pub trait IListWidget {
 
     /// O primeiro elemento em foco (`getFocusedElements()[0]` de uma `List`, `getFocus()[0]` de uma `AsyncDataTree`).
     fn get_focused_element(&self) -> Option<Rc<dyn Any>>;
+
+    /// O `list instanceof WorkbenchList`: a lista como [`IWorkbenchList`], ou `None` para um tipo de lista que não é.
+    fn as_workbench_list(self: Rc<Self>) -> Option<Rc<dyn IWorkbenchList>> {
+        None
+    }
+}
+
+/// O recorte de `WorkbenchList` (`platform/list/browser/listService.ts`) que a visão acessível das notificações usa:
+/// `indexOf`, `domFocus`, `setFocus`, `focusNext` e `focusPrevious`.
+pub trait IWorkbenchList {
+    /// `indexOf(element)`: o índice do elemento (comparado por identidade), ou `-1`.
+    fn index_of(&self, element: &Rc<dyn Any>) -> isize;
+
+    /// `domFocus()`.
+    fn dom_focus(&self);
+
+    /// `setFocus(indexes)`: lança (devolve o erro) para um índice fora da lista.
+    fn set_focus(&self, indexes: &[isize]) -> Result<(), Error>;
+
+    /// `focusNext()`.
+    fn focus_next(&self);
+
+    /// `focusPrevious()`.
+    fn focus_previous(&self);
 }
 
 /// `IListService`.
