@@ -12,6 +12,13 @@
 //!   `FileDragAndDrop`, `ExplorerDataSource`, `ResourceLabels`, `ResourceContextKey`) são os campos de [`ExplorerViewServices`]. O que o
 //!   porte ainda não tem como serviço (o tema de ícones de arquivo, o `ResourceContextKey`, o tema de cores) entra como fornecedor
 //!   ou fábrica, como os de [`ViewPaneServices`].
+//! - **`createInstance` do `createTree`.** As oito peças que o `createTree` instancia (`FilesFilter`, `ResourceLabels`,
+//!   `ExplorerFindProvider`, `FilesRenderer`, `FileDragAndDrop`, `ExplorerDataSource`, `FileSorter` e a árvore) vêm de um
+//!   [`ExplorerTreeFactory`]. Sem fábrica em [`ExplorerViewServices::tree_factory`], a vista usa a [`FilesExplorerTreeFactory`], que
+//!   monta os componentes reais; com fábrica, ela faz o papel do `stubInstance` do original (os testes entregam a árvore e os
+//!   dublês). A vista guarda cada peça pelo contrato que usa: do filtro, o [`ITreeFilter`], o `onDidChange` e o `dispose`
+//!   ([`ExplorerFilter`]); do provedor de busca, o `isShowingFilterResults` ([`IsShowingFilterResults`]); do renderer, o
+//!   [`IExplorerRenderer`]; da fonte de dados, o [`IAsyncDataSource`]; do sorter, o [`ITreeSorter`]; do resto, o `dispose`.
 //! - **Chaves de contexto.** As do `ExplorerView` ligam ao serviço de chaves com escopo da [`ViewPane`], que é o que o
 //!   `contextKeyService` injetado é no original.
 //! - **Entrada da árvore.** A `ExplorerDataSource` do porte tem `ExplorerInput` (a lista de itens do topo) como entrada: a árvore
@@ -95,13 +102,15 @@ use je_storage::StorageValue;
 use je_ui::{NodeId, Role, Tree, Ui};
 use je_widgets::dom::{create_el, is_ancestor_of_active_element};
 use je_widgets::list::list_styles::IListStyles;
-use je_widgets::list::list_types::{BrowserEvent, IIdentityProvider, IKeyboardNavigationLabelProvider, TemplateData};
+use je_widgets::list::list_types::{BrowserEvent, IIdentityProvider, IKeyboardNavigationLabelProvider, IListVirtualDelegate, TemplateData};
 use je_widgets::tree::abstract_tree::{AbstractTreePart, ExpandOnlyOnTwistieClick};
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeNodeWrapper, IAsyncDataTreeRenderer, IAsyncDataTreeViewState};
 use je_widgets::tree::compressible_async_data_tree::{
-    CompressibleAsyncDataTreeNodeWrapper, CompressibleAsyncDataTreeOptions, ICompressibleAsyncDataTreeRenderer, ICompressibleAsyncKeyboardNavigationLabelProvider,
+    CompressibleAsyncDataTreeNodeWrapper, CompressibleAsyncDataTreeOptions, ICompressibleAsyncDataTreeRenderer, ICompressibleAsyncKeyboardNavigationLabelProvider, ITreeCompressionDelegate,
 };
-use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeElementRenderDetails, TreeFilterResult, TreeMouseEventTarget, TreeNodeApi, TreeVisibility};
+use je_widgets::tree::tree_types::{
+    IAsyncDataSource, ITreeFilter, ITreeSorter, InputOrElement, TreeElementRenderDetails, TreeFilterResult, TreeMouseEventTarget, TreeNodeApi, TreeVisibility,
+};
 
 use super::explorer_viewer::{
     ExplorerCompressionDelegate, ExplorerDelegate, FileSorter, ICompressedNavigationController, IExplorerFindHighlightTree,
@@ -403,6 +412,9 @@ pub fn should_preserve_workspace_name_case(workbench_state: WorkbenchState, work
 /// (ver as divergências do módulo para a entrada e o dado de filtro).
 pub type ExplorerTree = WorkbenchCompressibleAsyncDataTree<ExplorerInput, Rc<ExplorerItem>, ()>;
 
+/// Onde a vista guarda a árvore depois de criá-la (o `this.tree` que o `() => this.tree` do original lê).
+pub type ExplorerTreeSlot = Rc<RefCell<Option<Rc<ExplorerTree>>>>;
+
 /// `FileCopiedContext` (`fileActions.ts`).
 pub fn file_copied_context() -> je_platform::contextkey::contextkey::RawContextKey {
     use je_platform::contextkey::contextkey::{ContextKeyMeta, RawContextKey};
@@ -482,6 +494,69 @@ pub struct ExplorerViewServices {
     pub list_override_styles: Rc<dyn Fn(&ListOverrideStyleColors) -> IListStyles>,
     /// O drop de arquivos de fora do explorador (`ExternalFileImport`/`BrowserFileUpload`).
     pub external_file_drop: ExternalFileDropHandler,
+    /// O `instantiationService` do `createTree`: `None` instancia os componentes reais ([`FilesExplorerTreeFactory`]).
+    pub tree_factory: Option<Rc<dyn ExplorerTreeFactory>>,
+}
+
+/// `isShowingFilterResults()` do `ExplorerFindProvider`: a parte do provedor de busca que a vista usa.
+pub type IsShowingFilterResults = Rc<dyn Fn() -> bool>;
+
+/// O `FilesFilter` no que a vista usa dele: o filtro da árvore (`filter` e `isItemVisible`), o `onDidChange` e o `dispose`.
+pub struct ExplorerFilter {
+    pub tree_filter: Rc<dyn ITreeFilter<Rc<ExplorerItem>, ()>>,
+    pub on_did_change: Event<()>,
+    pub disposable: DisposableRef,
+}
+
+/// O `FilesRenderer` no que a vista usa dele: o renderer dos nós da árvore, o `getCompressedNavigationController` (que o
+/// `getContext` e o menu de contexto consultam) e o `dispose`.
+pub trait IExplorerRenderer: ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()> + CompressedNavigationControllerProvider + IDisposable {}
+
+/// O que o `createTree` entrega aos `createInstance` dos componentes, e que depende da vista.
+pub struct ExplorerComponentsArgs {
+    /// `{ onDidChangeVisibility: this.onDidChangeBodyVisibility }` do `ResourceLabels`.
+    pub labels_container: IResourceLabelsContainer,
+    /// `() => this.tree` do `ExplorerFindProvider` e o `updateWidth` do `FilesRenderer`.
+    pub tree_slot: ExplorerTreeSlot,
+    /// `ExplorerFindProviderActive.bindTo(contextKeyService)`.
+    pub find_active_key: Rc<dyn ExplorerFindActiveKey>,
+    /// `(item) => this.isItemCollapsed(item)` do `FileDragAndDrop`.
+    pub is_item_collapsed: Rc<dyn Fn(&Rc<ExplorerItem>) -> bool>,
+}
+
+/// Os componentes que o `createTree` instancia antes da árvore, cada um no contrato que a vista usa.
+pub struct ExplorerComponents {
+    pub filter: ExplorerFilter,
+    /// O `ResourceLabels`: a vista só o descarta (quem o usa é o renderer).
+    pub labels: DisposableRef,
+    pub find_provider: IsShowingFilterResults,
+    pub renderer: Rc<dyn IExplorerRenderer>,
+    /// O `FileDragAndDrop`: a vista só o descarta (a opção `dnd` ainda não existe na árvore do `je-widgets`).
+    pub drag_and_drop: DisposableRef,
+    pub data_source: Rc<dyn IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>>>,
+    pub sorter: Rc<dyn ITreeSorter<Rc<ExplorerItem>>>,
+}
+
+/// Os argumentos do `createInstance(WorkbenchCompressibleAsyncDataTree, 'FileExplorer', container, ...)`.
+pub struct ExplorerTreeArgs {
+    pub container: NodeId,
+    pub delegate: Rc<dyn IListVirtualDelegate<Rc<ExplorerItem>>>,
+    pub compression_delegate: Rc<dyn ITreeCompressionDelegate<Rc<ExplorerItem>>>,
+    pub renderers: Vec<Rc<dyn ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()>>>,
+    pub data_source: Rc<dyn IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>>>,
+    pub options: CompressibleAsyncDataTreeOptions<Rc<ExplorerItem>, ()>,
+    pub workbench_options: IWorkbenchTreeOptions,
+}
+
+/// O `instantiationService.createInstance` que o `createTree` usa para os componentes e para a árvore.
+pub trait ExplorerTreeFactory {
+    /// `createInstance(FilesFilter | ResourceLabels | ExplorerFindProvider | FilesRenderer | FileDragAndDrop | ExplorerDataSource |
+    /// FileSorter)`.
+    fn create_components(&self, services: &ExplorerViewServices, args: ExplorerComponentsArgs) -> ExplorerComponents;
+
+    /// `createInstance(WorkbenchCompressibleAsyncDataTree, 'FileExplorer', container, delegate, compressionDelegate, renderers,
+    /// dataSource, options, workbenchOptions)`.
+    fn create_tree(&self, services: &ExplorerViewServices, args: ExplorerTreeArgs) -> Rc<ExplorerTree>;
 }
 
 /// O `ITreeContextMenuEvent<ExplorerItem>` que o `onContextMenu` (parte B) recebe: o item (se houver), o evento do
@@ -603,18 +678,26 @@ impl ExplorerFindActiveKey for ContextKeyFindActive {
     }
 }
 
-/// O `{ getCompressedNavigationController(stat) }` do `getContext` é o `FilesRenderer`.
-impl CompressedNavigationControllerProvider for FilesRenderer {
+/// O `{ getCompressedNavigationController(stat) }` do `getContext` é o `FilesRenderer`, que o adaptador entrega.
+impl CompressedNavigationControllerProvider for FilesRendererAdapter {
     fn get_compressed_navigation_controller(&self, stat: &Rc<ExplorerItem>) -> Option<Vec<Rc<dyn ICompressedNavigationController>>> {
-        FilesRenderer::get_compressed_navigation_controller(self, stat).map(|controllers| controllers.into_iter().map(|controller| controller as Rc<dyn ICompressedNavigationController>).collect())
+        self.0.get_compressed_navigation_controller(stat).map(|controllers| controllers.into_iter().map(|controller| controller as Rc<dyn ICompressedNavigationController>).collect())
     }
 }
+
+impl IDisposable for FilesRendererAdapter {
+    fn dispose(&self) {
+        self.0.dispose();
+    }
+}
+
+impl IExplorerRenderer for FilesRendererAdapter {}
 
 /// A árvore do `ExplorerView` vista pelo `ExplorerFindProvider` e pela lógica de colapso. A árvore é criada depois do
 /// provedor (o `() => this.tree` do original), então o handle lê o campo da vista.
 #[derive(Clone)]
 pub struct ExplorerTreeHandle {
-    slot: Rc<RefCell<Option<Rc<ExplorerTree>>>>,
+    slot: ExplorerTreeSlot,
 }
 
 impl ExplorerTreeHandle {
@@ -668,6 +751,125 @@ impl ExplorerFindTree<IAsyncDataTreeViewState> for ExplorerTreeHandle {
 
     fn is_collapsed(&self, item: &Rc<ExplorerItem>) -> bool {
         ExplorerTreeNodes::is_collapsed(self, item)
+    }
+}
+
+/// A fábrica de produção: o `createInstance` real, com os serviços da vista.
+pub struct FilesExplorerTreeFactory;
+
+impl ExplorerTreeFactory for FilesExplorerTreeFactory {
+    fn create_components(&self, services: &ExplorerViewServices, args: ExplorerComponentsArgs) -> ExplorerComponents {
+        let configuration_service = services.pane.configuration_service.clone();
+
+        let filter = FilesFilter::new(
+            services.context_service.clone(),
+            configuration_service.clone(),
+            services.explorer_service.clone(),
+            services.editor_service.clone(),
+            services.uri_identity_service.clone(),
+            services.file_service.clone(),
+        );
+        let explorer_labels = ResourceLabels::new(args.labels_container, services.resource_labels.clone());
+
+        let tree_handle = ExplorerTreeHandle { slot: args.tree_slot.clone() };
+        let find_provider = ExplorerFindProvider::new(
+            filter.clone(),
+            Box::new({
+                let tree_handle = tree_handle.clone();
+                move || Rc::new(tree_handle.clone()) as Rc<dyn ExplorerFindTree<IAsyncDataTreeViewState>>
+            }),
+            services.search_service.clone(),
+            services.file_service.clone(),
+            configuration_service.clone(),
+            services.files_config_service.clone(),
+            services.progress_service.clone(),
+            services.explorer_service.clone(),
+            args.find_active_key,
+            Rc::new(services.uri_identity_service.ext_uri()),
+        );
+
+        let update_width: Rc<dyn Fn(&Rc<ExplorerItem>)> = {
+            let slot = args.tree_slot;
+            Rc::new(move |stat| {
+                let tree = slot.borrow().clone();
+                if let Some(tree) = tree {
+                    tree.update_width(stat);
+                }
+            })
+        };
+        let renderer = FilesRenderer::new(FilesRendererServices {
+            ui: services.pane.ui.clone(),
+            labels: explorer_labels.clone(),
+            highlight_tree: Rc::new(FindHighlightTreeRef(find_provider.clone())),
+            update_width,
+            configuration_service: configuration_service.clone(),
+            explorer_service: services.explorer_service.clone(),
+            label_service: services.label_service.clone(),
+            context_service: services.context_service.clone(),
+            file_icon_theme: services.renderer.file_icon_theme.clone(),
+            inline_edit: services.renderer.inline_edit.clone(),
+            badge_styles: services.renderer.badge_styles,
+        });
+
+        let drag_and_drop = Rc::new(FileDragAndDrop::new(
+            args.is_item_collapsed,
+            FileDragAndDropServices {
+                explorer_service: services.explorer_service.clone(),
+                editor_service: services.editor_service.clone(),
+                dialog_service: services.dialog_service.clone(),
+                context_service: services.context_service.clone(),
+                file_service: services.file_service.clone(),
+                configuration_service: configuration_service.clone(),
+                workspace_editing_service: services.workspace_editing_service.clone(),
+                uri_identity_service: services.uri_identity_service.clone(),
+                external_file_drop: services.external_file_drop.clone(),
+            },
+        ));
+
+        let data_source = Rc::new(ExplorerDataSource::new(
+            filter.clone(),
+            find_provider.clone(),
+            services.progress_service.clone(),
+            configuration_service,
+            services.notification_service.clone(),
+            services.layout_service.clone(),
+            services.file_service.clone(),
+            services.explorer_service.clone(),
+            services.context_service.clone(),
+            services.files_config_service.clone(),
+        ));
+
+        ExplorerComponents {
+            filter: ExplorerFilter {
+                tree_filter: filter.clone(),
+                on_did_change: filter.on_did_change(),
+                disposable: to_disposable({
+                    let filter = filter.clone();
+                    move || filter.dispose()
+                }),
+            },
+            labels: explorer_labels,
+            find_provider: Rc::new(move || find_provider.is_showing_filter_results()),
+            renderer: Rc::new(FilesRendererAdapter(renderer)),
+            drag_and_drop,
+            data_source,
+            sorter: Rc::new(FileSorter::new(services.explorer_service.clone(), services.context_service.clone())),
+        }
+    }
+
+    fn create_tree(&self, services: &ExplorerViewServices, args: ExplorerTreeArgs) -> Rc<ExplorerTree> {
+        ExplorerTree::new(
+            "FileExplorer",
+            &services.pane.ui,
+            args.container,
+            args.delegate,
+            args.compression_delegate,
+            args.renderers,
+            args.data_source,
+            args.options,
+            args.workbench_options,
+            &services.tree,
+        )
     }
 }
 
@@ -737,11 +939,10 @@ pub struct ExplorerView {
     /// O `_register` do original.
     disposables: Rc<Disposable>,
 
-    tree_slot: Rc<RefCell<Option<Rc<ExplorerTree>>>>,
-    filter: RefCell<Option<Rc<FilesFilter>>>,
-    find_provider: RefCell<Option<Rc<ExplorerFindProvider<IAsyncDataTreeViewState>>>>,
-    renderer: RefCell<Option<Rc<FilesRenderer>>>,
-    drag_and_drop: RefCell<Option<Rc<FileDragAndDrop>>>,
+    tree_slot: ExplorerTreeSlot,
+    filter: RefCell<Option<Rc<dyn ITreeFilter<Rc<ExplorerItem>, ()>>>>,
+    find_provider: RefCell<Option<IsShowingFilterResults>>,
+    renderer: RefCell<Option<Rc<dyn IExplorerRenderer>>>,
 
     resource_context: Rc<dyn IExplorerResourceContextKey>,
     folder_context: Rc<dyn IContextKey>,
@@ -764,7 +965,7 @@ pub struct ExplorerView {
     /// O que o original guarda em `tree.getInput()` (ver as divergências do módulo): a pasta ou as raízes.
     tree_input: RefCell<Option<ExplorerTreeInput>>,
     /// A fonte de dados da árvore, que resolve os itens do topo de um espaço de uma pasta.
-    data_source: RefCell<Option<Rc<ExplorerDataSource<IAsyncDataTreeViewState>>>>,
+    data_source: RefCell<Option<Rc<dyn IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>>>>>,
     auto_reveal: RefCell<ExplorerReveal>,
     tree_container: Cell<Option<NodeId>>,
     container: Cell<Option<NodeId>>,
@@ -796,7 +997,6 @@ impl ExplorerView {
             filter: RefCell::new(None),
             find_provider: RefCell::new(None),
             renderer: RefCell::new(None),
-            drag_and_drop: RefCell::new(None),
             resource_context,
             parent_readonly_context: explorer_resource_parent_read_only_context().bind_to(keys),
             folder_context: explorer_folder_context().bind_to(keys),
@@ -898,8 +1098,8 @@ impl ExplorerView {
         self.tree_slot.borrow().clone().expect("o corpo do explorador ainda não foi desenhado")
     }
 
-    /// O `FilesRenderer` criado por `createTree` (o `renderer!` do original).
-    pub fn renderer(&self) -> Rc<FilesRenderer> {
+    /// O `FilesRenderer` criado por `createTree` (o `renderer!` do original), no contrato que a vista usa.
+    pub fn renderer(&self) -> Rc<dyn IExplorerRenderer> {
         self.renderer.borrow().clone().expect("o corpo do explorador ainda não foi desenhado")
     }
 
@@ -1031,70 +1231,36 @@ impl ExplorerView {
         let scoped_keys = self.pane.scoped_context_key_service();
         let keys: &dyn IContextKeyService = &*scoped_keys;
 
-        let filter = FilesFilter::new(
-            services.context_service.clone(),
-            configuration_service.clone(),
-            services.explorer_service.clone(),
-            services.editor_service.clone(),
-            services.uri_identity_service.clone(),
-            services.file_service.clone(),
+        // `this.instantiationService.createInstance(...)`: a fábrica dos serviços, ou os componentes reais.
+        let production_factory = FilesExplorerTreeFactory;
+        let factory: &dyn ExplorerTreeFactory = services.tree_factory.as_deref().unwrap_or(&production_factory);
+
+        let components = factory.create_components(
+            services,
+            ExplorerComponentsArgs {
+                labels_container: IResourceLabelsContainer { on_did_change_visibility: self.pane.on_did_change_body_visibility() },
+                tree_slot: self.tree_slot.clone(),
+                find_active_key: Rc::new(ContextKeyFindActive(explorer_find_provider_active().bind_to(keys))),
+                is_item_collapsed: {
+                    let weak = self.weak_self.clone();
+                    Rc::new(move |item: &Rc<ExplorerItem>| weak.upgrade().is_some_and(|this| this.is_item_collapsed(item)))
+                },
+            },
         );
-        self.disposables.register(to_disposable({
-            let filter = filter.clone();
-            move || filter.dispose()
-        }));
-        *self.filter.borrow_mut() = Some(filter.clone());
+
+        self.disposables.register(components.filter.disposable.clone());
+        *self.filter.borrow_mut() = Some(components.filter.tree_filter.clone());
         let weak = self.weak_self.clone();
-        self.disposables.register(filter.on_did_change().listen(move |_| {
+        self.disposables.register(components.filter.on_did_change.listen(move |_| {
             if let Some(this) = weak.upgrade() {
                 let _ = this.refresh(true, None, None);
             }
         }));
-        let explorer_labels = ResourceLabels::new(IResourceLabelsContainer { on_did_change_visibility: self.pane.on_did_change_body_visibility() }, services.resource_labels.clone());
-        self.disposables.register(explorer_labels.clone());
-
-        let tree_handle = ExplorerTreeHandle { slot: self.tree_slot.clone() };
-        let find_provider = ExplorerFindProvider::new(
-            filter.clone(),
-            Box::new({
-                let tree_handle = tree_handle.clone();
-                move || Rc::new(tree_handle.clone()) as Rc<dyn ExplorerFindTree<IAsyncDataTreeViewState>>
-            }),
-            services.search_service.clone(),
-            services.file_service.clone(),
-            configuration_service.clone(),
-            services.files_config_service.clone(),
-            services.progress_service.clone(),
-            services.explorer_service.clone(),
-            Rc::new(ContextKeyFindActive(explorer_find_provider_active().bind_to(keys))),
-            Rc::new(services.uri_identity_service.ext_uri()),
-        );
-        *self.find_provider.borrow_mut() = Some(find_provider.clone());
-
-        let update_width: Rc<dyn Fn(&Rc<ExplorerItem>)> = {
-            let slot = self.tree_slot.clone();
-            Rc::new(move |stat| {
-                let tree = slot.borrow().clone();
-                if let Some(tree) = tree {
-                    tree.update_width(stat);
-                }
-            })
-        };
-        let renderer = FilesRenderer::new(FilesRendererServices {
-            ui: self.ui.clone(),
-            labels: explorer_labels,
-            highlight_tree: Rc::new(FindHighlightTreeRef(find_provider.clone())),
-            update_width,
-            configuration_service: configuration_service.clone(),
-            explorer_service: services.explorer_service.clone(),
-            label_service: services.label_service.clone(),
-            context_service: services.context_service.clone(),
-            file_icon_theme: services.renderer.file_icon_theme.clone(),
-            inline_edit: services.renderer.inline_edit.clone(),
-            badge_styles: services.renderer.badge_styles,
-        });
-        self.disposables.register(renderer.clone());
-        *self.renderer.borrow_mut() = Some(renderer.clone());
+        self.disposables.register(components.labels.clone());
+        *self.find_provider.borrow_mut() = Some(components.find_provider.clone());
+        self.disposables.register(components.renderer.clone());
+        *self.renderer.borrow_mut() = Some(components.renderer.clone());
+        self.disposables.register(components.drag_and_drop.clone());
 
         self.disposables.register((services.bind_file_icon_theme_scope)(container));
 
@@ -1117,39 +1283,19 @@ impl ExplorerView {
             })
         };
 
-        let drag_and_drop = Rc::new(FileDragAndDrop::new(
-            {
-                let weak = self.weak_self.clone();
-                Rc::new(move |item| weak.upgrade().is_some_and(|this| this.is_item_collapsed(item)))
-            },
-            FileDragAndDropServices {
-                explorer_service: services.explorer_service.clone(),
-                editor_service: services.editor_service.clone(),
-                dialog_service: services.dialog_service.clone(),
-                context_service: services.context_service.clone(),
-                file_service: services.file_service.clone(),
-                configuration_service: configuration_service.clone(),
-                workspace_editing_service: services.workspace_editing_service.clone(),
-                uri_identity_service: services.uri_identity_service.clone(),
-                external_file_drop: services.external_file_drop.clone(),
-            },
-        ));
-        self.disposables.register(drag_and_drop.clone());
-        *self.drag_and_drop.borrow_mut() = Some(drag_and_drop);
-
         let mut options = CompressibleAsyncDataTreeOptions::<Rc<ExplorerItem>, ()>::default();
         options.compression_enabled = Some(compression_enabled());
         options.auto_expand_compressed_children = true;
         options.keyboard_navigation_label_provider = Some(Rc::new(ExplorerKeyboardNavigationLabelProvider { explorer_service: services.explorer_service.clone() }));
         options.base.identity_provider = Some(Rc::new(ExplorerIdentityProvider));
         options.base.update.multiple_selection_support = Some(true);
-        options.base.filter = Some(filter.clone());
-        options.base.sorter = Some(Rc::new(FileSorter::new(services.explorer_service.clone(), services.context_service.clone())));
+        options.base.filter = Some(components.filter.tree_filter.clone());
+        options.base.sorter = Some(components.sorter.clone());
         options.base.collapse_by_default = Some({
-            let (find_provider, get_file_nesting_expand) = (find_provider.clone(), get_file_nesting_expand.clone());
+            let (is_showing_filter_results, get_file_nesting_expand) = (components.find_provider.clone(), get_file_nesting_expand.clone());
             Rc::new(move |item: &Rc<ExplorerItem>| {
                 let expand_nests = item.has_nests() && get_file_nesting_expand(item);
-                collapse_by_default(item.has_nests(), expand_nests, find_provider.is_showing_filter_results())
+                collapse_by_default(item.has_nests(), expand_nests, is_showing_filter_results())
             })
         });
         options.base.update.expand_only_on_twistie_click = Some(ExpandOnlyOnTwistieClick::When({
@@ -1161,35 +1307,23 @@ impl ExplorerView {
         }));
         options.base.update.padding_bottom = Some(ExplorerDelegate::ITEM_HEIGHT);
 
-        let renderers: Vec<Rc<dyn ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()>>> = vec![Rc::new(FilesRendererAdapter(renderer.clone()))];
+        let renderer: Rc<dyn ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()>> = components.renderer.clone();
         let workbench_options = IWorkbenchTreeOptions {
             override_styles: Some((services.list_override_styles)(&self.pane.get_location_based_colors().list_override_styles)),
             ..IWorkbenchTreeOptions::default()
         };
-        let data_source = Rc::new(ExplorerDataSource::new(
-            filter.clone(),
-            find_provider.clone(),
-            services.progress_service.clone(),
-            configuration_service.clone(),
-            services.notification_service.clone(),
-            services.layout_service.clone(),
-            services.file_service.clone(),
-            services.explorer_service.clone(),
-            services.context_service.clone(),
-            services.files_config_service.clone(),
-        ));
-        *self.data_source.borrow_mut() = Some(data_source.clone());
-        let tree = ExplorerTree::new(
-            "FileExplorer",
-            &self.ui,
-            container,
-            Rc::new(ExplorerDelegate),
-            Rc::new(ExplorerCompressionDelegate),
-            renderers,
-            data_source,
-            options,
-            workbench_options,
-            &services.tree,
+        *self.data_source.borrow_mut() = Some(components.data_source.clone());
+        let tree = factory.create_tree(
+            services,
+            ExplorerTreeArgs {
+                container,
+                delegate: Rc::new(ExplorerDelegate),
+                compression_delegate: Rc::new(ExplorerCompressionDelegate),
+                renderers: vec![renderer],
+                data_source: components.data_source,
+                options,
+                workbench_options,
+            },
         );
         self.disposables.register(tree.clone());
         *self.tree_slot.borrow_mut() = Some(tree.clone());
@@ -1501,7 +1635,7 @@ pub fn create_file_icon_themable_tree_container_scope(ui: &Ui, container: NodeId
 impl ExplorerView {
     /// `this.findProvider?.isShowingFilterResults()`.
     fn is_showing_filter_results(&self) -> bool {
-        self.find_provider.borrow().as_ref().is_some_and(|provider| provider.is_showing_filter_results())
+        self.find_provider.borrow().as_ref().is_some_and(|is_showing_filter_results| is_showing_filter_results())
     }
 
     /// `selectActiveFile(reveal = this._autoReveal)`.
@@ -1912,7 +2046,7 @@ impl IExplorerView for ExplorerView {
         let Some(filter) = self.filter.borrow().clone() else {
             return false;
         };
-        filter_result_is_visible(&filter.filter_stat(item, TreeVisibility::Visible))
+        filter_result_is_visible(&filter.filter(item, TreeVisibility::Visible))
     }
 
     /// `isItemCollapsed(item)`.

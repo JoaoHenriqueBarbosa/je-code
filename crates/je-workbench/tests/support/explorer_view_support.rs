@@ -1,31 +1,43 @@
-//! O `setup` da suíte `context menu` de `explorerView.test.ts`, montando o [`ExplorerView`] real com a árvore real.
+//! O `setup` da suíte `context menu` de `explorerView.test.ts`, montando o [`ExplorerView`] com a árvore de teste do original.
 //!
 //! Divergências do `setup` do original:
 //! - **`workbenchInstantiationService`.** Os serviços são os de teste do porte (`TestContextService`, `TestFileService`,
 //!   `LabelService` real, `TestConfigurationService` com `{ explorer: { autoReveal: false, compactFolders: false } }`...) e os
 //!   dublês dos que o original troca por `stub` (`IViewDescriptorService`, `IExplorerService`, `IContextMenuService`,
 //!   `IEditorResolverService`). O que o original não define lança `TypeError: <membro> is not a function` ([`not_defined`]).
-//! - **A árvore de teste.** O original cria a sua `WorkbenchCompressibleAsyncDataTree` com renderer e fonte de dados próprios e a
-//!   injeta na vista com `stubInstance`. O porte cria a árvore em `createTree` com o `FilesRenderer`, a `ExplorerDataSource` e o
-//!   `FilesFilter` reais (não há `stubInstance`), então a vista desenha as linhas de verdade: os nós das pastas ficam com
-//!   `isDirectoryResolved` verdadeiro para a fonte de dados não ir ao disco, e o `isIncompressible` do renderer de teste do original
-//!   (`!item.isDirectory`) é o `ExplorerCompressionDelegate`.
+//! - **A árvore de teste e o `stubInstance`.** O original cria a sua `WorkbenchCompressibleAsyncDataTree` (renderer simples, fonte de
+//!   dados com o `refreshGate`, `compressionEnabled: false`, `identityProvider` pelo recurso) e a injeta com `stubInstance`, junto
+//!   com os dublês de `ResourceLabels`, `FilesFilter`, `ExplorerFindProvider`, `ExplorerDataSource`, `FileSorter`,
+//!   `FileDragAndDrop` e `FilesRenderer`. Aqui o `stubInstance` é o [`ExplorerTreeFactory`] de [`ExplorerViewServices::tree_factory`]:
+//!   `create_components` entrega os dublês e `create_tree` devolve a árvore de teste. O `accessibilityProvider` não existe nas
+//!   opções da árvore do `je-widgets` e não entra.
+//! - **O renderer e a fonte de dados.** O `FilesRenderer` do porte é também o renderer dos nós da árvore (contrato
+//!   [`IExplorerRenderer`]), então o [`TestRenderer`] reúne o renderer `test` do original e o `stubInstance(FilesRenderer, {
+//!   getCompressedNavigationController, dispose })`. O `resolveTopLevel` da vista chama o `getChildren` da fonte de dados que o
+//!   `createTree` recebeu, e o original chama o da fonte de dados da árvore de teste no `setInput` da pasta; por isso o dublê de
+//!   `ExplorerDataSource` é a própria fonte de dados de teste da árvore, com o `refreshGate`.
+//! - **A entrada da árvore.** A entrada do porte é a lista dos filhos da pasta (ver `ExplorerTreeInput` em `explorer_view.rs`), então o
+//!   `tree.setInput(root)` do `setup` é `set_input(root.children())`.
 //! - **`renderForTesting(container)`.** `renderBody` é o [`ViewPaneDelegate::render_body`] da vista, chamado direto no contêiner.
 //! - **`getContextMenuTarget` e `dispatchEvent`.** O evento de menu de contexto que a árvore emite é o
 //!   [`ExplorerContextMenuEvent`] entregue a [`ExplorerView::on_context_menu`]: o item (ou nenhum), o `BrowserEvent` (botão
 //!   secundário, ou o `F10` com `shift` do teclado) e o nó alvo.
+//! - **Descarte da árvore.** A vista registra a árvore em `createTree` (`_register(this.tree)`) e a descarta; o `ds.add(tree)` do
+//!   original só repete esse registro e não é repetido aqui.
 #![allow(dead_code)]
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use je_base::actions::ActionRef;
+use je_base::async_::async_fn;
 use je_base::dynamic::Dynamic;
 use je_base::errors::{self, Error};
 use je_base::event::Event;
-use je_base::lifecycle::{IDisposable, none};
+use je_base::lifecycle::{ById, IDisposable, none};
 use je_base::nls::LocalizedString;
-use je_base::promise::Promise;
+use je_base::promise::{DeferredPromise, MaybePromise, Promise};
 use je_base::uri::URI;
 use je_editor::bulk_edit_service::ResourceFileEdit;
 use je_editor::language_service::LanguageService;
@@ -55,23 +67,33 @@ use je_widgets::icon_label::IconLabelStyles;
 use je_widgets::input_box::InputBoxStyles;
 use je_widgets::hover_api::get_base_layer_hover_delegate;
 use je_widgets::list::list_styles::IListStyles;
-use je_widgets::list::list_types::BrowserEvent;
+use je_widgets::list::list_types::{BrowserEvent, IIdentityProvider, IListVirtualDelegate, TemplateData};
 use je_widgets::progress_bar::IProgressBarOptions;
-use je_widgets::tree::tree_types::TreeMouseEventTarget;
+use je_widgets::tree::async_data_tree_node::{AsyncDataTreeNodeWrapper, IAsyncDataTreeRenderer};
+use je_widgets::tree::compressible_async_data_tree::{
+    CompressibleAsyncDataTreeNodeWrapper, CompressibleAsyncDataTreeOptions, ICompressibleAsyncDataTreeRenderer, ITreeCompressionDelegate,
+};
+use je_widgets::tree::tree_types::{
+    IAsyncDataSource, ITreeFilter, ITreeSorter, InputOrElement, TreeElementRenderDetails, TreeFilterResult, TreeMouseEventTarget, TreeNodeApi, TreeVisibility,
+};
 use je_workbench::api::common::ext_host_values::ApiValue;
 use je_workbench::browser::labels::ResourceLabelsServices;
 use je_workbench::browser::parts::views::view_pane::{IViewPaneOptions, IViewPaneToolbar, IViewWelcomeView, ViewPaneServices, ViewPaneToolbarArgs};
-use je_workbench::browser::workbench_tree::WorkbenchTreeServices;
+use je_workbench::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchTreeServices};
 use je_workbench::common::views::{
     IViewContainerModel, IViewContentDescriptor, IViewDescriptor, IViewDescriptorService, ViewContainerLocation, ViewContainerLocationChange, ViewContainerRc, ViewContainersChange,
     ViewDescriptorRc, ViewVisibilityState, ViewsContainerChange, ViewsLocationChange,
 };
 use je_workbench::contrib::files::browser::views::explorer_view::{
-    ExplorerContextMenuEvent, ExplorerRendererServices, ExplorerView, ExplorerViewServices, IExplorerResourceContextKey, IExplorerViewContainerDelegate, IExplorerViewPaneOptions,
+    CompressedNavigationControllerProvider, ExplorerComponents, ExplorerComponentsArgs, ExplorerContextMenuEvent, ExplorerFilter, ExplorerRendererServices, ExplorerTree,
+    ExplorerTreeArgs, ExplorerTreeFactory, ExplorerView, ExplorerViewServices, IExplorerRenderer, IExplorerResourceContextKey, IExplorerViewContainerDelegate,
+    IExplorerViewPaneOptions,
 };
+use je_workbench::contrib::files::browser::views::explorer_viewer::ICompressedNavigationController;
+use je_workbench::contrib::files::browser::views::explorer_viewer_data::ExplorerInput;
 use je_workbench::contrib::files::browser::views::explorer_viewer_renderer::{FileIconThemeInfo, InlineEditServices};
 use je_workbench::contrib::files::browser_files::{EditableItem, ExplorerBulkEditOptions, ExplorerReveal, IExplorerService, IExplorerView};
-use je_workbench::contrib::files::common_files::{LexicographicOptions, SortOrder, SortOrderConfiguration};
+use je_workbench::contrib::files::common_files::SortOrderConfiguration;
 use je_workbench::contrib::files::explorer_model::ExplorerItem;
 use je_workbench::services::editor::editor_groups_service::PreferredGroup;
 use je_workbench::services::editor::editor_resolver_service::{
@@ -141,8 +163,7 @@ impl IContextMenuService for RecordingContextMenuService {
     }
 }
 
-/// `instantiationService.stub(IExplorerService, { roots, registerView, findClosest, findClosestRoot, isEditable, getEditable })`. O
-/// `sortOrderConfiguration` é o padrão que a `ExplorerDataSource` e o `FileSorter` reais leem (no original eles são `stubInstance`).
+/// `instantiationService.stub(IExplorerService, { roots, registerView, findClosest, findClosestRoot, isEditable, getEditable })`.
 struct StubExplorerService {
     root: Rc<ExplorerItem>,
 }
@@ -153,7 +174,7 @@ impl IExplorerService for StubExplorerService {
     }
 
     fn sort_order_configuration(&self) -> SortOrderConfiguration {
-        SortOrderConfiguration { sort_order: SortOrder::Default, lexicographic_options: LexicographicOptions::Default, reverse: false }
+        not_defined("sortOrderConfiguration")
     }
 
     fn get_context(&self, _respect_multi_selection: bool, _ignore_nested_children: Option<bool>) -> Vec<Rc<ExplorerItem>> {
@@ -450,6 +471,242 @@ impl IExplorerViewContainerDelegate for NoopContainerDelegate {
     fn did_open_element(&self, _event: Option<&BrowserEvent>) {}
 }
 
+/// `controllers: Map<ExplorerItem, ICompressedNavigationController[]>`.
+pub type Controllers = Rc<RefCell<HashMap<ById<ExplorerItem>, Vec<Rc<dyn ICompressedNavigationController>>>>>;
+
+/// `refreshGate: DeferredPromise<void> | undefined`.
+pub type RefreshGate = Rc<RefCell<Option<Rc<DeferredPromise<()>>>>>;
+
+/// `new class extends mock<ICompressedNavigationController>() { current; items; index; count }`: o resto lança.
+pub struct MockCompressedNavigationController {
+    current: Rc<ExplorerItem>,
+    items: Vec<Rc<ExplorerItem>>,
+    index: usize,
+    count: usize,
+}
+
+impl MockCompressedNavigationController {
+    pub fn new(current: Rc<ExplorerItem>, items: Vec<Rc<ExplorerItem>>, index: usize, count: usize) -> Rc<dyn ICompressedNavigationController> {
+        Rc::new(Self { current, items, index, count })
+    }
+}
+
+impl ICompressedNavigationController for MockCompressedNavigationController {
+    fn current(&self) -> Rc<ExplorerItem> {
+        self.current.clone()
+    }
+
+    fn current_id(&self) -> String {
+        not_defined("currentId")
+    }
+
+    fn items(&self) -> Vec<Rc<ExplorerItem>> {
+        self.items.clone()
+    }
+
+    fn index(&self) -> usize {
+        self.index
+    }
+
+    fn count(&self) -> usize {
+        self.count
+    }
+
+    fn on_did_change(&self) -> Event<()> {
+        not_defined("onDidChange")
+    }
+
+    fn previous(&self) {
+        not_defined("previous")
+    }
+
+    fn next(&self) {
+        not_defined("next")
+    }
+
+    fn first(&self) {
+        not_defined("first")
+    }
+
+    fn last(&self) {
+        not_defined("last")
+    }
+
+    fn set_index(&self, _index: i64) {
+        not_defined("setIndex")
+    }
+
+    fn update_collapsed(&self, _collapsed: bool) {
+        not_defined("updateCollapsed")
+    }
+}
+
+/// `{ getHeight: () => 20, getTemplateId: () => 'test' }`.
+struct TestDelegate;
+
+impl IListVirtualDelegate<Rc<ExplorerItem>> for TestDelegate {
+    fn get_height(&self, _element: &Rc<ExplorerItem>) -> f64 {
+        20.0
+    }
+
+    fn get_template_id(&self, _element: &Rc<ExplorerItem>) -> String {
+        "test".to_string()
+    }
+}
+
+/// `{ isIncompressible: item => !item.isDirectory }`.
+struct TestCompressionDelegate;
+
+impl ITreeCompressionDelegate<Rc<ExplorerItem>> for TestCompressionDelegate {
+    fn is_incompressible(&self, item: &Rc<ExplorerItem>) -> bool {
+        !item.is_directory()
+    }
+}
+
+/// `identityProvider: { getId: item => item.resource.toString() }`.
+struct ResourceIdentityProvider;
+
+impl IIdentityProvider<Rc<ExplorerItem>> for ResourceIdentityProvider {
+    fn get_id(&self, item: &Rc<ExplorerItem>) -> String {
+        item.resource().to_string(false).to_string_lossy()
+    }
+}
+
+/// O renderer `test` da árvore de teste (o nome do item, ou os nomes do nó comprimido separados por `/`) e o
+/// `stubInstance(FilesRenderer, { getCompressedNavigationController: item => controllers.get(item), dispose: () => { } })`.
+struct TestRenderer {
+    ui: Ui,
+    controllers: Controllers,
+}
+
+impl TestRenderer {
+    /// `container.textContent = text`.
+    fn set_text(&self, template_data: &TemplateData, text: String) {
+        let container = *template_data.downcast_ref::<NodeId>().expect("o template do renderer de teste");
+        self.ui.tree_mut().set_label(container, text);
+    }
+}
+
+impl IAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()> for TestRenderer {
+    fn template_id(&self) -> String {
+        "test".to_string()
+    }
+
+    // renderTemplate: container => container
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        Rc::new(container)
+    }
+
+    fn render_element(&self, node: &Rc<AsyncDataTreeNodeWrapper<ExplorerInput, Rc<ExplorerItem>, ()>>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let InputOrElement::Element(item) = node.element() {
+            self.set_text(template_data, item.name());
+        }
+    }
+
+    fn dispose_element(&self, _node: &Rc<AsyncDataTreeNodeWrapper<ExplorerInput, Rc<ExplorerItem>, ()>>, _index: i64, _template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {}
+
+    fn dispose_template(&self, _template_data: &TemplateData) {}
+}
+
+impl ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()> for TestRenderer {
+    fn render_compressed_elements(
+        &self,
+        node: &Rc<CompressibleAsyncDataTreeNodeWrapper<ExplorerInput, Rc<ExplorerItem>, ()>>,
+        _index: usize,
+        template_data: &TemplateData,
+        _details: Option<&TreeElementRenderDetails>,
+    ) {
+        let names: Vec<String> = node.element().elements.iter().filter_map(|element| element.as_element()).map(|item| item.name()).collect();
+        self.set_text(template_data, names.join("/"));
+    }
+}
+
+impl CompressedNavigationControllerProvider for TestRenderer {
+    fn get_compressed_navigation_controller(&self, stat: &Rc<ExplorerItem>) -> Option<Vec<Rc<dyn ICompressedNavigationController>>> {
+        self.controllers.borrow().get(&ById(stat.clone())).cloned()
+    }
+}
+
+impl IDisposable for TestRenderer {
+    fn dispose(&self) {}
+}
+
+impl IExplorerRenderer for TestRenderer {}
+
+/// `hasChildren` e `getChildren` da fonte de dados da árvore de teste: `await refreshGate?.p` antes de devolver os filhos.
+struct TestDataSource {
+    refresh_gate: RefreshGate,
+}
+
+impl IAsyncDataSource<ExplorerInput, Rc<ExplorerItem>> for TestDataSource {
+    // hasChildren: item => Array.isArray(item) || item.children.size > 0
+    fn has_children(&self, element: &InputOrElement<ExplorerInput, Rc<ExplorerItem>>) -> bool {
+        match element {
+            InputOrElement::Input(_) => true,
+            InputOrElement::Element(item) => !item.children().is_empty(),
+        }
+    }
+
+    fn get_children(&self, element: &InputOrElement<ExplorerInput, Rc<ExplorerItem>>) -> MaybePromise<Vec<Rc<ExplorerItem>>> {
+        let gate = self.refresh_gate.borrow().as_ref().map(|gate| gate.promise.clone());
+        let element = element.clone();
+        MaybePromise::Promise(async_fn(async move {
+            // `await undefined` também cede uma vez
+            gate.unwrap_or_else(|| Promise::resolved(())).await?;
+            Ok(match element {
+                InputOrElement::Input(items) => items,
+                InputOrElement::Element(item) => item.children(),
+            })
+        }))
+    }
+}
+
+/// `instantiationService.stubInstance(FilesFilter, { onDidChange: Event.None, dispose })`: o `filter` fica indefinido.
+struct UndefinedFilter;
+
+impl ITreeFilter<Rc<ExplorerItem>, ()> for UndefinedFilter {
+    fn filter(&self, _element: &Rc<ExplorerItem>, _parent_visibility: TreeVisibility) -> TreeFilterResult<()> {
+        not_defined("filter")
+    }
+}
+
+/// `instantiationService.stubInstance(FileSorter, {})`.
+struct UndefinedSorter;
+
+impl ITreeSorter<Rc<ExplorerItem>> for UndefinedSorter {
+    fn compare(&self, _element: &Rc<ExplorerItem>, _other_element: &Rc<ExplorerItem>) -> i32 {
+        not_defined("compare")
+    }
+}
+
+/// O `instantiationService.stubInstance(...)` do `setup`: os dublês dos componentes e a árvore de teste.
+struct TestTreeFactory {
+    tree: Rc<ExplorerTree>,
+    renderer: Rc<TestRenderer>,
+    data_source: Rc<TestDataSource>,
+}
+
+impl ExplorerTreeFactory for TestTreeFactory {
+    fn create_components(&self, _services: &ExplorerViewServices, _args: ExplorerComponentsArgs) -> ExplorerComponents {
+        ExplorerComponents {
+            filter: ExplorerFilter { tree_filter: Rc::new(UndefinedFilter), on_did_change: Event::none(), disposable: none() },
+            // stubInstance(ResourceLabels, { dispose: () => { } })
+            labels: none(),
+            // stubInstance(ExplorerFindProvider, { isShowingFilterResults: () => false })
+            find_provider: Rc::new(|| false),
+            renderer: self.renderer.clone(),
+            // stubInstance(FileDragAndDrop, {})
+            drag_and_drop: none(),
+            data_source: self.data_source.clone(),
+            sorter: Rc::new(UndefinedSorter),
+        }
+    }
+
+    fn create_tree(&self, _services: &ExplorerViewServices, _args: ExplorerTreeArgs) -> Rc<ExplorerTree> {
+        self.tree.clone()
+    }
+}
+
 /// O estilo do texto do cabeçalho e dos rótulos.
 fn label_styles() -> HighlightedLabelStyles {
     HighlightedLabelStyles {
@@ -477,6 +734,8 @@ pub struct ExplorerViewHarness {
     menu_service: Rc<RecordingContextMenuService>,
     workbench: WorkbenchServices,
     config: Rc<TestConfigurationService>,
+    controllers: Controllers,
+    refresh_gate: RefreshGate,
 }
 
 impl ExplorerViewHarness {
@@ -553,6 +812,39 @@ impl ExplorerViewHarness {
             icon_label_styles: Rc::new(|| IconLabelStyles { text: label_styles(), disabled_foreground: None }),
         };
 
+        let tree_services = WorkbenchTreeServices {
+            context_key_service: context_keys,
+            list_service: ListService::new(),
+            configuration_service: config_service,
+            default_list_styles: Rc::new(IListStyles::default),
+        };
+
+        let root_node = ui.root();
+        let container = create_el(&mut ui.tree_mut(), root_node, Role::Generic, "explorer-context-menu-test");
+        let controllers = Controllers::default();
+        let refresh_gate = RefreshGate::default();
+        let renderer = Rc::new(TestRenderer { ui: ui.clone(), controllers: controllers.clone() });
+        let data_source = Rc::new(TestDataSource { refresh_gate: refresh_gate.clone() });
+        let mut tree_options = CompressibleAsyncDataTreeOptions::<Rc<ExplorerItem>, ()>::default();
+        tree_options.compression_enabled = Some(false);
+        tree_options.base.collapse_by_default = Some(Rc::new(|_: &Rc<ExplorerItem>| false));
+        tree_options.base.identity_provider = Some(Rc::new(ResourceIdentityProvider));
+        let tree_renderers: Vec<Rc<dyn ICompressibleAsyncDataTreeRenderer<ExplorerInput, Rc<ExplorerItem>, ()>>> = vec![renderer.clone()];
+        let tree = ExplorerTree::new(
+            "ExplorerContextMenuTest",
+            &ui,
+            container,
+            Rc::new(TestDelegate),
+            Rc::new(TestCompressionDelegate),
+            tree_renderers,
+            data_source.clone(),
+            tree_options,
+            IWorkbenchTreeOptions::default(),
+            &tree_services,
+        );
+        // tree.layout(300, 400)
+        tree.layout(Some(300.0), Some(400.0));
+
         let services = ExplorerViewServices {
             pane,
             context_service: workbench.context_service.clone(),
@@ -576,12 +868,7 @@ impl ExplorerViewHarness {
             search_service: Rc::new(TestSearchService),
             dialog_service: Rc::new(TestDialogService),
             workspace_editing_service: Rc::new(UnusedWorkspaceEditingService),
-            tree: WorkbenchTreeServices {
-                context_key_service: context_keys,
-                list_service: ListService::new(),
-                configuration_service: config_service,
-                default_list_styles: Rc::new(IListStyles::default),
-            },
+            tree: tree_services,
             resource_labels: Rc::new(resource_labels),
             renderer: ExplorerRendererServices {
                 inline_edit: InlineEditServices { context_view_provider: None, context_menu_service: menu_service.clone(), input_box_styles: Rc::new(InputBoxStyles::default) },
@@ -593,6 +880,8 @@ impl ExplorerViewHarness {
             bind_file_icon_theme_scope: Rc::new(|_| none()),
             list_override_styles: Rc::new(|_| IListStyles::default()),
             external_file_drop: Rc::new(|_| Promise::resolved(())),
+            // instantiationService.stubInstance(...)
+            tree_factory: Some(Rc::new(TestTreeFactory { tree, renderer, data_source })),
         };
 
         let view = guard.add_rc(ExplorerView::new(
@@ -607,21 +896,29 @@ impl ExplorerViewHarness {
             services,
         ));
 
-        let root_node = ui.root();
-        let container = create_el(&mut ui.tree_mut(), root_node, Role::Generic, "explorer-context-menu-test");
         // view.renderForTesting(container)
         je_workbench::browser::parts::views::view_pane::ViewPaneDelegate::render_body(&*view, container);
-        // tree.layout(300, 400)
-        je_workbench::browser::parts::views::view_pane::ViewPaneDelegate::layout_body(&*view, 300.0, 400.0);
 
-        Self { view, ui, container, root, folder, first, second, target, menu_service, workbench, config }
+        Self { view, ui, container, root, folder, first, second, target, menu_service, workbench, config, controllers, refresh_gate }
     }
 
-    /// `await tree.setInput(root); await tree.expand(folder)` do `setup`: a vista visível com a entrada da árvore e a pasta aberta.
+    /// `await tree.setInput(root); await tree.expand(folder)` do `setup`, na árvore de teste.
     pub async fn setup(&self) {
-        self.view.set_visible(true);
-        self.view.set_tree_input().await.unwrap();
-        self.view.tree().widget().expand(&self.folder, false).await.unwrap();
+        let tree = self.view.tree();
+        tree.widget().set_input(self.root.children(), None).await.unwrap();
+        tree.widget().expand(&self.folder, false).await.unwrap();
+    }
+
+    /// `controllers.set(item, controllers)`.
+    pub fn set_compressed_navigation_controllers(&self, item: &Rc<ExplorerItem>, controllers: Vec<Rc<dyn ICompressedNavigationController>>) {
+        self.controllers.borrow_mut().insert(ById(item.clone()), controllers);
+    }
+
+    /// `refreshGate = new DeferredPromise<void>()`: o `getChildren` seguinte espera até o portão ser completado.
+    pub fn close_refresh_gate(&self) -> Rc<DeferredPromise<()>> {
+        let gate = Rc::new(DeferredPromise::new());
+        *self.refresh_gate.borrow_mut() = Some(gate.clone());
+        gate
     }
 
     /// `menu`: o último delegado entregue ao `showContextMenu`.
@@ -673,7 +970,7 @@ impl ExplorerViewHarness {
 
 /// `createItem` do `setup`.
 fn create_item(workbench: &WorkbenchServices, config: &Rc<TestConfigurationService>, path: &str, is_directory: bool, parent: Option<&Rc<ExplorerItem>>) -> Rc<ExplorerItem> {
-    let item = ExplorerItem::new(
+    ExplorerItem::new(
         uri_file(path),
         workbench.file_service.clone(),
         config.clone(),
@@ -686,9 +983,5 @@ fn create_item(workbench: &WorkbenchServices, config: &Rc<TestConfigurationServi
         None,
         None,
         false,
-    );
-    if is_directory {
-        item.set_directory_resolved(true);
-    }
-    item
+    )
 }

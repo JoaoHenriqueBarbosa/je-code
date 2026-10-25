@@ -7,18 +7,18 @@
 //! - **`CompressedNavigationController`.** Sem o `templateData` de DOM (ver `explorer_viewer.rs`); o caso exercita o
 //!   índice, a contagem e o item corrente.
 //! - **`TestEnvironmentService`.** O [`TestEnvironmentService`] do porte.
-//! - **A suíte `context menu`.** Monta o [`ExplorerView`] real com a árvore real ([`ExplorerViewHarness`], ver as divergências em
-//!   `support/explorer_view_support.rs`). O `dispatchEvent` do `contextmenu` é o [`ExplorerView::on_context_menu`] com o
-//!   evento que a árvore emitiria; `await shown` é a promessa dele; `menu` é o delegado que o `IContextMenuService` de teste
+//! - **A suíte `context menu`.** Monta o [`ExplorerView`] com a árvore de teste do original ([`ExplorerViewHarness`], ver as
+//!   divergências em `support/explorer_view_support.rs`). O `dispatchEvent` do `contextmenu` é o [`ExplorerView::on_context_menu`]
+//!   com o evento que a árvore emitiria; `await shown` é a promessa dele; `menu` é o delegado que o `IContextMenuService` de teste
 //!   guardou (`menu.base.on_hide(true)` é o `menu.onHide(true)`); `menu?.menuActionOptions?.arg` e `menu?.getActionsContext?.()`
 //!   são lidos como `URI`.
-//! - **Os dois casos de `refresh`.** O `refreshGate` do original trava o `getChildren` da fonte de dados de teste do próprio
-//!   caso. A fonte de dados do porte é a real (`createTree` a cria, sem `stubInstance`) e não tem ponto de injeção: o caso confere
-//!   a mesma garantia, que o `selectResource` espera a atualização já enfileirada, pela ordem em que as duas promessas assentam
-//!   (a atualização antes da seleção) e pelo estado final.
-//! - **`keeps the compressed-folder navigation target ...`.** Os controladores são os do `FilesRenderer` real, criados quando o
-//!   nó `compact/child` é desenhado; o `mock<ICompressedNavigationController>` com `index = 0` é o `set_index(0)` do controlador
-//!   real (o corrente passa a ser `compact`).
+//! - **Os dois casos de `refresh`.** O `refreshGate` é o `DeferredPromise` que o `getChildren` da fonte de dados de teste espera
+//!   ([`ExplorerViewHarness::close_refresh_gate`]); `selectedBeforeRefresh` é o `Cell` que o `then` da seleção liga, e o registro é
+//!   a tupla `(selectedBeforeRefresh, focus, selection)`.
+//! - **`keeps the compressed-folder navigation target ...`.** Os controladores são os do `controllers` do dublê de `FilesRenderer`
+//!   ([`MockCompressedNavigationController`] com `current = parent`, `items = [parent, child]`, `index = 0` e `count = 2`). A entrada
+//!   da árvore do porte é a lista dos filhos da raiz e fica fixa, então o `tree.updateChildren(root)` é refazer a entrada com o
+//!   estado da vista (`set_input(root.children(), view_state)`), como o `refresh` da vista faz.
 //! - **`opened`.** O `tree.onDidOpen` registrado depois do `setup`; as seleções do menu não abrem nada.
 
 #[path = "../../je-base/tests/common/mod.rs"]
@@ -39,11 +39,11 @@ mod notification_doubles;
 #[path = "../../je-editor/tests/support/test_clipboard_service.rs"]
 mod test_clipboard_service;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_real_timers, timeout};
-use explorer_view_support::ExplorerViewHarness;
+use explorer_view_support::{ExplorerViewHarness, MockCompressedNavigationController};
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
 use je_base::path::{PathModule, ProcessEnvironment};
@@ -207,20 +207,22 @@ fn context_menu_waits_for_a_newly_queued_tree_refresh_before_selecting_a_folder(
         let tree = h.view.tree();
         tree.set_focus(&[h.target.clone()], None);
         tree.set_selection(&[h.target.clone()], None);
-
-        let settled = Rc::new(RefCell::new(Vec::<&'static str>::new()));
-        let record = |label: &'static str| {
-            let settled = settled.clone();
-            move |_: ()| settled.borrow_mut().push(label)
-        };
-        let refresh = h.view.set_tree_input().then(record("refresh"));
-        let selection = h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).then(record("selection"));
+        let refresh_gate = h.close_refresh_gate();
+        let refresh = h.view.set_tree_input();
+        let selected = Rc::new(Cell::new(false));
+        let selection = h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).then({
+            let selected = selected.clone();
+            move |_| selected.set(true)
+        });
         timeout(0).await.unwrap();
+        let selected_before_refresh = selected.get();
+        refresh_gate.complete(()).await.unwrap();
         Promise::all(vec![refresh, selection]).await.unwrap();
 
-        assert_eq!(*settled.borrow(), vec!["refresh", "selection"]);
-        assert_eq!(resources(&tree.get_focus()), vec![h.folder.resource()]);
-        assert_eq!(resources(&tree.get_selection()), vec![h.folder.resource()]);
+        assert_eq!(
+            (selected_before_refresh, resources(&tree.get_focus()), resources(&tree.get_selection())),
+            (false, vec![h.folder.resource()], vec![h.folder.resource()])
+        );
     });
 }
 
@@ -233,11 +235,22 @@ fn context_menu_preserves_folder_selection_after_reopening_a_hidden_explorer() {
         tree.set_focus(&[h.target.clone()], None);
         tree.set_selection(&[h.target.clone()], None);
         h.view.set_visible(false);
+        let refresh_gate = h.close_refresh_gate();
         h.view.set_visible(true);
-        h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).await.unwrap();
+        let selected = Rc::new(Cell::new(false));
+        let selection = h.view.select_resource(Some(&h.folder.resource()), Some(ExplorerReveal::Mode("force".to_string())), None).then({
+            let selected = selected.clone();
+            move |_| selected.set(true)
+        });
+        timeout(0).await.unwrap();
+        let selected_before_refresh = selected.get();
+        refresh_gate.complete(()).await.unwrap();
+        selection.await.unwrap();
 
-        assert_eq!(resources(&tree.get_focus()), vec![h.folder.resource()]);
-        assert_eq!(resources(&tree.get_selection()), vec![h.folder.resource()]);
+        assert_eq!(
+            (selected_before_refresh, resources(&tree.get_focus()), resources(&tree.get_selection())),
+            (false, vec![h.folder.resource()], vec![h.folder.resource()])
+        );
     });
 }
 
@@ -318,10 +331,11 @@ fn context_menu_keeps_the_compressed_folder_navigation_target_when_replacing_the
         let tree = h.view.tree();
         // tree.updateOptions({ compressionEnabled: true }); await tree.updateChildren(root);
         tree.set_compression_enabled(true);
-        h.view.refresh(true, Some(&h.root), None).await.unwrap();
-        let controllers = h.view.renderer().get_compressed_navigation_controller(&parent).expect("o nó compact/child foi desenhado comprimido");
+        tree.widget().set_input(h.root.children(), Some(tree.get_view_state())).await.unwrap();
         // `current = parent`, `items = [parent, child]`, `index = 0`, `count = 2`
-        controllers[0].set_index(0);
+        let controller = MockCompressedNavigationController::new(parent.clone(), vec![parent.clone(), child.clone()], 0, 2);
+        h.set_compressed_navigation_controllers(&parent, vec![controller.clone()]);
+        h.set_compressed_navigation_controllers(&child, vec![controller]);
         tree.set_selection(&[h.first.clone(), h.second.clone()], None);
 
         h.show_context_menu(Some(&child), false).await.unwrap();
