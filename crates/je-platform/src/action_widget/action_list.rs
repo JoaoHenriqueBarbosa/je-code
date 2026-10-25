@@ -62,6 +62,8 @@ pub const REMOVE_TOOLBAR_ACTION_ID: &str = "actionList.remove";
 
 /// A altura (px) de uma linha de ação, de cabeçalho e de separador sem rótulo (`_actionLineHeight`, `_headerLineHeight` e
 /// `_separatorLineHeight`).
+/// A duração de um quadro de animação (`requestAnimationFrame`) no relógio do `runtime`.
+const ANIMATION_FRAME_MS: u64 = 16;
 const ACTION_LINE_HEIGHT: f64 = 24.0;
 const HEADER_LINE_HEIGHT: f64 = 24.0;
 const SEPARATOR_LINE_HEIGHT: f64 = 8.0;
@@ -161,17 +163,28 @@ pub struct ActionListBadge {
 /// Um elemento de conteúdo de hover (o `HTMLElement` que o chamador cria): texto, tamanho e identidade (`Rc`).
 pub struct HoverElement {
     text: RefCell<String>,
+    aria_label: RefCell<Option<String>>,
     size: Cell<(f64, f64)>,
 }
 
 impl HoverElement {
     pub fn new(text: &str) -> Rc<Self> {
-        Rc::new(Self { text: RefCell::new(text.to_owned()), size: Cell::new((0.0, 0.0)) })
+        Rc::new(Self { text: RefCell::new(text.to_owned()), aria_label: RefCell::new(None), size: Cell::new((0.0, 0.0)) })
     }
 
     /// `textContent`.
     pub fn text(&self) -> String {
         self.text.borrow().clone()
+    }
+
+    /// `setAttribute('aria-label', label)`.
+    pub fn set_aria_label(&self, label: &str) {
+        *self.aria_label.borrow_mut() = Some(label.to_owned());
+    }
+
+    /// `getAttribute('aria-label') ?? textContent`: o nome que o controle tem para quem o foca.
+    pub fn accessible_label(&self) -> String {
+        self.aria_label.borrow().clone().unwrap_or_else(|| self.text())
     }
 
     pub fn set_text(&self, text: &str) {
@@ -244,6 +257,8 @@ pub struct IActionListItemHover {
     pub tab_through_panel: bool,
     /// Interactive elements owned by the hover content, in forward Tab order.
     pub get_tabbable_elements: Option<Rc<dyn Fn() -> Vec<Rc<HoverElement>>>>,
+    /// The hover content provides its own padding, so the header adds none.
+    pub content_owns_padding: bool,
     /// Align the panel's bottom with the parent popup, keeping content above its trigger.
     pub align_to_parent_bottom: bool,
     /// Align the panel with the outer border of the parent popup instead of the row's own edge.
@@ -320,6 +335,8 @@ pub struct IActionListItem<T: ActionListItemData> {
     pub aria_description: Option<String>,
     pub hover: Option<IActionListItemHover>,
     pub hide_icon: bool,
+    /// Chamado uma vez quando a linha entra na área visível da lista (depois do primeiro quadro, ao rolar).
+    pub on_did_become_visible: Option<Rc<dyn Fn()>>,
 }
 
 impl<T: ActionListItemData> IActionListItem<T> {
@@ -355,6 +372,7 @@ impl<T: ActionListItemData> IActionListItem<T> {
             aria_description: None,
             hover: None,
             hide_icon: false,
+            on_did_become_visible: None,
         }
     }
 
@@ -460,6 +478,8 @@ pub struct IActionListOptions {
     pub footer_text: Option<String>,
     /// Optional text shown above the action list as a header banner.
     pub header_text: Option<String>,
+    /// Optional link appended to the header banner text (e.g. "Learn more"); activated through the link handler.
+    pub header_link: Option<IActionListHeaderLink>,
     /// Optional CSS class name added to the action list container, for scoped styling.
     pub class_name: Option<String>,
     /// Optional CSS class name added to the containing action widget.
@@ -575,13 +595,16 @@ pub struct FocusState {
     panel_focused: Cell<bool>,
     /// Um controle do conteúdo do hover é o `document.activeElement`.
     control_focused: RefCell<Option<Rc<HoverElement>>>,
+    /// Um botão da barra de ferramentas da linha focada é o `document.activeElement` (o índice dele na barra).
+    toolbar_focused: Cell<Option<usize>>,
 }
 
 impl FocusState {
-    /// O foco do documento sai do painel e dos controles dele.
+    /// O foco do documento sai do painel, dos controles dele e da barra da linha.
     fn leave_panel(&self) {
         self.panel_focused.set(false);
         *self.control_focused.borrow_mut() = None;
+        self.toolbar_focused.set(None);
     }
 }
 
@@ -789,6 +812,13 @@ struct WidgetState<T: ActionListItemData> {
     panel_viewport_height: Option<f64>,
     /// Quantas vezes o `_layoutSubmenu` do painel aberto reposicionou o painel.
     layout_submenu_count: usize,
+    /// `canPrefetchVisibleItems`: verdadeiro a partir do primeiro quadro depois da criação.
+    can_prefetch_visible_items: bool,
+    /// `visibleItems`: a identidade das linhas que já foram avisadas.
+    visible_items: BTreeSet<String>,
+    /// `visibleItemsUpdate`: o quadro agendado que avisa as linhas que entraram na área visível.
+    visible_items_update: Option<TimerId>,
+    prefetch_timer: Option<TimerId>,
 }
 
 /// O cabeçalho do painel: o texto do markdown renderizado ou o elemento do chamador.
@@ -976,6 +1006,10 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 panel_style_width: None,
                 panel_viewport_height: None,
                 layout_submenu_count: 0,
+                can_prefetch_visible_items: false,
+                visible_items: BTreeSet::new(),
+                visible_items_update: None,
+                prefetch_timer: None,
             }),
             measurer: RefCell::new(Rc::new(|_| 0.0)),
             is_submenu_panel: Cell::new(false),
@@ -986,6 +1020,21 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         });
 
         widget.apply_filter(false, true, None);
+        // O quadro que libera `canPrefetchVisibleItems` só é agendado quando alguma linha quer saber que ficou visível.
+        if items.iter().any(|item| item.on_did_become_visible.is_some()) {
+            let weak = widget.this.clone();
+            let prefetch_timer = set_timeout(
+                move || {
+                    if let Some(widget) = weak.upgrade() {
+                        let mut state = widget.state.borrow_mut();
+                        state.prefetch_timer = None;
+                        state.can_prefetch_visible_items = true;
+                    }
+                },
+                ANIMATION_FRAME_MS,
+            );
+            widget.state.borrow_mut().prefetch_timer = Some(prefetch_timer);
+        }
 
         if !widget.state.borrow().visible_menu_items.is_empty() {
             widget.focus_checked_or_first();
@@ -1041,6 +1090,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
     }
 
+    /// `headerContainer.querySelector('a.monaco-link')`: o texto do link do banner e o `href` dele.
+    pub fn header_link(&self) -> Option<(String, String)> {
+        self.header_container.borrow().as_ref()?;
+        let link = self.opts()?.header_link.as_ref()?;
+        Some((link.label.clone(), link.uri.to_string(true).to_string_lossy()))
+    }
+
     fn dismiss_header(&self) {
         let Some(on_dismiss) = self.opts().and_then(|o| o.header_dismiss.clone()) else {
             return;
@@ -1088,6 +1144,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             controls: Some(self.list_dom_id.clone()),
             active_descendant,
         })
+    }
+
+    /// O `id` da linha focada (`document.querySelector('.monaco-list-row.focused').id`).
+    pub fn focused_row_id(&self) -> Option<String> {
+        self.focused_index().map(|index| self.row_element_id(index))
     }
 
     /// `_list.getElementID(index)`.
@@ -1200,6 +1261,60 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         };
         if changed {
             self.layout_submenu();
+            self.schedule_visible_items_update();
+        }
+    }
+
+    /// O `onDidScroll` da lista com `scrollTopChanged`: no próximo quadro, as linhas que entraram na área visível avisam
+    /// `onDidBecomeVisible` uma vez (a identidade é o `id` do item, ou o próprio item).
+    fn schedule_visible_items_update(&self) {
+        {
+            let state = self.state.borrow();
+            if !state.can_prefetch_visible_items || state.visible_items_update.is_some() {
+                return;
+            }
+        }
+        let weak = self.this.clone();
+        let timer = set_timeout(
+            move || {
+                if let Some(widget) = weak.upgrade() {
+                    widget.state.borrow_mut().visible_items_update = None;
+                    widget.notify_visible_items();
+                }
+            },
+            ANIMATION_FRAME_MS,
+        );
+        self.state.borrow_mut().visible_items_update = Some(timer);
+    }
+
+    /// `getVisibleItems()`: as linhas entre `firstVisibleIndex` e `lastVisibleIndex` da área visível da lista.
+    fn visible_range_items(&self) -> Vec<Rc<IActionListItem<T>>> {
+        let viewport = self.dom_node.size().height;
+        let state = self.state.borrow();
+        let scroll_top = state.scroll_top;
+        let mut top = 0.0;
+        let mut items = Vec::new();
+        for item in &state.visible_menu_items {
+            let height = Self::item_height_with(item, self.opts());
+            if top + height > scroll_top && top < scroll_top + viewport {
+                items.push(item.clone());
+            }
+            top += height;
+        }
+        items
+    }
+
+    fn notify_visible_items(&self) {
+        let identity = |item: &Rc<IActionListItem<T>>| item.item_id().map_or_else(|| format!("ptr:{:p}", Rc::as_ptr(item)), |id| format!("id:{id}"));
+        let items = self.visible_range_items();
+        let current: BTreeSet<String> = items.iter().map(identity).collect();
+        let previous = std::mem::replace(&mut self.state.borrow_mut().visible_items, current);
+        for item in items {
+            if !previous.contains(&identity(&item)) {
+                if let Some(notify) = &item.on_did_become_visible {
+                    notify();
+                }
+            }
         }
     }
 
@@ -1273,6 +1388,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
         self.focus_state.list_focused.set(false);
         *self.focus_state.control_focused.borrow_mut() = None;
+        self.focus_state.toolbar_focused.set(None);
         self.focus_state.panel_focused.set(true);
     }
 
@@ -1283,7 +1399,31 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
         self.focus_state.list_focused.set(false);
         self.focus_state.panel_focused.set(false);
+        self.focus_state.toolbar_focused.set(None);
         *self.focus_state.control_focused.borrow_mut() = Some(control);
+    }
+
+    /// `toolbar.focus(index)`: o foco vai para o botão `index` da barra da linha focada.
+    pub fn focus_toolbar_button(&self, index: usize) {
+        if let Some(input) = &self.filter_input {
+            input.blur();
+        }
+        self.focus_state.list_focused.set(false);
+        self.focus_state.panel_focused.set(false);
+        *self.focus_state.control_focused.borrow_mut() = None;
+        self.focus_state.toolbar_focused.set(Some(index));
+    }
+
+    /// O botão da barra da linha focada que é o `document.activeElement`: o índice e o `aria-label`.
+    pub fn focused_toolbar_button(&self) -> Option<(usize, String)> {
+        let position = self.focus_state.toolbar_focused.get()?;
+        let row = self.row_state(self.focused_index()?)?;
+        row.toolbar.get(position).map(|button| (position, button.aria_label.clone()))
+    }
+
+    /// Quantos botões a barra de `element` tem (as ações e a de remover que `onRemove` acrescenta).
+    fn toolbar_length(element: &IActionListItem<T>) -> usize {
+        element.toolbar_actions.as_ref().map_or(0, Vec::len) + usize::from(element.on_remove.is_some())
     }
 
     /// `document.activeElement === this._list.getHTMLElement()`.
@@ -1588,7 +1728,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         // Capture whether the filter input currently has focus before the list is replaced.
         let filter_input_has_focus = self.filter_input.as_ref().is_some_and(|input| input.is_focused());
         // Focus is only ours to restore if the list had it.
-        let list_has_focus = self.focus_state.list_focused.get();
+        let list_has_focus = self.focus_state.list_focused.get() || self.focus_state.toolbar_focused.get().is_some();
 
         {
             let mut state = self.state.borrow_mut();
@@ -1760,7 +1900,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         } else if top + height > scroll_top + viewport {
             scroll_top = top + height - viewport;
         }
-        state.scroll_top = scroll_top.min((content - viewport).max(0.0)).max(0.0);
+        let clamped = scroll_top.min((content - viewport).max(0.0)).max(0.0);
+        let changed = (state.scroll_top - clamped).abs() > f64::EPSILON;
+        state.scroll_top = clamped;
+        drop(state);
+        if changed {
+            self.schedule_visible_items_update();
+        }
     }
 
     /// `rows.style.top` do `.monaco-list-rows`: o deslocamento negativo da rolagem.
@@ -2536,12 +2682,15 @@ impl<T: ActionListItemData> ActionListWidget<T> {
 
     /// `getBoundingClientRect()` da linha `index`: as alturas acima dela, com o zoom do widget.
     fn row_rect(&self, index: usize) -> IRect {
-        let zoom = self.state.borrow().zoom;
+        let (zoom, scroll_top) = {
+            let state = self.state.borrow();
+            (state.zoom, state.scroll_top)
+        };
         let parent = self.dom_node.rect();
         let items = self.state.borrow().visible_menu_items.clone();
         let above: f64 = items.iter().take(index).map(|item| Self::item_height_with(item, self.opts())).sum();
         let height = items.get(index).map_or(0.0, |item| Self::item_height_with(item, self.opts()));
-        IRect { top: parent.top + above * zoom, left: parent.left, width: parent.width, height: height * zoom }
+        IRect { top: parent.top + (above - scroll_top) * zoom, left: parent.left, width: parent.width, height: height * zoom }
     }
 
     /// O posicionamento do painel de hover de conteúdo (o ramo sem lista de submenu do `layout` de `_showSubmenuForElement`).
@@ -3065,6 +3214,57 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.reset_submenu_pointer();
     }
 
+    /// O `mouseenter` no painel (`_submenuContainer`): o painel não esconde mais, e com a intenção do ponteiro o que estava
+    /// agendado para abrir é cancelado.
+    pub fn panel_pointer_enter(&self) {
+        self.cancel_submenu_hide();
+        if self.uses_submenu_pointer_intent() {
+            self.cancel_submenu_show();
+            self.reset_submenu_pointer();
+        }
+    }
+
+    /// O `mouseleave` do painel (`_submenuContainer`).
+    pub fn panel_pointer_leave(&self) {
+        self.schedule_submenu_hide();
+    }
+
+    /// O `mouseenter` no banner do cabeçalho: ele é cromo, não uma linha, e apontá-lo dispensa o painel da linha (o preview
+    /// persistente só cancela o que estava agendado).
+    pub fn header_pointer_enter(&self) {
+        if self.opts().is_some_and(|o| o.persistent_hover) {
+            self.cancel_submenu_show();
+            self.reset_submenu_pointer();
+        } else {
+            self.hide_submenu();
+        }
+    }
+
+    /// `showHoverForCheckedItem()`: o hover do item marcado, ou do focado quando o preview é persistente.
+    pub fn show_hover_for_checked_item(&self) {
+        let checked = self
+            .state
+            .borrow()
+            .all_menu_items
+            .iter()
+            .find(|item| item.kind == ActionListItemKind::Action && item.item.as_ref().is_some_and(ActionListItemData::list_item_checked))
+            .cloned();
+        let element = checked.or_else(|| if self.opts().is_some_and(|o| o.persistent_hover) { self.get_focused_element() } else { None });
+        let Some(element) = element else {
+            return;
+        };
+        if let Some(section) = element.section.clone() {
+            if self.state.borrow().collapsed_sections.contains(&section) {
+                self.toggle_section(&section);
+            }
+        }
+        if let Some(index) = self.list_index_of(&element) {
+            self.set_focus(Some(index));
+            self.reveal(index);
+            self.show_hover_for_element(&element);
+        }
+    }
+
     /// O `mousedown` no botão da barra da linha `index`: a barra sempre cancela o padrão (o foco fica onde estava), e com
     /// `stopToolbarPointerPropagation` o evento também não chega aos tratadores da lista. Devolve `defaultPrevented`.
     pub fn toolbar_pointer_down(&self, index: usize) -> bool {
@@ -3196,6 +3396,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.item_detail_links(&element).into_iter().next()
     }
 
+    /// O controle do conteúdo do hover que é o `document.activeElement`.
+    pub fn focused_control(&self) -> Option<Rc<HoverElement>> {
+        self.focus_state.control_focused.borrow().clone()
+    }
+
     /// `document.activeElement === control`.
     pub fn is_control_focused(&self, control: &Rc<HoverElement>) -> bool {
         self.focus_state.control_focused.borrow().as_ref().is_some_and(|focused| Rc::ptr_eq(focused, control))
@@ -3246,6 +3451,10 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// `_focusFirstTabThroughPanelControl`.
     fn focus_first_tab_through_panel_control(&self, element: &Rc<IActionListItem<T>>) {
         let controls = self.get_tab_through_panel_controls(element);
+        if Self::toolbar_length(element) > 0 {
+            self.focus_toolbar_button(0);
+            return;
+        }
         match controls.first() {
             Some(control) => self.focus_control(control.clone()),
             None => self.dom_focus_list(),
@@ -3267,9 +3476,10 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             return;
         }
         let active_control = self.focus_state.control_focused.borrow().clone();
+        let toolbar_position = self.focus_state.toolbar_focused.get();
         let in_panel = self.focus_state.panel_focused.get() || active_control.is_some();
 
-        if (e.key == "ArrowUp" || e.key == "ArrowDown") && in_panel {
+        if (e.key == "ArrowUp" || e.key == "ArrowDown") && (toolbar_position.is_some() || in_panel) {
             e.stop();
             self.dom_focus_list();
             if e.key == "ArrowUp" {
@@ -3286,28 +3496,40 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
 
         let controls = self.get_tab_through_panel_controls(&element);
+        let toolbar_length = Self::toolbar_length(&element);
         let active_position = active_control.as_ref().and_then(|active| controls.iter().position(|control| Rc::ptr_eq(control, active)));
         let list_or_filter_active = self.focus_state.list_focused.get() || self.focus_state.filter_focused.get();
-        // `Some(None)` volta à lista; `Some(Some(control))` vai para o controle.
-        let target: Option<Option<Rc<HoverElement>>> = if e.shift_key {
+        let list_target = if self.opts().is_some_and(|o| o.filter_as_combobox) && self.filter_input.is_some() { TabTarget::Filter } else { TabTarget::List };
+        let target: Option<TabTarget> = if e.shift_key {
             if in_panel {
                 match active_position {
-                    Some(position) if position > 0 => Some(Some(controls[position - 1].clone())),
-                    _ => Some(None),
+                    Some(position) if position > 0 => Some(TabTarget::Control(controls[position - 1].clone())),
+                    _ if toolbar_length > 0 => Some(TabTarget::Toolbar(toolbar_length - 1)),
+                    _ => Some(TabTarget::List),
                 }
+            } else if let Some(position) = toolbar_position {
+                if position > 0 { Some(TabTarget::Toolbar(position - 1)) } else { Some(list_target) }
             } else {
                 None
             }
         } else if list_or_filter_active {
-            controls.first().map(|control| Some(control.clone()))
+            if toolbar_length > 0 { Some(TabTarget::Toolbar(0)) } else { controls.first().map(|control| TabTarget::Control(control.clone())) }
+        } else if let Some(position) = toolbar_position {
+            if position + 1 < toolbar_length { Some(TabTarget::Toolbar(position + 1)) } else { controls.first().map(|control| TabTarget::Control(control.clone())) }
         } else {
-            active_position.map(|position| controls.get(position + 1).cloned())
+            active_position.map(|position| controls.get(position + 1).cloned().map_or(TabTarget::List, TabTarget::Control))
         };
         if let Some(target) = target {
             e.stop();
             match target {
-                Some(control) => self.focus_control(control),
-                None => self.dom_focus_list(),
+                TabTarget::Toolbar(position) => self.focus_toolbar_button(position),
+                TabTarget::Control(control) => self.focus_control(control),
+                TabTarget::List => self.dom_focus_list(),
+                TabTarget::Filter => {
+                    if let Some(input) = &self.filter_input {
+                        input.focus();
+                    }
+                }
             }
         }
     }
@@ -3544,6 +3766,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.state.borrow_mut().pending_submenu_element = None;
         self.cancel_submenu_show();
         self.cancel_submenu_hide();
+        let timers = {
+            let mut state = self.state.borrow_mut();
+            [state.prefetch_timer.take(), state.visible_items_update.take()]
+        };
+        for timer in timers.into_iter().flatten() {
+            clear_timeout(timer);
+        }
         let widget = self.state.borrow_mut().current_submenu_widget.take();
         if let Some(widget) = widget {
             widget.dispose();
@@ -4013,6 +4242,13 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         state.current_submenu_element.clone().filter(|element| element.hover.as_ref().is_some_and(|hover| hover.expandable))
     }
 
+    /// `panel.querySelector('.action-list-submenu-hover-header')?.classList.contains('content-owns-padding')`.
+    pub fn panel_header_owns_padding(&self) -> Option<bool> {
+        let state = self.state.borrow();
+        state.panel_header.as_ref()?;
+        Some(state.current_submenu_element.as_ref().is_some_and(|element| element.hover.as_ref().is_some_and(|hover| hover.content_owns_padding)))
+    }
+
     /// `panel.querySelector('.action-list-submenu-hover-header')?.textContent`.
     pub fn panel_hover_text(&self) -> Option<String> {
         match self.state.borrow().panel_header.clone()? {
@@ -4062,6 +4298,14 @@ impl<T: ActionListItemData> ActionListWidget<T> {
 }
 
 // #endregion
+
+/// Para onde o Tab leva o foco: um botão da barra da linha, um controle do painel, a lista ou o campo de filtro.
+enum TabTarget {
+    Toolbar(usize),
+    Control(Rc<HoverElement>),
+    List,
+    Filter,
+}
 
 /// O delegate do widget do submenu: roda a ação, esconde o painel, avisa o delegate do pai e esconde o pai.
 struct SubmenuDelegate<T: ActionListItemData> {
