@@ -237,7 +237,7 @@ impl IViewZone for DiagonalFillViewZone {
 }
 
 /// `intersectHorizontal(new OffsetRange(left, Number.MAX_SAFE_INTEGER))` (ver as notas do módulo).
-fn intersect_horizontal_from(rect: &Rect, left: f64) -> Rect {
+pub(super) fn intersect_horizontal_from(rect: &Rect, left: f64) -> Rect {
     let new_left = rect.left.max(left);
     Rect::new(new_left, rect.top, new_left.max(rect.right), rect.bottom)
 }

@@ -9,19 +9,17 @@
 //! fim do arquivo, e o clique chama `_viewHasBeenShownLongerThan`; separar a metade deixaria a primeira sem compilar.
 //!
 //! O que falta (não está neste arquivo):
-//! - `InlineEditsInsertionView` (`inlineEditsInsertionView.ts`) e `InlineEditsLongDistanceHint`
-//!   (`longDistanceHint/inlineEditsLongDistanceHint.ts`) ainda não têm porte. Eles entram aqui pelos contratos
-//!   [`IInsertionView`] e [`IInlineEditsViewHandle`], criados pela [`IInlineEditsViewFactory`]. Quando os portes existirem,
-//!   o controller (4c-6) fornece uma fábrica que os instancia e implementa os dois traits;
 //! - o gutter indicator (`components/`) não é criado por este arquivo no original; quem o cria é a
-//!   `InlineSuggestionsView` (4c-5). Aqui só entram `SimpleInlineSuggestModel` e `InlineSuggestionGutterMenuData`, que vão
-//!   para o estado da dica de longa distância ([`LongDistanceViewState`]);
-//! - o `inlineEditsViewProducer` (4c-4, segunda parte) é o que cria o `ModelPerInlineEdit` observável que esta view lê.
+//!   `InlineSuggestionsView` (`inline_suggestions_view`). Aqui só entram `SimpleInlineSuggestModel` e
+//!   `InlineSuggestionGutterMenuData`, que vão para o estado da dica de longa distância ([`LongDistanceViewState`]);
+//! - o `inlineEditsViewProducer` (`inline_edits_view_producer`) é o que cria o `ModelPerInlineEdit` observável que esta view
+//!   lê.
 //!
 //! Notas de tradução:
-//! - `@IInstantiationService` (que criava o `TextModel` de prévia, as views, o `InlineEditsLongDistanceHint` e os serviços
-//!   de cada view) é o [`InlineEditsViewServices`]: os serviços que as views pedem e a [`IInlineEditsViewFactory`], que cria
-//!   o `TextModel` de prévia e as duas views sem porte. As views portadas são criadas direto;
+//! - `@IInstantiationService` (que criava o `TextModel` de prévia, as views, o `InlineEditsInsertionView`, o
+//!   `InlineEditsLongDistanceHint` e os serviços de cada view) é o [`InlineEditsViewServices`]: os serviços que as views
+//!   pedem e a [`IPreviewTextModelFactory`], que cria o `TextModel` de prévia. Todas as views, inclusive a inserção e a dica
+//!   de longa distância, são criadas direto, como no original;
 //! - a classe tinha campos inicializados fora de ordem, e o `_constructorDone` era o remendo (o `TODO: remove and use
 //!   correct initialization order` do original). Aqui a ordem é a de dependência (`_uiState` não precisa de nenhuma view),
 //!   então ele não existe. O estado mutável que o `_uiState` usa (`_previousView`, `_currentInlineEditCache`) e os métodos
@@ -97,17 +95,20 @@ use crate::services::theme_service::IThemeService;
 use crate::text::abstract_text::{AbstractText, StringText};
 use crate::text_model::TextModel;
 
-use super::components::gutter_indicator_view::{InlineSuggestionGutterMenuData, SimpleInlineSuggestModel};
+use super::components::gutter_indicator_view::{IGutterIndicatorHost, InlineSuggestionGutterMenuData, SimpleInlineSuggestModel};
 use super::inline_edit_with_changes::InlineEditWithChanges;
 use super::inline_edits_model::ModelPerInlineEdit;
 use super::inline_edits_view_interface::{IInlineEditsView, InlineCompletionViewData, InlineCompletionViewKind, InlineEditClickEvent, InlineEditTabAction};
 use super::inline_edits_views::inline_edits_collapsed_view::InlineEditsCollapsedView;
 use super::inline_edits_views::inline_edits_custom_view::InlineEditsCustomView;
 use super::inline_edits_views::inline_edits_deletion_view::{DeletionViewUiState, InlineEditsDeletionView};
+use super::inline_edits_views::inline_edits_insertion_view::{InlineEditsInsertionView, InsertionViewInput};
 use super::inline_edits_views::inline_edits_line_replacement_view::{InlineEditsLineReplacementView, LineReplacementEdit, Replacement};
 use super::inline_edits_views::inline_edits_side_by_side_view::{ISideBySideViewHost, InlineEditsSideBySideView, SideBySideUiState};
 use super::inline_edits_views::inline_edits_word_replacement_view::{InlineEditsWordReplacementView, WordReplacementsViewData};
 use super::inline_edits_views::jump_to_view::{JumpToView, JumpToViewData, JumpToViewOptions, JumpToViewStyle};
+use super::inline_edits_views::long_distance_hint::inline_edits_long_distance_hint::InlineEditsLongDistanceHint;
+use super::inline_edits_views::long_distance_hint::{ILongDistanceHintHost, LongDistanceHintServices};
 use super::inline_edits_views::original_editor_inline_diff_view::{OriginalEditorInlineDiffView, OriginalEditorInlineDiffViewMode, OriginalEditorInlineDiffViewState};
 use super::utils::utils::{apply_edit_to_modified_range_mappings, create_reindent_edit};
 
@@ -178,53 +179,15 @@ pub struct InlineEditsUiState {
     pub target: Rc<TextModelValueReference>,
 }
 
-/// O objeto anônimo que o construtor da `InlineEditsInsertionView` recebe: `{ lineNumber, startColumn, text, editorType }`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InsertionViewInput {
-    pub line_number: i32,
-    pub start_column: i32,
-    pub text: JsString,
-    pub editor_type: InlineCompletionEditorType,
-}
-
-/// O que a `InlineEditsView` exige de uma view que ela só conhece pelo contrato: ser uma `IInlineEditsView` descartável.
-pub trait IInlineEditsViewHandle: IInlineEditsView + IDisposable {}
-
-impl<T: IInlineEditsView + IDisposable> IInlineEditsViewHandle for T {}
-
-/// O que a `InlineEditsInsertionView` expõe à `InlineEditsView`: `originalLines` e `startLineOffset`.
-pub trait IInsertionView: IInlineEditsViewHandle {
-    /// `originalLines`: o intervalo de linhas originais que a inserção cobre (`None` sem inserção).
-    fn original_lines(&self) -> IObservable<Option<LineRange>>;
-
-    /// `startLineOffset`: o `topOffset` do corte vertical.
-    fn start_line_offset(&self) -> IObservable<f64>;
-}
-
-/// O que o `IInstantiationService` criava para a `InlineEditsView` e que ainda não tem porte (ver as notas do módulo).
-pub trait IInlineEditsViewFactory {
+/// O que o `IInstantiationService` criava para a `InlineEditsView` e que não é uma view: o `TextModel` de prévia
+/// (`createInstance(TextModel, '', languageId, options, null)`), que depende dos serviços do modelo de texto.
+pub trait IPreviewTextModelFactory {
     /// `createInstance(TextModel, '', languageId, options, null)`: o modelo de prévia, vazio.
     fn create_preview_text_model(&self, language_id: &str, options: TextModelCreationOptions) -> Rc<TextModel>;
-
-    /// `createInstance(InlineEditsInsertionView, editor, input, tabAction)`.
-    fn create_insertion_view(
-        &self,
-        editor: Rc<CodeEditorWidget>,
-        input: IObservable<Option<Rc<InsertionViewInput>>>,
-        tab_action: IObservable<InlineEditTabAction>,
-    ) -> Rc<dyn IInsertionView>;
-
-    /// `createInstance(InlineEditsLongDistanceHint, editor, viewState, previewTextModel, tabAction)`.
-    fn create_long_distance_hint(
-        &self,
-        editor: Rc<CodeEditorWidget>,
-        view_state: IObservable<Option<Rc<LongDistanceViewState>>>,
-        preview_text_model: Rc<TextModel>,
-        tab_action: IObservable<InlineEditTabAction>,
-    ) -> Rc<dyn IInlineEditsViewHandle>;
 }
 
 /// Os serviços injetados que as views da `InlineEditsView` pedem (ver as notas do módulo).
+#[derive(Clone)]
 pub struct InlineEditsViewServices {
     pub theme_service: Rc<dyn IThemeService>,
     pub language_service: Rc<dyn ILanguageService>,
@@ -233,7 +196,12 @@ pub struct InlineEditsViewServices {
     pub accessibility_service: Rc<dyn IAccessibilityService>,
     pub side_by_side_host: Rc<dyn ISideBySideViewHost>,
     pub embedded_code_editor_factory: Rc<dyn IEmbeddedCodeEditorFactory>,
-    pub views: Rc<dyn IInlineEditsViewFactory>,
+    pub preview_text_model_factory: Rc<dyn IPreviewTextModelFactory>,
+    /// O menu e o sticky scroll do indicador da margem (o da `InlineSuggestionsView` e o do editor de prévia da dica de
+    /// longa distância).
+    pub gutter_indicator_host: Rc<dyn IGutterIndicatorHost>,
+    /// A trilha de símbolos e o arquivo alvo da dica de longa distância.
+    pub long_distance_hint_host: Rc<dyn ILongDistanceHintHost>,
 }
 
 /// O `dom_node` da view zone `div.minScrollHeightViewZone`: o pintor o reconhece e reserva a altura.
@@ -688,10 +656,10 @@ pub struct InlineEditsView {
 
     pub side_by_side: Rc<InlineEditsSideBySideView>,
     pub deletion: Rc<InlineEditsDeletionView>,
-    pub insertion: Rc<dyn IInsertionView>,
+    pub insertion: Rc<InlineEditsInsertionView>,
     pub inline_collapsed_view: Rc<InlineEditsCollapsedView>,
     pub custom_view: Rc<InlineEditsCustomView>,
-    pub long_distance_hint: IObservable<Option<Rc<dyn IInlineEditsViewHandle>>>,
+    pub long_distance_hint: IObservable<Option<Rc<InlineEditsLongDistanceHint>>>,
     pub inline_diff_view: Rc<OriginalEditorInlineDiffView>,
     pub word_replacement_views: IObservable<Rc<Vec<Rc<InlineEditsWordReplacementView>>>>,
     pub line_replacement_view: Rc<InlineEditsLineReplacementView>,
@@ -744,7 +712,7 @@ impl InlineEditsView {
         creation_options.bracket_pair_colorization_options =
             BracketPairColorizationOptions { enabled: true, independent_color_pool_per_bracket_type: false };
         let preview_text_model =
-            services.views.create_preview_text_model(&editor.get_model().expect("o editor tem modelo").get_language_id(), creation_options);
+            services.preview_text_model_factory.create_preview_text_model(&editor.get_model().expect("o editor tem modelo").get_language_id(), creation_options);
         base.register(preview_text_model.clone());
 
         let logic = Rc::new(ViewLogic {
@@ -796,7 +764,7 @@ impl InlineEditsView {
         );
         base.register(deletion.clone());
 
-        let insertion = services.views.create_insertion_view(
+        let insertion = InlineEditsInsertionView::new(
             Rc::clone(&editor),
             ui_state.map(|state, _| {
                 let state = state?;
@@ -811,6 +779,7 @@ impl InlineEditsView {
                 }
             }),
             Rc::clone(&tab_action),
+            Rc::clone(&services.language_service),
         );
         base.register(insertion.clone());
 
@@ -842,10 +811,18 @@ impl InlineEditsView {
         base.register(custom_view.clone());
 
         let show_long_distance_hint = inline_suggest_options.map(|options, _| options.edits.show_long_distance_hint);
-        let long_distance_hint: IObservable<Option<Rc<dyn IInlineEditsViewHandle>>> = {
-            let (editor, preview_text_model, tab_action, ui_state, views) =
-                (Rc::clone(&editor), Rc::clone(&preview_text_model), Rc::clone(&tab_action), Rc::clone(&ui_state), Rc::clone(&services.views));
+        let long_distance_hint: IObservable<Option<Rc<InlineEditsLongDistanceHint>>> = {
+            let (editor, preview_text_model, tab_action, ui_state) =
+                (Rc::clone(&editor), Rc::clone(&preview_text_model), Rc::clone(&tab_action), Rc::clone(&ui_state));
             let (simple_model, inline_suggest_info) = (Rc::clone(&simple_model), Rc::clone(&inline_suggest_info));
+            let hint_services = LongDistanceHintServices {
+                theme_service: Rc::clone(&services.theme_service),
+                keybinding_service: Rc::clone(&services.keybinding_service),
+                accessibility_service: Rc::clone(&services.accessibility_service),
+                embedded_code_editor_factory: Rc::clone(&services.embedded_code_editor_factory),
+                gutter_indicator_host: Rc::clone(&services.gutter_indicator_host),
+                host: Rc::clone(&services.long_distance_hint_host),
+            };
             derived(move |reader| {
                 if !show_long_distance_hint.read(reader) {
                     return None;
@@ -868,7 +845,13 @@ impl InlineEditsView {
                         }))
                     })
                 };
-                let view = views.create_long_distance_hint(Rc::clone(&editor), view_state, Rc::clone(&preview_text_model), Rc::clone(&tab_action));
+                let view = InlineEditsLongDistanceHint::new(
+                    Rc::clone(&editor),
+                    view_state,
+                    Rc::clone(&preview_text_model),
+                    Rc::clone(&tab_action),
+                    hint_services.clone(),
+                );
                 reader.store().add(view.clone());
                 Some(view)
             })

@@ -1,13 +1,15 @@
 //! Porte de `src/vs/editor/contrib/inlineCompletions/browser/view/inlineEdits/inlineEditsViews/`: as views do inline
 //! edits (uma por forma de apresentar a edição).
 //!
-//! Esta fatia (4c-2, partes 1 a 4) traz `inlineEditsWordInsertView` ([`inline_edits_word_insert_view`]),
+//! Esta fatia (4c-2, partes 1 a 5) traz `inlineEditsWordInsertView` ([`inline_edits_word_insert_view`]),
 //! `inlineEditsCollapsedView` ([`inline_edits_collapsed_view`]), `inlineEditsDeletionView`
 //! ([`inline_edits_deletion_view`]), `jumpToView` ([`jump_to_view`]), `inlineEditsCustomView`
 //! ([`inline_edits_custom_view`]), `originalEditorInlineDiffView` ([`original_editor_inline_diff_view`]),
 //! `inlineEditsWordReplacementView` ([`inline_edits_word_replacement_view`]), `inlineEditsLineReplacementView`
-//! ([`inline_edits_line_replacement_view`]) e `inlineEditsSideBySideView` ([`inline_edits_side_by_side_view`], que usa o
-//! `EmbeddedCodeEditorWidget` de `embedded_code_editor_widget`). As demais views entram nas fatias seguintes.
+//! ([`inline_edits_line_replacement_view`]), `inlineEditsSideBySideView` ([`inline_edits_side_by_side_view`], que usa o
+//! `EmbeddedCodeEditorWidget` de `embedded_code_editor_widget`), `inlineEditsInsertionView`
+//! ([`inline_edits_insertion_view`], que cria o `GhostTextView`) e `longDistanceHint/` ([`long_distance_hint`]: a dica de
+//! longa distância e o editor de prévia dela).
 //!
 //! Notas de tradução comuns:
 //! - o `n.div({...}, [...]).keepUpdated(store)` do original monta um nó DOM que as views registram como widget de
@@ -28,11 +30,13 @@ use crate::observable_code_editor::IObservableOverlayWidget;
 pub mod inline_edits_collapsed_view;
 pub mod inline_edits_custom_view;
 pub mod inline_edits_deletion_view;
+pub mod inline_edits_insertion_view;
 pub mod inline_edits_line_replacement_view;
 pub mod inline_edits_side_by_side_view;
 pub mod inline_edits_word_insert_view;
 pub mod inline_edits_word_replacement_view;
 pub mod jump_to_view;
+pub mod long_distance_hint;
 pub mod original_editor_inline_diff_view;
 
 /// O `IObservableOverlayWidget` com `allowEditorOverflow: false` que as views desta pasta registram com
