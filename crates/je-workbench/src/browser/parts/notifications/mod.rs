@@ -5,4 +5,6 @@ pub mod notifications_actions;
 pub mod notifications_center;
 pub mod notifications_commands;
 pub mod notifications_list;
+pub mod notifications_toasts;
 pub mod notifications_viewer;
+pub mod pending_notification_toasts;

@@ -33,10 +33,9 @@
 //!   the rendered hover` não tem efeito e fica só a espera.
 //! - **Timers.** `runWithFakedTimers({ useFakeTimers: true }, ...)` é `run_with_faked_timers`.
 //!
-//! Caso que fica de fora: `should size the hover pointer as a border box so its centre matches the pointer size`, que lê o
-//! estilo calculado do `::after` do ponteiro (`box-sizing`, `width`, `height`, `transform-origin` de `hover.css`). O pintor
-//! nativo não tem CSS; o que o caso protege (o centro do ponteiro a 3px da borda) é medido por `should centre the hover
-//! pointer on its target for odd and even hover widths` e pelo caso vertical, que fixam a meia largura do ponteiro em 3.
+//! - **`getComputedStyle(pointer, '::after')`.** O pintor nativo não tem CSS: o `box-sizing`, o `width`, o `height` e o
+//!   `transform-origin` do `::after` de `hover.css` são a geometria que `HoverWidget::hover_pointer_caret` calcula (caixa com
+//!   borda de 6x6 e origem da rotação em 3x3).
 
 mod common;
 
@@ -888,6 +887,18 @@ fn should_position_the_hover_next_to_the_part_of_the_target_visible_within_the_c
     let partially_visible = layout_hover_x(Some((0.0, 0.0, 200.0, 400.0)));
     let not_visible = layout_hover_x(Some((400.0, 0.0, 200.0, 400.0)));
     assert_eq!((without_clipping_element, partially_visible, not_visible), (303.0, 203.0, 303.0));
+}
+
+#[test]
+fn should_size_the_hover_pointer_as_a_border_box_so_its_centre_matches_the_pointer_size() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let target = env.create_target();
+    let hover = env.show_hover("Pointer geometry", Some(target), pointer_hover(HoverPosition::Below, None, None));
+    let caret = env.widget_of(&hover).hover_pointer_caret().expect("the hover pointer should exist");
+
+    assert_eq!((caret.border_box, caret.width, caret.height, caret.transform_origin), (true, 6.0, 6.0, (3.0, 3.0)));
+    hover.dispose();
 }
 
 #[test]
