@@ -78,3 +78,6 @@ pub mod format;
 pub mod limit_indicator;
 
 pub mod accessibility;
+
+// Carrossel de imagens (`contrib/imageCarousel`): a entrada de editor, a configuração e as ações "Open in Images Preview".
+pub mod image_carousel;
