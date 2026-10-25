@@ -77,17 +77,6 @@ fn is_dash(unit: Option<&u16>) -> bool {
     unit == Some(&u16::from(b'-'))
 }
 
-/// A veracidade (`!!value`) de um valor JSON.
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => *n != 0.0 && !n.is_nan(),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
-
 /// `parse(content)`.
 fn parse(content: &str) -> Option<Value> {
     let mut errors = Vec::new();
@@ -97,7 +86,7 @@ fn parse(content: &str) -> Option<Value> {
 /// `parse(content) || {}`.
 fn parse_or_empty(content: &str) -> Value {
     match parse(content) {
-        Some(value) if is_truthy(&value) => value,
+        Some(value) if value.is_truthy() => value,
         _ => Value::Object(json::Object::new()),
     }
 }
@@ -183,9 +172,9 @@ fn get_ignored_settings_from_config(configuration_service: &dyn IConfigurationSe
 }
 
 fn get_ignored_settings_from_content(settings_content: &str) -> Dynamic {
-    if let Some(parsed) = parse(settings_content).filter(is_truthy) {
+    if let Some(parsed) = parse(settings_content).filter(Value::is_truthy) {
         for name in ["settingsSync.ignoredSettings", "sync.ignoredSettings"] {
-            if let Some(value) = property(Some(&parsed), &JsString::from(name)).filter(|value| is_truthy(value)) {
+            if let Some(value) = property(Some(&parsed), &JsString::from(name)).filter(|value| value.is_truthy()) {
                 return from_json(value);
             }
         }
@@ -220,7 +209,7 @@ pub fn update_ignored_settings(
     if !ignored_settings.is_empty() {
         let source_tree = parse_settings(source_content);
         let source = parse_or_empty(source_content);
-        let Some(target) = parse(&target_content).filter(is_truthy) else {
+        let Some(target) = parse(&target_content).filter(Value::is_truthy) else {
             return target_content;
         };
         let mut settings_to_add: Vec<&Node> = Vec::new();
@@ -522,7 +511,7 @@ struct CompareResult {
 
 fn compare(from: Option<&Value>, to: Option<&Value>, ignored: &[JsString]) -> CompareResult {
     let keys_of = |value: Vec<JsString>| -> Vec<JsString> { value.into_iter().filter(|key| !ignored.contains(key)).collect() };
-    let from = from.filter(|value| is_truthy(value));
+    let from = from.filter(|value| value.is_truthy());
     let from_keys = from.map_or_else(Vec::new, |from| keys_of(object_keys(Some(from))));
     let to_keys = keys_of(object_keys(to));
     let added: StringSet = to_keys.iter().filter(|key| !from_keys.contains(key)).map(|key| (key.clone(), ())).collect_set();

@@ -53,6 +53,7 @@ use je_platform::telemetry::telemetry::ITelemetryService;
 use je_platform::workspace_trust::IWorkspaceTrustManagementService;
 use je_storage::StorageValue;
 use je_widgets::tree::tree_types::ITreeElement;
+use je_base::json::is_serde_value_truthy;
 use serde_json::Value;
 
 use crate::contrib::preferences::common::preferences::{
@@ -694,7 +695,7 @@ impl SettingsEditor2 {
             let installed_extensions = this.services.extension_management_service.get_installed().await?;
             *this.installed_extension_ids.borrow_mut() = installed_extensions
                 .iter()
-                .filter(|extension| extension.manifest.contributes.as_ref().is_some_and(|contributes| !matches!(contributes.configuration, Value::Null | Value::Bool(false))))
+                .filter(|extension| extension.manifest.contributes.as_ref().is_some_and(|contributes| contributes.configuration.as_ref().is_some_and(is_serde_value_truthy)))
                 .map(|extension| extension.identifier.id.clone())
                 .collect();
             Ok(())

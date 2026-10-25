@@ -60,22 +60,12 @@ pub fn parse(entry: &IRemoteConsoleLog) -> ParsedLog {
     let mut stack = None;
     // `stackArgument && stackArgument.__$stack`: truthy.
     if let Some(Value::Object(last)) = parsed_arguments.last()
-        && let Some(Value::String(s)) = last.get("__$stack").filter(|v| is_truthy(v))
+        && let Some(Value::String(s)) = last.get("__$stack").filter(|v| v.is_truthy())
     {
         stack = Some(s.to_string_lossy());
         parsed_arguments.pop();
     }
     ParsedLog { args: parsed_arguments, stack }
-}
-
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => *n != 0.0 && !n.is_nan(),
-        Value::String(s) => !s.is_empty(),
-        _ => true,
-    }
 }
 
 fn frame_regexp() -> &'static RegExp {

@@ -25,6 +25,7 @@
 //!   não muda (o salvamento seguinte regrava o estado das janelas vivas de qualquer forma).
 //! - **`Math.round`** é [`js_round`] (arredonda meio para cima, como o JavaScript).
 
+use je_base::dynamic::Truthy;
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -545,12 +546,12 @@ pub fn restore_windows_state(data: &Dynamic) -> WindowsState {
     }
 
     let last_active_window = data.get_str("lastActiveWindow");
-    if is_truthy(&last_active_window) {
+    if last_active_window.is_truthy() {
         result.last_active_window = Some(restore_window_state(&last_active_window));
     }
 
     let last_plugin_development_host_window = data.get_str("lastPluginDevelopmentHostWindow");
-    if is_truthy(&last_plugin_development_host_window) {
+    if last_plugin_development_host_window.is_truthy() {
         result.last_plugin_development_host_window = Some(restore_window_state(&last_plugin_development_host_window));
     }
 
@@ -559,10 +560,6 @@ pub fn restore_windows_state(data: &Dynamic) -> WindowsState {
     }
 
     result
-}
-
-fn is_truthy(value: &Dynamic) -> bool {
-    je_base::dynamic::Truthy::is_truthy(value)
 }
 
 /// O texto de `key`, quando é um texto não vazio (o `if (windowState.backupPath)` do original).
@@ -579,14 +576,14 @@ fn restore_window_state(window_state: &Dynamic) -> WindowState {
     result.remote_authority = non_empty_text(window_state, "remoteAuthority");
 
     if let Some(folder) = non_empty_text(window_state, "folder") {
-        result.folder_uri = Some(URI::parse(&folder, false));
+        result.folder_uri = Some(URI::parse(folder.as_str(), false));
     }
 
     let workspace_identifier = window_state.get_str("workspaceIdentifier");
-    if is_truthy(&workspace_identifier) {
+    if workspace_identifier.is_truthy() {
         result.workspace = Some(WorkspaceIdentifier {
             id: non_empty_text(&workspace_identifier, "id").unwrap_or_default(),
-            config_path: URI::parse(&non_empty_text(&workspace_identifier, "configURIPath").unwrap_or_default(), false),
+            config_path: URI::parse(non_empty_text(&workspace_identifier, "configURIPath").unwrap_or_default().as_str(), false),
         });
     }
 

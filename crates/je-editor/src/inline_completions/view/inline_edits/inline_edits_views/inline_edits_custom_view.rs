@@ -271,7 +271,7 @@ impl InlineEditsCustomView {
     ) -> Rc<Self> {
         let base = Disposable::new();
         let on_did_click = Emitter::<InlineEditClickEvent>::new();
-        base.register(Rc::clone(&on_did_click));
+        base.register(on_did_click.clone());
 
         let is_hovered_value = observable_value::<bool, ()>("isHovered", false);
         let overlay_hovered = observable_value::<bool, ()>("overlayHovered", false);

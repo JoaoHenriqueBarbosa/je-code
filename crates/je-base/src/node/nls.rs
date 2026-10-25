@@ -18,6 +18,8 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::json::is_serde_value_truthy;
+
 use crate::path::{Environment, PathModule};
 use crate::performance::mark;
 
@@ -96,17 +98,6 @@ pub struct ResolveNlsConfigurationContext {
     pub os_locale: String,
 }
 
-/// `JS truthiness` de um valor JSON.
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
-}
-
 fn exists(path: &str) -> bool {
     Path::new(path).exists()
 }
@@ -147,7 +138,7 @@ fn generate(context: &ResolveNlsConfigurationContext, commit: &str, env: &dyn En
     let language_pack = &language_packs[&resolved_language];
     let main_language_pack_path = language_pack
         .get("translations")
-        .filter(|t| is_truthy(t))
+        .filter(|t| is_serde_value_truthy(t))
         .and_then(|t| t.get("vscode"))
         .and_then(Value::as_str);
     let (Some(hash), Some(main_language_pack_path)) = (language_pack.get("hash").and_then(Value::as_str), main_language_pack_path) else {
@@ -220,7 +211,7 @@ fn generate(context: &ResolveNlsConfigurationContext, commit: &str, env: &dyn En
         let module_translations = contents.get(module_id);
         for nls_key in nls_keys {
             let nls_key = nls_key.as_str().unwrap_or_default();
-            let translated = module_translations.and_then(|m| m.get(nls_key)).filter(|v| is_truthy(v));
+            let translated = module_translations.and_then(|m| m.get(nls_key)).filter(|v| is_serde_value_truthy(v));
             let fallback = default_messages.and_then(|m| m.get(nls_index)).cloned().unwrap_or(Value::Null);
             nls_result.push(translated.cloned().unwrap_or(fallback));
             nls_index += 1;
@@ -251,7 +242,7 @@ fn get_language_pack_configurations(user_data_path: &str, env: &dyn Environment)
 fn resolve_language_pack_language(language_packs: &serde_json::Map<String, Value>, locale: &str) -> Option<String> {
     let mut locale = locale;
     while !locale.is_empty() {
-        if language_packs.get(locale).is_some_and(is_truthy) {
+        if language_packs.get(locale).is_some_and(is_serde_value_truthy) {
             return Some(locale.to_owned());
         }
         match locale.rfind('-') {

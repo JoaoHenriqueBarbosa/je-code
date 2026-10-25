@@ -29,6 +29,7 @@
 //! - **`mock<ISetting>()`** é o `ISetting` com `..ISetting::default()`, e o `mock<Settings2EditorModel>` com `settingsGroups` é o
 //!   [`MockSettingsModel`].
 
+use je_workbench::services::configuration::common::experimental_settings::IExperimentalSettingsService;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -704,7 +705,7 @@ fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &
 
     let tree_services = SettingsTreeServices {
         configuration_service: configuration.clone(),
-        language_service: guard.add_rc(LanguageService::new(false)),
+        language_service: { let service = guard.add_rc(LanguageService::new(false)); service },
         user_data_profile_service: TestUserDataProfileService::new(),
         product_service: Rc::new(TestProductService::default()),
         environment_service: TestEnvironmentService::with_overrides(EnvironmentOverrides::default()),
@@ -718,7 +719,7 @@ fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &
         preferences_search_service: Rc::new(StubPreferencesSearchService),
         log_service: null_log(),
         storage_service,
-        workspace_trust_management_service: guard.add_rc(TestWorkspaceTrustManagementService::new(None, None)),
+        workspace_trust_management_service: { let service = guard.add_rc(TestWorkspaceTrustManagementService::new(None, None)); service },
         extension_service: TestExtensionService::new(),
         extension_management_service: Rc::new(StubExtensionManagementService),
         extension_gallery_service: Rc::new(StubExtensionGalleryService),
@@ -751,10 +752,11 @@ fn create_editor(guard: &LeakGuard, query: &str, advanced: bool, setting_keys: &
         order: None,
         extension_info: None,
     };
-    editor.set_default_settings_editor_model(guard.add_rc(Rc::new(MockSettingsModel {
+    let model = guard.add_rc(Rc::new(MockSettingsModel {
         base: EditorModel::new_inner(),
         groups: vec![group(Vec::new()), group(vec![ISettingsSection { title: None, settings: settings.clone() }])],
-    })));
+    }));
+    editor.set_default_settings_editor_model(model);
 
     let view_state = editor.view_state();
     {

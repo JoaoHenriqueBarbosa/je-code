@@ -451,17 +451,6 @@ fn is_object(obj: &Value) -> bool {
     matches!(obj, Value::Object(_) | Value::Array(_))
 }
 
-/// A verdade do JavaScript para o JSON.
-fn is_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => *n != 0.0 && !n.is_nan(),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(_) => true,
-    }
-}
-
 /// `!== undefined`: a propriedade existe (um `null` conta).
 fn is_defined(obj: &Value, name: &str) -> bool {
     property(obj, name).is_some()
@@ -472,7 +461,7 @@ pub fn is_authorization_protected_resource_metadata(obj: &Value) -> bool {
     if !is_object(obj) {
         return false;
     }
-    if !is_truthy(property(obj, "resource")) {
+    if !property(obj, "resource").is_some_and(Value::is_truthy) {
         return false;
     }
     if property(obj, "scopes_supported").is_some_and(|v| !matches!(v, Value::Array(_))) {
@@ -489,13 +478,13 @@ pub fn is_authorization_server_metadata(obj: &Value) -> Result<bool, Error> {
     if !is_object(obj) {
         return Ok(false);
     }
-    if !is_truthy(property(obj, "issuer")) {
+    if !property(obj, "issuer").is_some_and(Value::is_truthy) {
         return Err(Error::new("Authorization server metadata must have an issuer"));
     }
 
     for uri in URIS_TO_CHECK {
         let value = property(obj, uri);
-        if !is_truthy(value) {
+        if !value.is_some_and(Value::is_truthy) {
             continue;
         }
         let Some(Value::String(text)) = value else {
@@ -931,7 +920,7 @@ pub async fn fetch_dynamic_registration(server_metadata: &IAuthorizationServerMe
                 None => "undefined".to_owned(),
             };
             error_details = field("error");
-            if is_truthy(property(&error_response, "error_description")) {
+            if property(&error_response, "error_description").is_some_and(Value::is_truthy) {
                 error_details = format!("{error_details}: {}", field("error_description"));
             }
         }

@@ -351,7 +351,7 @@ impl OriginalEditorInlineDiffView {
         let base = Disposable::new();
         let owner = Rc::new(OwnerToken);
         let on_did_click = Emitter::<InlineEditClickEvent>::new();
-        base.register(Rc::clone(&on_did_click));
+        base.register(on_did_click.clone());
 
         let original_editor_obs = observable_code_editor(&original_editor);
 
