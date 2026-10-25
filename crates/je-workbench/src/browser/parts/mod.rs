@@ -26,3 +26,6 @@ pub mod activitybar;
 
 // A barra de título e o menu compacto (`titlebar`).
 pub mod titlebar;
+
+// A base das partes de composites (`compositePart.ts`).
+pub mod composite_part;

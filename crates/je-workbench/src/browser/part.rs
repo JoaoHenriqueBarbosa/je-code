@@ -128,7 +128,7 @@ pub trait PartBehavior {
 }
 
 /// `assertReturnsDefined`: o `Error` do original quando o valor falta.
-fn assert_returns_defined<T>(value: Option<T>) -> T {
+pub(crate) fn assert_returns_defined<T>(value: Option<T>) -> T {
     value.unwrap_or_else(|| errors::throw(Error::new("Assertion Failed: argument is undefined or null")))
 }
 
