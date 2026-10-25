@@ -191,21 +191,6 @@ pub struct EditorOptions {
     pub modal: Option<ModalEditorPartOptions>,
 }
 
-/// `TextEditorSelectionRevealType`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TextEditorSelectionRevealType {
-    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically.
-    Center = 0,
-    /// Option to scroll vertically or horizontally as necessary and reveal a range centered vertically only if it lies
-    /// outside the viewport.
-    CenterIfOutsideViewport = 1,
-    /// Option to scroll vertically or horizontally as necessary and reveal a range close to the top of the viewport, but
-    /// not quite at the top.
-    NearTop = 2,
-    /// Same as [`Self::NearTop`], only if it lies outside the viewport.
-    NearTopIfOutsideViewport = 3,
-}
-
 /// `ITextEditorSelection`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TextEditorSelection {

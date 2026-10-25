@@ -4117,6 +4117,7 @@ dependencies = [
  "je-extensions",
  "je-instantiation",
  "je-platform",
+ "je-render",
  "je-theme",
  "je-ui",
  "je-widgets",

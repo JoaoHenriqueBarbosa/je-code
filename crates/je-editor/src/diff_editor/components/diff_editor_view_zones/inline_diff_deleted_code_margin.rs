@@ -32,6 +32,7 @@ use je_platform::contextview::context_view::{AnchorTarget, ContextMenuRequest, I
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::config::editor_options::line_height::LINE_HEIGHT;
+use crate::cursor_common::CursorSimpleModel;
 use crate::config::editor_options::{EditorOption, Opt};
 use crate::diff::range_mapping::DetailedLineRangeMapping;
 use crate::diff_editor::components::diff_editor_view_zones::copy_selection::{
