@@ -3289,6 +3289,234 @@ pub fn tab_box_style(classes: &TabCssClasses, params: &TabSizingParams) -> TabBo
     }
 }
 
+//#region Geometria da ação e do `.tab-fill` (`tabs.css`, `connectedEditorTabs.css`, `multieditortabscontrol.css`)
+
+/// `width: 24px` do `.tab-actions` e do `.monaco-action-bar` sobrepostos à aba (`tabs.css`).
+const TAB_ACTIONS_OVERLAY_WIDTH: f64 = 24.0;
+/// `font-size`/`width`/`height` de `.action-label.codicon` (`multieditortabscontrol.css`, `actionbar.css`).
+const ACTION_ICON_SIZE: f64 = 16.0;
+
+/// As variáveis `--vscode-spacing-*` e `--vscode-strokeThickness` que as regras da aba leem.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModernSpacing {
+    pub size20: f64,
+    pub size40: f64,
+    pub size200: f64,
+    pub size240: f64,
+    pub size280: f64,
+    pub stroke: f64,
+}
+
+impl Default for ModernSpacing {
+    fn default() -> Self {
+        Self { size20: 2.0, size40: 4.0, size200: 20.0, size240: 24.0, size280: 28.0, stroke: 1.0 }
+    }
+}
+
+/// Uma caixa em coordenadas locais da aba (origem no canto superior esquerdo, texto da esquerda para a direita). A borda
+/// inferior pode passar da altura da aba (`bottom: calc(-1 * strokeThickness)`), e a esquerda pode ser negativa.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxRect {
+    pub left: f64,
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+}
+
+impl BoxRect {
+    pub fn width(&self) -> f64 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> f64 {
+        self.bottom - self.top
+    }
+
+    /// A mesma caixa num contêiner `dir=rtl` de largura `container_width`.
+    pub fn mirrored(&self, container_width: f64) -> Self {
+        Self { left: container_width - self.right, right: container_width - self.left, ..*self }
+    }
+}
+
+/// O que as regras de geometria leem além das classes da aba: o contêiner, a linha em que a aba está e as medidas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabBoxContext {
+    pub spacing: ModernSpacing,
+    /// `.modern-ui-connected-editor-tabs` na raiz (sem ele valem só as regras de `tabs.css`).
+    pub connected: bool,
+    /// `.modern-ui` na raiz: `connectedEditorTabs.css` recua o `fill` da linha única pelo traço.
+    pub modern_ui_root: bool,
+    /// `--editor-group-tab-height`.
+    pub editor_group_tab_height: f64,
+    /// `tabs-and-actions-container.wrapping` e `.connected-tab-upper-bar`.
+    pub wrapping: bool,
+    pub upper_bar: bool,
+    /// `.tab.connected-tab-upper-row`, `.tab.active`, `:hover`/`.hovered`/`:focus-within` e o início da linha
+    /// (`:first-child` ou depois de `.last-in-row`).
+    pub upper_row: bool,
+    pub active: bool,
+    pub hovered: bool,
+    pub starts_row: bool,
+    /// `.editor-group-container.active`: o `.action-label.codicon` só tem 2px de recuo no grupo ativo.
+    pub group_active: bool,
+    /// `getBoundingClientRect()` da aba, em px de layout.
+    pub tab_width: f64,
+    pub tab_height: f64,
+}
+
+impl Default for TabBoxContext {
+    fn default() -> Self {
+        Self {
+            spacing: ModernSpacing::default(),
+            connected: false,
+            modern_ui_root: false,
+            editor_group_tab_height: ModernSpacing::default().size240,
+            wrapping: false,
+            upper_bar: false,
+            upper_row: false,
+            active: false,
+            hovered: false,
+            starts_row: false,
+            group_active: true,
+            tab_width: 0.0,
+            tab_height: 0.0,
+        }
+    }
+}
+
+impl TabBoxContext {
+    /// `--modern-ui-connected-tab-row-height`: `tab-height + size40` e, na linha única fora da barra superior,
+    /// `tab-height + size40 * 2 - strokeThickness` (`connectedEditorTabs.css` L119 e L158). É também a altura da aba.
+    pub fn connected_row_height(&self) -> f64 {
+        let s = &self.spacing;
+        if !self.wrapping && !self.upper_bar { self.editor_group_tab_height + s.size40 * 2.0 - s.stroke } else { self.editor_group_tab_height + s.size40 }
+    }
+
+    /// `--modern-ui-connected-tab-fill-block-inset`: `size20` (L125), `0px` na linha única (L159) e, com `.modern-ui`,
+    /// `-strokeThickness` (L164).
+    pub fn connected_fill_block_inset(&self) -> f64 {
+        let s = &self.spacing;
+        match (!self.wrapping && !self.upper_bar, self.modern_ui_root) {
+            (true, true) => -s.stroke,
+            (true, false) => 0.0,
+            (false, _) => s.size20,
+        }
+    }
+
+    /// `--modern-ui-connected-tab-action-inset`.
+    pub fn connected_action_inset(&self) -> f64 {
+        let s = &self.spacing;
+        (self.connected_row_height() - self.connected_fill_block_inset() + s.stroke - s.size200) / 2.0
+    }
+
+    /// `--modern-ui-tab-action-fit-padding` do estilo conectado (L214).
+    pub fn connected_action_fit_padding(&self) -> f64 {
+        let s = &self.spacing;
+        (self.editor_group_tab_height + s.size40 * 2.0 + s.stroke - s.size200) / 2.0 + s.size240
+    }
+
+    /// `--modern-ui-tab-action-fit-padding`: `size280` e, no estilo conectado, a fórmula de L214.
+    pub fn action_fit_padding(&self) -> f64 {
+        if self.connected { self.connected_action_fit_padding() } else { self.spacing.size280 }
+    }
+
+    /// `--modern-ui-tab-action-padding` computado da aba: o recuo real do lado da ação. Na linha superior vale `size280`, ou a
+    /// fórmula do `fit-padding` com a aba suja ou fixada (L702 e L742). Fora da linha superior e da quebra vale
+    /// `inset + size240` (L521) e na quebra `size280` (L121).
+    pub fn action_padding(&self, classes: &TabCssClasses) -> f64 {
+        let s = &self.spacing;
+        if !self.connected {
+            return s.size280;
+        }
+        if self.upper_row {
+            return if (classes.dirty || classes.sticky) && !classes.sticky_compact { self.connected_action_fit_padding() } else { s.size280 };
+        }
+        if self.wrapping {
+            return s.size280;
+        }
+
+        self.connected_action_inset() + s.size240
+    }
+}
+
+/// A caixa do `.tab-actions` e a do `.action-label` dentro dela.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabActionGeometry {
+    pub actions: BoxRect,
+    /// `borderLeftWidth` e `borderRightWidth` do `.tab-actions`.
+    pub border_left: f64,
+    pub border_right: f64,
+    pub label: BoxRect,
+    /// `paddingTop`, `paddingRight`, `paddingBottom`, `paddingLeft` do `.action-label`.
+    pub label_padding: [f64; 4],
+}
+
+/// A geometria da ação de uma aba (`tabs.css` L505 a L538, `connectedEditorTabs.css` L507 a L528, L734 a L740 e L807), ou
+/// `None` com o `.tab-actions` em `display: none`. O `.tab-actions` cobre a altura da aba (`top: 0; bottom: 0`) com
+/// `border-block` de `strokeThickness`, e o `.action-label` fica centrado no `.actions-container` do `.monaco-action-bar` de 24px.
+pub fn tab_action_geometry(classes: &TabCssClasses, ctx: &TabBoxContext) -> Option<TabActionGeometry> {
+    if classes.tab_actions_hidden() {
+        return None;
+    }
+    let s = &ctx.spacing;
+    let (box_left, border_left, border_right) = match (classes.tab_actions_left, ctx.connected) {
+        // `left: 0`, `margin-inline: size20` e `border-left` de L807 (a regra com o `.monaco-scrollable-element` vence a da linha superior)
+        (true, _) => (s.size20, s.stroke, 0.0),
+        // `right: inset - size20` (L514 e L527), ou `size20` na linha superior (L735); `border-inline-width: 0` e `margin-inline: 0`
+        (false, true) => {
+            let offset = if ctx.upper_row { s.size20 } else { ctx.connected_action_inset() - s.size20 };
+            (ctx.tab_width - offset - TAB_ACTIONS_OVERLAY_WIDTH, 0.0, 0.0)
+        }
+        // `right: 0` com `margin: 0 size20` e `border-right` (tabs.css L521)
+        (false, false) => (ctx.tab_width - s.size20 - TAB_ACTIONS_OVERLAY_WIDTH, 0.0, s.stroke),
+    };
+    let top = if !ctx.connected && classes.dirty_border_top { s.size20 } else { 0.0 };
+    let actions = BoxRect { left: box_left, top, right: box_left + TAB_ACTIONS_OVERLAY_WIDTH, bottom: ctx.tab_height };
+
+    let padding = if ctx.group_active { 2.0 } else { 3.0 };
+    let size = ACTION_ICON_SIZE + padding * 2.0;
+    let label_left = box_left + border_left + (TAB_ACTIONS_OVERLAY_WIDTH - size) / 2.0;
+    let label_top = (actions.top + actions.bottom - size) / 2.0;
+    let label = BoxRect { left: label_left, top: label_top, right: label_left + size, bottom: label_top + size };
+
+    Some(TabActionGeometry { actions, border_left, border_right, label, label_padding: [padding; 4] })
+}
+
+/// `getBoundingClientRect()` do `.tab-fill`. `tabs.css` L148 dá `inset: 0 size20`; o estilo conectado troca o recuo horizontal
+/// pelo `--modern-ui-connected-tab-fill-inline-inset` (0 na aba ativa fora da linha superior, `size20` nas demais, L220 e
+/// L237), a aba ativa que abre a linha cola na borda (`left: 0`, ou `-size20` na quebra, L721 a L731) e o recuo vertical
+/// segue o `fill-block-inset` e, nas inativas, a altura da linha (L221, L231, L249 e L253).
+pub fn tab_fill_rect(ctx: &TabBoxContext) -> BoxRect {
+    let s = &ctx.spacing;
+    if !ctx.connected {
+        return BoxRect { left: s.size20, top: 0.0, right: ctx.tab_width - s.size20, bottom: ctx.tab_height };
+    }
+
+    let inline_inset = if ctx.upper_row || !ctx.active { s.size20 } else { 0.0 };
+    let mut left = inline_inset;
+    if ctx.active && !ctx.upper_row && ctx.starts_row {
+        left = if ctx.wrapping { -s.size20 } else { 0.0 };
+    }
+    let block_inset = ctx.connected_fill_block_inset();
+    let row_height = ctx.connected_row_height();
+    let (top, bottom) = if ctx.upper_row {
+        (block_inset, ctx.tab_height - block_inset)
+    } else if ctx.active {
+        (block_inset, ctx.tab_height + s.stroke)
+    } else if ctx.hovered && !ctx.wrapping && !ctx.upper_bar {
+        (0.0, ctx.tab_height + s.stroke)
+    } else if !ctx.wrapping && !ctx.upper_bar {
+        let inset = (row_height - ctx.editor_group_tab_height) / 2.0;
+        (inset, ctx.tab_height - inset)
+    } else {
+        (block_inset, ctx.tab_height - (row_height - ctx.editor_group_tab_height - block_inset))
+    };
+
+    BoxRect { left, top, right: ctx.tab_width - inline_inset, bottom }
+}
+
+//#endregion
+
 //#region Traço do `.tab-fill` em alto contraste (`tabs.css` e `connectedEditorTabs.css`)
 
 /// Um lado da borda do `.tab-fill`. `border-inline-color` declara [`StrokeSide::Right`] e [`StrokeSide::Left`].
