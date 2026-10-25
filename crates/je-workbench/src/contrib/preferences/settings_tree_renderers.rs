@@ -1,27 +1,31 @@
-//! Porte parcial de `src/vs/workbench/contrib/preferences/browser/settingsTree.ts`, linhas 856 a 1777 (e o que o template
+//! Porte parcial de `src/vs/workbench/contrib/preferences/browser/settingsTree.ts`, linhas 856 a 2208 (e o que o template
 //! delas usa de fora dessa faixa): a base [`AbstractSettingRenderer`] (o template comum com título, categoria, descrição em
 //! Markdown, indicadores, barra de ferramentas, mensagem de depreciação, `renderSettingElement`, o rastreio de foco, a ordem de
 //! tabulação e os eventos), o [`SettingGroupRenderer`], o [`SettingNewExtensionsRenderer`], o [`SettingComplexRenderer`], o
 //! [`SettingComplexObjectRenderer`], o [`SettingArrayRenderer`], o [`AbstractSettingObjectRenderer`] com o
-//! [`SettingObjectRenderer`] e o [`SettingBoolObjectRenderer`], e o [`SettingIncludeExcludeRenderer`] com o
-//! [`SettingExcludeRenderer`] e o [`SettingIncludeRenderer`], com os tipos de template, os eventos (`ISettingChangeEvent`,
-//! `ISettingLinkClickEvent`, `HeightChangeParams`) e os identificadores de template (`SETTINGS_*_TEMPLATE_ID`, linhas 792 a
-//! 806).
+//! [`SettingObjectRenderer`] e o [`SettingBoolObjectRenderer`], o [`SettingIncludeExcludeRenderer`] com o
+//! [`SettingExcludeRenderer`] e o [`SettingIncludeRenderer`] (fatias 1 e 2), e os renderizadores de valor simples da fatia 3: o
+//! [`AbstractSettingTextRenderer`] com o [`SettingTextRenderer`] e o [`SettingMultilineTextRenderer`], o [`SettingEnumRenderer`],
+//! o [`SettingNumberRenderer`], o [`SettingBoolRenderer`] e o [`SettingsExtensionToggleRenderer`] (linhas 1778 a 2208), com os
+//! tipos de template, os eventos (`ISettingChangeEvent`, `ISettingLinkClickEvent`, `HeightChangeParams`) e os identificadores de
+//! template (`SETTINGS_*_TEMPLATE_ID`, linhas 792 a 806).
 //!
-//! Ficam para a fatia seguinte (a parte de `settingsTree.ts` que vem depois da linha 1777): os renderizadores de texto
-//! (`AbstractSettingTextRenderer`, o de texto, o de multilinha), de enum, de número, de bool e do toggle de extensão, o
-//! `SettingTreeRenderers`, o delegado de alturas, o provedor de acessibilidade (o `getAriaLabel` da linha, linhas 2640 a 2665) e o
-//! `SettingsTree`. Os serviços que só esses renderizadores leem (`IExtensionsWorkbenchService`, `ITelemetryService`,
-//! `IExtensionService`, `IProductService`) entram no [`SettingRendererServices`] com a fatia que os usa.
+//! Ficam para a fatia seguinte (a parte de `settingsTree.ts` que vem depois da linha 2208): o `SettingTreeRenderers`, o delegado
+//! de alturas, o provedor de acessibilidade (o `getAriaLabel` da linha, linhas 2640 a 2665) e o `SettingsTree`. Os serviços que só
+//! esses renderizadores leem (`IExtensionsWorkbenchService`, `IExtensionService`, `IProductService`) entram no
+//! [`SettingRendererServices`] com a fatia que os usa; o `ITelemetryService` entrou com a fatia 3 (o toggle de extensão registra
+//! `ManageExtensionClick` e `DismissExtensionClick`).
 //!
 //! De fora da faixa, porque o template da faixa os chama: `cleanRenderedMarkdown` (em `settings_markdown_view`),
 //! `fixSettingLinks` (linhas 2426 a 2435, [`fix_setting_links`]; não é o homônimo de `preferences_models.rs`, que é o de
 //! `preferencesModels.ts`), `getObjectDisplayValue` com os auxiliares que ele usa (linhas 124 a 256,
 //! [`get_object_display_value`]), `renderValidations` do complexo (linhas 1275 a 1284), `renderArrayValidations` (linhas 2386
-//! a 2411), `addChildrenToTabOrder` com `removeChildrenFromTabOrder` (linhas 821 a 849) e os auxiliares de valor dos
-//! renderizadores desta fatia: `getIncludeExcludeDisplayValue`, `areAllPropertiesDefined`, `getBoolObjectDisplayValue`,
-//! `createArraySuggester`, `createObjectKeySuggester`, `createObjectValueSuggester`, `isNonNullableNumericType`,
-//! `parseNumericObjectValues`, `getListDisplayValue` e `getShowAddButtonList` (linhas 83 a 122 e 258 a 465).
+//! a 2411), `renderValidations` de texto e número (linhas 2365 a 2384, [`TextValidator`]), `addChildrenToTabOrder` com
+//! `removeChildrenFromTabOrder` (linhas 821 a 849), `escapeInvisibleChars` (linhas 2437 a 2441, a de `preferences_models.rs`,
+//! que é a mesma função) e os auxiliares de valor dos renderizadores desta fatia: `getIncludeExcludeDisplayValue`,
+//! `areAllPropertiesDefined`, `getBoolObjectDisplayValue`, `createArraySuggester`, `createObjectKeySuggester`,
+//! `createObjectValueSuggester`, `isNonNullableNumericType`, `parseNumericObjectValues`, `getListDisplayValue` e
+//! `getShowAddButtonList` (linhas 83 a 122 e 258 a 465).
 //!
 //! Divergências:
 //! - **Herança.** `AbstractSettingRenderer` é uma estrutura concreta, e `SettingComplexRenderer` e `SettingComplexObjectRenderer`
@@ -92,6 +96,44 @@
 //!   substitui a lista do widget, o mesmo efeito.
 //! - **`splice(-1, 1)`.** O `newItems.splice(itemToDelete, 1)` de remoção de objeto, com `itemToDelete` igual a `-1`, apaga o
 //!   último item no JavaScript; o porte mantém esse caso.
+//! - **Campo de texto (fatia 3).** O `InputBox` do `je-widgets` é de linha única: `flexibleHeight`, `flexibleWidth` e
+//!   `flexibleMaxHeight` (o `<textarea>` do multilinha) não existem e o `onDidHeightChange` nunca dispara. Por isso o
+//!   `useMultiline` de `renderTemplate`, que só alimentava `flexibleHeight`, não é parâmetro, e o multilinha difere do texto só
+//!   no `renderValue` (o ouvinte de altura e a atualização do valor do elemento) e na ausência do ouvinte das setas. `type:
+//!   'number'` e `step` também não existem: o campo de número é um campo de texto, e o valor dele é lido como o `<input
+//!   type=number>` o dá (vazio quando o texto não é um número de ponto flutuante válido do HTML, [`number_input_value`]). O
+//!   `step` só mudava as setas de rotação, que o CSS esconde, e não tem efeito.
+//! - **Herança (fatia 3).** `AbstractSettingTextRenderer` é uma estrutura que envolve o [`AbstractSettingRenderer`], e o
+//!   [`SettingTextRenderer`] e o [`SettingMultilineTextRenderer`] a envolvem (cada um dá `Deref` ao anterior); o `renderValue`
+//!   protegido do abstrato é [`AbstractSettingTextRenderer::render_value`], que o multilinha chama como o `super.renderValue`.
+//!   O `renderTemplate` do número é igual ao do texto salvo as opções e a classe, então os dois chamam o mesmo
+//!   [`render_text_item_template`], e o `renderValidations` e o layout também são um só para os dois.
+//! - **Validação de texto.** O `inputElement.parentElement` do `aria-label` é o pai do nó do campo. O [`TextValidator`] guarda um
+//!   `Weak` do campo, para o `onChange` do template (que o ouvinte do campo lê) não fechar um ciclo.
+//! - **Medidas (fatia 3).** O controle de texto tem `width: 420px` com `flex-shrink` e o de número `min-width: 200px`;
+//!   o `<select>` do enum tem `width: 320px` e, sendo o mínimo do flex o conteúdo, não encolhe; a mensagem de validação absoluta
+//!   tem `width: 420px` (texto) e `width: 200px` (número). NÃO MEDIDO contra o oráculo: o piso de encolhimento do controle de
+//!   texto (aqui, a largura do texto), a altura de 26 px e o `padding: 2px 6px` de `.setting-item-contents .monaco-select-box`
+//!   (o `SelectBox` usa a medida natural dele), a folga de linha dos botões inline-block do toggle de extensão e a quebra de
+//!   linha da mensagem de validação (aqui ela fica numa linha só).
+//! - **Enum.** O `SelectBox` é o customizado (o `<select>` nativo não existe, ver `select_box.rs`), então `useCustomDrawn` não
+//!   tem efeito e o `selectElement` é o nó dele (`SelectBox::select_element`). A descrição em Markdown de cada opção aparece
+//!   como texto (o widget não tem renderizador, e por isso o `descriptionMarkdownActionHandler`, que abria o link no
+//!   `IOpenerService`, não existe). O `DisposableStore` local que `renderValue` cria e não usa não existe. `decoratorRight` e
+//!   `detail` vazios do original são `None` (a string vazia é falsa para o widget). O `enumDescriptionElement` é o bloco vazio
+//!   do original, de altura zero, logo depois da descrição.
+//! - **Bool.** O template do original monta o DOM à mão (`.setting-item-value-description` com o controle e a descrição,
+//!   sem o contêiner de valor comum). Aqui o [`SettingBoolRenderer`] usa o template comum e o reorganiza para o mesmo DOM: a
+//!   descrição vai para dentro do `value_element` (o `.setting-item-value-description`), depois do controle
+//!   (`.setting-item-bool-control`), e o `value_element` passa para antes do indicador de modificação. O `Toggle` com o ícone
+//!   `check` é o `Checkbox` de `je-widgets` (ver `settings_widgets.rs`), com a classe `setting-value-checkbox` e as cores de
+//!   `settings.checkbox*`. Como o `.monaco-custom-toggle` é `float: left`, o controle não ocupa altura e a descrição (um
+//!   `display: flex` vizinho do float) fica `18px + 9px` à direita: [`AbstractSettingRenderer::layout_setting_item`] trata o tipo
+//!   `bool` assim. O `closest('a')` do clique na descrição é o antepassado com papel `Link`.
+//! - **Toggle de extensão.** `ITelemetryService.publicLog2` é `public_log2` do serviço no [`SettingRendererServices`]. Os dois
+//!   botões são `inline-block` depois do último filho em fluxo do contêiner: a altura deles entra na linha pelo
+//!   [`ISettingItemTemplate::tail_height`]. O `displayExtensionId!` é sempre definido para este tipo de valor (o modelo só o
+//!   escolhe quando o id existe), então a ausência encerra o `renderValue`.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -116,9 +158,11 @@ use je_platform::accessibility::accessibility_service::IAccessibilityHost;
 use je_platform::commands::commands::ICommandService;
 use je_platform::configuration::get_language_tag_setting_plain_key;
 use je_platform::configuration::registry::{ConfigurationDefaultSource, ConfigurationDefaultValueSource, ConfigurationScope};
-use je_platform::js::to_number;
+use je_platform::js::{parse_float, to_number};
 use je_platform::keybinding::keybinding::IKeybindingService;
 use je_platform::opener::opener::{AllowCommands, IOpenerService, OpenOptions, OpenResource};
+use je_platform::telemetry::telemetry::ITelemetryService;
+use je_platform::terminal::shell_integration_addon::parse_int;
 use je_platform::user_data_sync::settings_merge::get_ignored_settings;
 use je_platform::user_data_sync::user_data_sync::{IUserDataSyncEnablementService, get_default_ignored_settings};
 use je_render::Rgba;
@@ -127,12 +171,15 @@ use je_theme::ColorTheme;
 use je_ui::{Border, Content, Cursor, EventKind, NodeId, Role, Tree, Ui};
 use je_widgets::button::{Button, ButtonLabel, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
 use je_widgets::context_view_api::IContextMenuProvider;
-use je_widgets::dom::{FocusTracker, StandardKeyboardEvent, clear_node, create_el};
+use je_widgets::dom::{FocusTracker, StandardKeyboardEvent, clear_node, create_detached_el, create_el};
 use je_widgets::highlighted_label::HighlightedLabelStyles;
 use je_widgets::hover_api::{HoverContent, HoverTarget, IHoverOptions};
+use je_widgets::input_box::{InputBox, InputBoxOptions, InputBoxStyles, default_input_box_styles};
 use je_widgets::list::list_types::TemplateData;
+use je_widgets::select_box::{ISelectBoxDelegate, ISelectBoxOptions, ISelectOptionItem, SelectBox};
 use je_widgets::simple_icon_label::SimpleIconLabel;
 use je_widgets::text::{UI_FONT_SIZE, WORKBENCH_LINE_HEIGHT, ellipsize, measure_text, ui_font};
+use je_widgets::toggle::Checkbox;
 use je_widgets::toolbar::{IToolBarOptions, ToolBar};
 use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::object_tree_model::ObjectTreeModel;
@@ -154,6 +201,7 @@ use crate::contrib::preferences::settings_widgets::{
 };
 use crate::services::configuration::common::configuration::{APPLY_ALL_PROFILES_SETTING, IWorkbenchConfigurationService};
 use crate::services::preferences::preferences::{ISetting, SettingSchemaType, SettingValueType};
+use crate::services::preferences::preferences_models::escape_invisible_chars;
 use crate::services::preferences::preferences_validation::get_invalid_type_error;
 
 // ---- identificadores de template (linhas 792 a 806) ------------------------------------------------------------------------
@@ -225,6 +273,17 @@ const GROUP_PADDING: f64 = 10.0;
 const GROUP_PADDING_LEFT: f64 = 15.0;
 /// `.setting-item-new-extensions .settings-new-extensions-button { margin-bottom: 15px }`.
 const NEW_EXTENSIONS_MARGIN_BOTTOM: f64 = 15.0;
+/// `.setting-item.setting-item-text .setting-item-control { width: 420px }` (e a mensagem de validação do texto).
+const TEXT_CONTROL_WIDTH: f64 = 420.0;
+/// `.setting-item-number .setting-item-value > .setting-item-control { min-width: 200px }` (e a mensagem de validação do número).
+const NUMBER_CONTROL_WIDTH: f64 = 200.0;
+/// `.setting-item-enum .setting-item-value > .setting-item-control > select { width: 320px }`.
+const ENUM_SELECT_WIDTH: f64 = 320.0;
+/// `.setting-item-bool .setting-value-checkbox { height: 18px; width: 18px; margin-right: 9px }`.
+const BOOL_CHECKBOX_SIZE: f64 = 18.0;
+const BOOL_CHECKBOX_MARGIN_RIGHT: f64 = 9.0;
+/// `.setting-item-extension-dismiss-button { margin-left: 8px }`.
+const EXTENSION_DISMISS_MARGIN_LEFT: f64 = 8.0;
 
 /// O `isIOS` do original (ver o `//!`).
 const IS_IOS: bool = false;
@@ -307,6 +366,9 @@ pub struct ISettingItemTemplate {
     /// A mensagem de validação que fica em fluxo entre a descrição e o valor (`setting-item-list`); os renderizadores de array e
     /// de objeto a registram (ver o `//!`).
     pub flow_validation_message: Cell<Option<NodeId>>,
+    /// A altura do que vem depois da mensagem de depreciação, em fluxo (os botões `inline-block` do toggle de extensão); o
+    /// renderizador a registra antes do layout e [`AbstractSettingRenderer::layout_setting_item`] a soma ao conteúdo.
+    pub tail_height: Cell<f64>,
 }
 
 /// `ISettingComplexItemTemplate`.
@@ -407,6 +469,8 @@ pub struct SettingRendererStyles {
     pub validation_error_background: Option<Rgba>,
     pub validation_error_foreground: Rgba,
     pub validation_error_border: Option<Rgba>,
+    /// `getInputBoxStyle({ inputBackground: settingsNumberInputBackground, ... })` (`settingsNumberInputBoxStyles`).
+    pub number_input_box: InputBoxStyles,
     pub markdown: MarkdownViewStyles,
 }
 
@@ -414,6 +478,10 @@ impl SettingRendererStyles {
     pub fn from_theme(theme: &ColorTheme) -> Self {
         let color = |id: &str| theme.get_color(id);
         let foreground = color("foreground").unwrap_or(Rgba::opaque(0xcc, 0xcc, 0xcc));
+        let mut number_input_box = default_input_box_styles(theme);
+        number_input_box.input_background = color("settings.numberInputBackground");
+        number_input_box.input_foreground = color("settings.numberInputForeground");
+        number_input_box.input_border = color("settings.numberInputBorder");
         Self {
             foreground,
             header_foreground: color("settings.headerForeground").unwrap_or(foreground),
@@ -424,6 +492,7 @@ impl SettingRendererStyles {
             validation_error_background: color("inputValidation.errorBackground"),
             validation_error_foreground: color("inputValidation.errorForeground").unwrap_or(foreground),
             validation_error_border: color("inputValidation.errorBorder"),
+            number_input_box,
             markdown: MarkdownViewStyles::from_theme(theme),
         }
     }
@@ -446,6 +515,8 @@ pub struct SettingRendererServices {
     pub markdown_environment: Rc<OwnedMarkdownEnvironment>,
     /// `aria.alert` e `aria.status` (o `renderArrayValidations` anuncia o erro de validação).
     pub accessibility_host: Rc<dyn IAccessibilityHost>,
+    /// `ITelemetryService` (o toggle de extensão registra `ManageExtensionClick` e `DismissExtensionClick`).
+    pub telemetry_service: Rc<dyn ITelemetryService>,
 }
 
 impl SettingRendererServices {
@@ -916,6 +987,11 @@ impl AbstractSettingRenderer {
         self.on_apply_filter.event()
     }
 
+    /// `this._register(new Emitter<T>())` das subclasses: o emissor é descartado com o renderizador.
+    pub(crate) fn register_emitter<T: 'static>(&self) -> Rc<Emitter<T>> {
+        registered_emitter(&self.base)
+    }
+
     /// `hoverService.setupDelayedHover(target, { content })`.
     fn setup_text_hover(&self, target: NodeId, content: String) -> je_base::lifecycle::DisposableRef {
         self.services.widgets.hover_service.setup_delayed_hover(target, Rc::new(move || IHoverOptions::new(HoverContent::Text(content.clone()), HoverTarget::Node(target))), None)
@@ -1020,6 +1096,7 @@ impl AbstractSettingRenderer {
             height: Cell::new(0.0),
             content_bottom: Cell::new(0.0),
             flow_validation_message: Cell::new(None),
+            tail_height: Cell::new(0.0),
         };
 
         // Prevent clicks from being handled by list
@@ -1329,7 +1406,11 @@ impl AbstractSettingRenderer {
         let text_width = (inner_width - 2.0 * ITEM_PADDING_X).max(0.0);
 
         // As vistas de Markdown medem a si mesmas (elas mexem na árvore): antes de abrir o empréstimo abaixo.
-        let description_height = template.description_view.borrow().as_ref().map_or(0.0, |view| view.layout(text_width));
+        let is_bool = template.type_class == "bool";
+        // No `bool` a descrição fica ao lado da caixa de marcação (ver o `//!`).
+        let description_x = if is_bool { BOOL_CHECKBOX_SIZE + BOOL_CHECKBOX_MARGIN_RIGHT } else { 0.0 };
+        let description_width = (text_width - description_x).max(0.0);
+        let description_height = template.description_view.borrow().as_ref().map_or(0.0, |view| view.layout(description_width));
         let (is_deprecated, is_deprecated_info) = {
             let tree = ui.tree();
             (tree.has_class(template.container_element, "is-deprecated"), tree.has_class(template.container_element, "is-deprecated-info"))
@@ -1360,26 +1441,34 @@ impl AbstractSettingRenderer {
         tree.set_bounds(template.title_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + title_width.min(text_width), y + title_height));
         y += title_height + DESCRIPTION_MARGIN_TOP;
 
-        // descrição
-        tree.set_bounds(template.description_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + description_height));
-        y += description_height;
+        if is_bool {
+            // `.setting-item-value-description`: o controle (um float) e a descrição lado a lado, sem o `margin-top` do valor
+            tree.set_bounds(template.value_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + description_height));
+            tree.set_bounds(template.description_element, Rect::new(description_x, 0.0, description_x + description_width, description_height));
+            tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, BOOL_CHECKBOX_SIZE, BOOL_CHECKBOX_SIZE));
+            y += description_height;
+        } else {
+            // descrição
+            tree.set_bounds(template.description_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + description_height));
+            y += description_height;
 
-        // a mensagem de validação em fluxo (`position: static; margin-top: 1rem` em `.setting-item-list`)
-        if let Some(message) = template.flow_validation_message.get()
-            && tree.style(message).visible
-        {
-            y += VALIDATION_MARGIN_TOP;
-            let height = line_height + 2.0 * (VALIDATION_PADDING + VALIDATION_BORDER);
-            tree.set_bounds(message, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + height));
-            style_validation_message(&mut tree, message, styles);
-            y += height;
+            // a mensagem de validação em fluxo (`position: static; margin-top: 1rem` em `.setting-item-list`)
+            if let Some(message) = template.flow_validation_message.get()
+                && tree.style(message).visible
+            {
+                y += VALIDATION_MARGIN_TOP;
+                let height = line_height + 2.0 * (VALIDATION_PADDING + VALIDATION_BORDER);
+                tree.set_bounds(message, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + height));
+                style_validation_message(&mut tree, message, styles);
+                y += height;
+            }
+
+            // valor
+            y += VALUE_MARGIN_TOP;
+            tree.set_bounds(template.value_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + control_size.1));
+            tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, control_size.0, control_size.1));
+            y += control_size.1;
         }
-
-        // valor
-        y += VALUE_MARGIN_TOP;
-        tree.set_bounds(template.value_element, Rect::new(ITEM_PADDING_X, y, ITEM_PADDING_X + text_width, y + control_size.1));
-        tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, control_size.0, control_size.1));
-        y += control_size.1;
 
         // depreciação
         if is_deprecated {
@@ -1397,6 +1486,7 @@ impl AbstractSettingRenderer {
             y += height;
         }
 
+        y += template.tail_height.get();
         let content_bottom = y;
         y += bottom_padding;
 
@@ -1420,6 +1510,23 @@ impl AbstractSettingRenderer {
         template.height.set(y);
         template.content_bottom.set(content_bottom);
         y
+    }
+
+    /// `.setting-item-validation-message` absoluta, logo abaixo do conteúdo (sem mudar a altura da linha), com a largura do texto
+    /// mais o `padding: 5px` e a borda, ou a `width` fixa do CSS (`box-sizing: border-box`) de `width`. Chamada depois de
+    /// [`Self::layout_setting_item`].
+    pub fn place_validation_message(&self, template: &ISettingItemTemplate, element: NodeId, width: Option<f64>) {
+        let ui = self.services.ui();
+        let mut tree = ui.tree_mut();
+        if !tree.style(element).visible {
+            return;
+        }
+        let line_height = self.services.styles.markdown.line_height;
+        let inset = VALIDATION_PADDING + VALIDATION_BORDER;
+        let width = width.unwrap_or_else(|| node_extent(&tree, element) + 2.0 * inset);
+        let top = template.content_bottom.get() - VALIDATION_BORDER;
+        tree.set_bounds(element, Rect::new(ITEM_PADDING_X, top, ITEM_PADDING_X + width, top + line_height + 2.0 * inset));
+        style_validation_message(&mut tree, element, &self.services.styles);
     }
 }
 
@@ -1660,22 +1767,6 @@ impl SettingComplexRenderer {
         }
     }
 
-    /// `.setting-item-validation-message` absoluta, logo abaixo do conteúdo (sem mudar a altura da linha).
-    fn place_validation_message(&self, template: &ISettingComplexItemTemplate) {
-        let ui = self.services.ui();
-        let mut tree = ui.tree_mut();
-        let element = template.validation_error_message_element;
-        if !tree.style(element).visible {
-            return;
-        }
-        let line_height = self.services.styles.markdown.line_height;
-        let text_width = node_extent(&tree, element);
-        let inset = VALIDATION_PADDING + VALIDATION_BORDER;
-        let top = template.content_bottom.get() - VALIDATION_BORDER;
-        tree.set_bounds(element, Rect::new(ITEM_PADDING_X, top, ITEM_PADDING_X + text_width + 2.0 * inset, top + line_height + 2.0 * inset));
-        style_validation_message(&mut tree, element, &self.services.styles);
-    }
-
     /// O layout da linha complexa: o botão de editar é o controle (`.setting-item-control`), e a mensagem de validação fica
     /// abaixo do conteúdo. Devolve a altura da linha.
     pub fn layout(&self, template: &ISettingComplexItemTemplate) -> f64 {
@@ -1684,7 +1775,7 @@ impl SettingComplexRenderer {
         let button_width = node_extent(&ui.tree(), template.button);
         ui.tree_mut().set_bounds(template.button, Rect::new(0.0, 0.0, button_width, line_height));
         let height = self.layout_setting_item(&template.common, (button_width, line_height));
-        self.place_validation_message(template);
+        self.place_validation_message(&template.common, template.validation_error_message_element, None);
         height
     }
 }
@@ -1783,7 +1874,7 @@ impl SettingComplexObjectRenderer {
         }
         let control_height = list_height + if button_visible { COMPLEX_BUTTON_MARGIN_TOP + line_height } else { 0.0 };
         let height = self.layout_setting_item(&template.common, (text_width, control_height));
-        self.place_validation_message(&template.complex);
+        self.place_validation_message(&template.common, template.validation_error_message_element, None);
         height
     }
 }
@@ -2980,5 +3071,885 @@ pub struct SettingIncludeRenderer;
 impl SettingIncludeRenderer {
     pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<SettingIncludeExcludeRenderer> {
         SettingIncludeExcludeRenderer::new(services, setting_actions, disposable_action_factory, false)
+    }
+}
+
+// ---- campo de texto e de número: template, validação e layout (linhas 1781 a 1810, 1999 a 2022 e 2365 a 2384) -----------------
+
+/// `ISettingTextItemTemplate` (e `ISettingNumberItemTemplate`, que é o mesmo tipo).
+pub struct ISettingTextItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub input_box: Rc<InputBox>,
+    pub validation_error_message_element: NodeId,
+    /// O campo faz o papel do `<input type=number>` (ver o `//!`).
+    pub numeric: bool,
+}
+
+deref_to_common!(ISettingTextItemTemplate);
+
+/// Se `text` é um número de ponto flutuante válido do HTML: `-` opcional, dígitos com parte fracionária opcional (o ponto exige
+/// dígitos depois dele) ou só a parte fracionária, e expoente opcional (`e` ou `E`, sinal opcional, dígitos).
+fn is_valid_html_float(text: &str) -> bool {
+    let digits = |rest: &str| rest.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = text.strip_prefix('-').unwrap_or(text);
+    let integer_length = digits(rest);
+    let mut rest = &rest[integer_length..];
+    if let Some(fraction) = rest.strip_prefix('.') {
+        let fraction_length = digits(fraction);
+        if fraction_length == 0 {
+            return false;
+        }
+        rest = &fraction[fraction_length..];
+    } else if integer_length == 0 {
+        return false;
+    }
+    if let Some(exponent) = rest.strip_prefix(['e', 'E']) {
+        let exponent = exponent.strip_prefix(['-', '+']).unwrap_or(exponent);
+        let exponent_length = digits(exponent);
+        if exponent_length == 0 {
+            return false;
+        }
+        rest = &exponent[exponent_length..];
+    }
+    rest.is_empty()
+}
+
+/// O `value` de um `<input type=number>` cujo texto é `text`: o próprio texto se é um número válido, senão a string vazia.
+pub fn number_input_value(text: &str) -> String {
+    if is_valid_html_float(text) { text.to_owned() } else { String::new() }
+}
+
+/// O `inputBox.value` como o original o lê: o texto do campo, ou o `value` do `<input type=number>` no campo de número.
+fn input_text(raw: &str, numeric: bool) -> String {
+    if numeric { number_input_value(raw) } else { raw.to_owned() }
+}
+
+/// `input.value = value` com o valor do elemento: `null` é a string vazia (`LegacyNullToEmptyString`), o resto é `'' + value`.
+fn input_value_text(value: &Dynamic) -> String {
+    if matches!(value, Dynamic::Null) { String::new() } else { js_text(value) }
+}
+
+/// `renderValidations(dataElement, template, calledOnStartup)` (linhas 2365 a 2384): os nós e o que o aviso precisa, para ser
+/// chamado de dentro do `onChange` do template.
+#[derive(Clone)]
+struct TextValidator {
+    ui: Ui,
+    container: NodeId,
+    message_element: NodeId,
+    foreground: Rgba,
+    accessibility_host: Rc<dyn IAccessibilityHost>,
+    /// `Weak`, porque o ouvinte do campo lê o `onChange` do template (ver o `//!`).
+    input_box: Weak<InputBox>,
+    numeric: bool,
+}
+
+impl TextValidator {
+    /// Validate and render any error message. Returns true if the value is invalid.
+    fn render(&self, data_element: &SettingsTreeSettingElement, called_on_startup: bool) -> bool {
+        let Some(input_box) = self.input_box.upgrade() else { return false };
+        let validator = data_element.setting.validator.as_ref();
+        let error = validator.and_then(|validate| validate(&Dynamic::string(&input_text(&input_box.value(), self.numeric))).filter(|message| !message.is_empty()));
+        let input_wrapper = self.ui.tree().parent(input_box.input_element());
+
+        let announcement = {
+            let mut tree = self.ui.tree_mut();
+            match &error {
+                Some(err_msg) => {
+                    tree.add_class(self.container, "invalid-input");
+                    set_text(&mut tree, self.message_element, err_msg, 400, self.foreground);
+                    // `.setting-item-validation-message { display: none }`, `display: block` com `.invalid-input`
+                    tree.style_mut(self.message_element).visible = true;
+                    let validation_error = localize("validationError", "Validation Error.", &[]);
+                    if let Some(wrapper) = input_wrapper {
+                        tree.set_label(wrapper, format!("{validation_error} {err_msg}"));
+                    }
+                    (!called_on_startup).then(|| format!("{validation_error} {err_msg}"))
+                }
+                None => {
+                    if validator.is_some()
+                        && let Some(wrapper) = input_wrapper
+                    {
+                        tree.clear_label(wrapper);
+                    }
+                    tree.remove_class(self.container, "invalid-input");
+                    tree.style_mut(self.message_element).visible = false;
+                    None
+                }
+            }
+        };
+        if let Some(announcement) = announcement {
+            self.accessibility_host.status(&announcement);
+        }
+        error.is_some()
+    }
+}
+
+/// O `renderTemplate` de texto e de número: o template comum, a mensagem de validação e o campo (que fala com o `onChange` do
+/// template). Os dois renderizadores diferem só nas opções do campo e na classe de tipo.
+fn render_text_item_template(renderer: &AbstractSettingRenderer, container: NodeId, type_class: &str, input_styles: InputBoxStyles, numeric: bool) -> ISettingTextItemTemplate {
+    let ui = renderer.services.ui();
+    let common = renderer.render_common_template(container, type_class);
+    let validation_error_message_element = create_validation_message(ui, common.container_element, None);
+
+    let input_box = InputBox::new(ui, common.control_element, Some(renderer.services.widgets.context_view_provider.clone()), InputBoxOptions::new(input_styles));
+    common.to_dispose.add_rc(input_box.clone());
+    let on_change = common.on_change.clone();
+    common.to_dispose.add(input_box.on_did_change().listen(move |value| call_on_change(&on_change, Dynamic::string(&input_text(value, numeric)))));
+    {
+        let mut tree = ui.tree_mut();
+        tree.add_class(input_box.input_element(), AbstractSettingRenderer::CONTROL_CLASS);
+        tree.set_attribute(input_box.input_element(), "tabindex", "0");
+    }
+
+    let template = ISettingTextItemTemplate { common, input_box, validation_error_message_element, numeric };
+    renderer.add_setting_element_focus_handler(&template.common);
+    template
+}
+
+/// A parte de `renderValue` que o texto e o número têm igual: o valor, o estado e o rótulo do campo, e o `onChange` do template,
+/// que só repassa o valor ao `onChange` do chamador se a validação passa.
+fn render_text_item_value(
+    renderer: &AbstractSettingRenderer,
+    data_element: &Rc<SettingsTreeSettingElement>,
+    template: &ISettingTextItemTemplate,
+    value_text: &str,
+    on_change: Rc<dyn Fn(Dynamic)>,
+) {
+    *template.on_change.borrow_mut() = None;
+    template.input_box.set_value(value_text);
+    template.input_box.set_aria_label(&data_element.setting.key);
+    template.input_box.set_enabled(!data_element.has_policy_value() && !data_element.is_agents_window_read_only());
+
+    let validator = TextValidator {
+        ui: renderer.services.ui().clone(),
+        container: template.container_element,
+        message_element: template.validation_error_message_element,
+        foreground: renderer.services.styles.validation_error_foreground,
+        accessibility_host: renderer.services.accessibility_host.clone(),
+        input_box: Rc::downgrade(&template.input_box),
+        numeric: template.numeric,
+    };
+    let (callback_validator, element) = (validator.clone(), data_element.clone());
+    let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+        if !callback_validator.render(&element, false) {
+            on_change(value);
+        }
+    });
+    *template.on_change.borrow_mut() = Some(callback);
+
+    validator.render(data_element, true);
+}
+
+/// O `renderElement` de texto e de número: o `renderSettingElement` com o `renderValue` do renderizador, e o layout.
+fn render_text_item_element(
+    renderer: &AbstractSettingRenderer,
+    node: &Rc<SettingsTreeNode>,
+    template_data: &TemplateData,
+    render_value: &dyn Fn(&Rc<SettingsTreeSettingElement>, &ISettingTextItemTemplate, Rc<dyn Fn(Dynamic)>),
+    layout: &dyn Fn(&ISettingTextItemTemplate) -> f64,
+) {
+    let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingTextItemTemplate>(), setting_of(node)) else { return };
+    renderer.render_setting_element(element, &template.common, &|on_change| render_value(element, template, on_change));
+    layout(template);
+}
+
+/// O layout de uma linha de texto ou de número: a caixa na largura do controle, e a mensagem de validação absoluta com a largura
+/// `message_width`. Devolve a altura da linha.
+fn layout_text_item(renderer: &AbstractSettingRenderer, template: &ISettingTextItemTemplate, control_width: f64, message_width: f64) -> f64 {
+    let ui = renderer.services.ui();
+    {
+        let mut tree = ui.tree_mut();
+        tree.set_bounds(template.control_element, Rect::new(0.0, 0.0, control_width, 0.0));
+        let element = template.input_box.element();
+        let bounds = tree.bounds(element);
+        tree.set_bounds(element, Rect::new(0.0, 0.0, control_width, bounds.height()));
+    }
+    template.input_box.layout();
+    let height = renderer.layout_setting_item(&template.common, (control_width, template.input_box.height()));
+    renderer.place_validation_message(&template.common, template.validation_error_message_element, Some(message_width));
+    height
+}
+
+// ---- AbstractSettingTextRenderer, SettingTextRenderer e SettingMultilineTextRenderer (linhas 1778 a 1878) ------------------------
+
+/// `AbstractSettingTextRenderer`.
+pub struct AbstractSettingTextRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for AbstractSettingTextRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl AbstractSettingTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderTemplate(_container, useMultiline)` (sem o `useMultiline`, ver o `//!`).
+    pub fn render_template(&self, container: NodeId) -> ISettingTextItemTemplate {
+        render_text_item_template(&self.base, container, "text", self.services.widgets.styles.input_box.clone(), false)
+    }
+
+    /// `renderElement(element, index, templateData)`: o `renderSettingElement` com o `renderValue` da subclasse, e o layout.
+    fn render_element(
+        &self,
+        node: &Rc<SettingsTreeNode>,
+        template_data: &TemplateData,
+        render_value: &dyn Fn(&Rc<SettingsTreeSettingElement>, &ISettingTextItemTemplate, Rc<dyn Fn(Dynamic)>),
+    ) {
+        render_text_item_element(&self.base, node, template_data, render_value, &|template| self.layout(template));
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    pub fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        render_text_item_value(&self.base, data_element, template, &input_value_text(&data_element.value()), on_change);
+    }
+
+    /// O layout da linha: o campo no `width: 420px` do controle (que encolhe com a linha). Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingTextItemTemplate) -> f64 {
+        let row_width = self.services.ui().tree().bounds(template.row_element).width();
+        layout_text_item(&self.base, template, item_text_width(row_width).min(TEXT_CONTROL_WIDTH), TEXT_CONTROL_WIDTH)
+    }
+
+    fn dispose_element(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+/// `SettingTextRenderer`.
+pub struct SettingTextRenderer {
+    text: Rc<AbstractSettingTextRenderer>,
+}
+
+impl Deref for SettingTextRenderer {
+    type Target = AbstractSettingTextRenderer;
+
+    fn deref(&self) -> &AbstractSettingTextRenderer {
+        &self.text
+    }
+}
+
+impl SettingTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { text: AbstractSettingTextRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingTextRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_TEXT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let template = self.text.render_template(container);
+
+        // TODO@9at8: listWidget filters out all key events from input boxes, so we need to come up with a better way
+        // Disable ArrowUp and ArrowDown behaviour in favor of list navigation
+        template.to_dispose.add(self.services.ui().listen(template.input_box.input_element(), EventKind::KeyDown, false, |e| {
+            let Some(key) = StandardKeyboardEvent::from_event(e) else { return };
+            if key.equals(KeyCode::UpArrow.bits()) || key.equals(KeyCode::DownArrow.bits()) {
+                e.prevent_default();
+            }
+        }));
+
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.render_element(node, template_data, &|element, template, on_change| self.text.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.text.dispose_template(template_data);
+    }
+}
+
+/// `SettingMultilineTextRenderer`.
+pub struct SettingMultilineTextRenderer {
+    text: Rc<AbstractSettingTextRenderer>,
+}
+
+impl Deref for SettingMultilineTextRenderer {
+    type Target = AbstractSettingTextRenderer;
+
+    fn deref(&self) -> &AbstractSettingTextRenderer {
+        &self.text
+    }
+}
+
+impl SettingMultilineTextRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { text: AbstractSettingTextRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`: o do abstrato com o valor do elemento atualizado antes de cada mudança, e o
+    /// aviso de mudança de altura do campo.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let element = data_element.clone();
+        let on_change_override: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+            // Ensure the model is up to date since a different value will be rendered as different height when probing the height.
+            element.set_value(value.clone());
+            on_change(value);
+        });
+        self.text.render_value(data_element, template, on_change_override);
+
+        let (ui, container, emitter, element) = (self.services.ui().clone(), template.container_element, self.on_did_change_setting_height.clone(), data_element.clone());
+        template.element_disposables.add(template.input_box.on_did_height_change().listen(move |_| {
+            let height = ui.tree().bounds(container).height();
+            // Don't fire event if height is reported as 0,
+            // which sometimes happens when clicking onto a new setting.
+            if height > 0.0 {
+                emitter.fire(HeightChangeParams { element: element.clone(), height });
+            }
+        }));
+        template.input_box.layout();
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingMultilineTextRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_MULTILINE_TEXT_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        Rc::new(self.text.render_template(container)) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.render_element(node, template_data, &|element, template, on_change| self.render_value(element, template, on_change));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        self.text.dispose_element(template_data);
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        self.text.dispose_template(template_data);
+    }
+}
+
+// ---- SettingEnumRenderer (linhas 1880 a 1988) ---------------------------------------------------------------------------------
+
+/// `ISettingEnumItemTemplate`.
+pub struct ISettingEnumItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub select_box: Rc<SelectBox>,
+    /// `selectElement`: o nó do `<select>` do [`SelectBox`].
+    pub select_element: NodeId,
+    pub enum_description_element: NodeId,
+}
+
+deref_to_common!(ISettingEnumItemTemplate);
+
+/// `SettingEnumRenderer`.
+pub struct SettingEnumRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingEnumRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingEnumRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingEnumItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let setting = &data_element.setting;
+
+        // Make shallow copies here so that we don't modify the actual dataElement later
+        let mut enum_item_labels: Vec<String> = setting.enum_item_labels.clone().unwrap_or_default();
+        let mut enum_descriptions: Vec<String> = setting.enum_descriptions.clone().unwrap_or_default();
+        let mut setting_enum: Vec<Dynamic> = setting.r#enum.iter().flatten().map(|value| Dynamic::string(value)).collect();
+        let enum_descriptions_are_markdown = setting.enum_descriptions_are_markdown.unwrap_or(false);
+        let default_value = data_element.default_value();
+
+        let mut created_default = false;
+        if !setting_enum.iter().any(|value| value.strict_equals(&default_value)) {
+            // Add a new potentially blank default setting
+            setting_enum.insert(0, default_value.clone());
+            enum_descriptions.insert(0, String::new());
+            enum_item_labels.insert(0, String::new());
+            created_default = true;
+        }
+
+        // Use String constructor in case of null or undefined values
+        let stringified_default_value = escape_invisible_chars(&js_text(&default_value));
+        let display_options: Vec<ISelectOptionItem> = setting_enum
+            .iter()
+            .map(|value| escape_invisible_chars(&js_text(value)))
+            .enumerate()
+            .map(|(index, data)| {
+                let label = enum_item_labels.get(index).filter(|label| !label.is_empty());
+                let description = enum_descriptions
+                    .get(index)
+                    .filter(|description| !description.is_empty())
+                    .map(|description| if enum_descriptions_are_markdown { fix_setting_links(description, false) } else { description.clone() });
+                let is_default = data == stringified_default_value || (created_default && index == 0);
+                ISelectOptionItem {
+                    text: label.cloned().unwrap_or_else(|| data.clone()),
+                    detail: label.map(|_| data.clone()),
+                    description,
+                    description_is_markdown: enum_descriptions_are_markdown,
+                    decorator_right: is_default.then(|| localize("settings.Default", "default", &[])),
+                    ..ISelectOptionItem::default()
+                }
+            })
+            .collect();
+
+        template.select_box.set_options(display_options, None);
+        template.select_box.set_aria_label(&setting.key);
+        template.select_box.set_enabled(!data_element.has_policy_value() && !data_element.is_agents_window_read_only());
+
+        let value = data_element.value();
+        let idx = setting_enum.iter().position(|candidate| candidate.strict_equals(&value)).unwrap_or(0);
+
+        *template.on_change.borrow_mut() = None;
+        template.select_box.select(idx);
+        let callback: Rc<dyn Fn(Dynamic)> = Rc::new(move |index: Dynamic| {
+            let idx = match index {
+                Dynamic::Number(index) => index as usize,
+                _ => 0,
+            };
+            if created_default && idx == 0 {
+                on_change(default_value.clone());
+            } else {
+                on_change(setting_enum.get(idx).cloned().unwrap_or(Dynamic::Undefined));
+            }
+        });
+        *template.on_change.borrow_mut() = Some(callback);
+
+        clear_node(&mut self.services.ui().tree_mut(), template.enum_description_element);
+    }
+
+    /// O layout da linha: o `<select>` com `width: 320px`, e o bloco `.setting-item-enumDescription` vazio depois da descrição.
+    /// Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingEnumItemTemplate) -> f64 {
+        let ui = self.services.ui();
+        let row_width = ui.tree().bounds(template.row_element).width();
+        let text_width = item_text_width(row_width);
+        ui.tree_mut().set_bounds(template.control_element, Rect::new(0.0, 0.0, ENUM_SELECT_WIDTH, 0.0));
+        template.select_box.layout();
+        let height = self.layout_setting_item(&template.common, (ENUM_SELECT_WIDTH, template.select_box.natural_size().1));
+
+        let mut tree = ui.tree_mut();
+        let description = tree.bounds(template.description_element);
+        tree.set_bounds(template.enum_description_element, Rect::new(ITEM_PADDING_X, description.y1, ITEM_PADDING_X + text_width, description.y1));
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingEnumRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_ENUM_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "enum");
+
+        let select_box = SelectBox::new(
+            ui,
+            Vec::new(),
+            0,
+            self.services.widgets.context_view_provider.clone(),
+            self.services.widgets.styles.select_box.clone(),
+            Some(ISelectBoxOptions { use_custom_drawn: true, ..ISelectBoxOptions::default() }),
+        );
+        common.to_dispose.add_rc(select_box.clone());
+        select_box.render(common.control_element);
+        let select_element = select_box.select_element();
+        {
+            let mut tree = ui.tree_mut();
+            tree.add_class(select_element, AbstractSettingRenderer::CONTROL_CLASS);
+            tree.set_attribute(select_element, "tabindex", "0");
+        }
+
+        let on_change = common.on_change.clone();
+        common.to_dispose.add(select_box.on_did_select().listen(move |e| call_on_change(&on_change, Dynamic::Number(e.index as f64))));
+
+        // `containerElement.insertBefore($('.setting-item-enumDescription'), descriptionElement.nextSibling)`
+        let enum_description_element = {
+            let mut tree = ui.tree_mut();
+            let element = create_detached_el(&mut tree, Role::Generic, "setting-item-enumDescription");
+            let siblings = tree.children(common.container_element).to_vec();
+            let next_sibling = siblings.iter().position(|node| *node == common.description_element).and_then(|index| siblings.get(index + 1)).copied();
+            tree.insert_before(common.container_element, element, next_sibling);
+            element
+        };
+
+        let template = ISettingEnumItemTemplate { common, select_box, select_element, enum_description_element };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingEnumItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| self.render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingEnumItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingEnumItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingNumberRenderer (linhas 1990 a 2049) -------------------------------------------------------------------------------
+
+/// `SettingNumberRenderer`.
+pub struct SettingNumberRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingNumberRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingNumberRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`. O `inputBox.step` não existe (ver o `//!`).
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingTextItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let value_type = data_element.value_type();
+        let is_integer = matches!(value_type, SettingValueType::Integer | SettingValueType::NullableInteger);
+        let is_nullable = matches!(value_type, SettingValueType::NullableInteger | SettingValueType::NullableNumber);
+
+        // `numParseFn` e `nullNumParseFn`
+        let parse = move |text: &str| if is_integer { parse_int(text) } else { parse_float(&text.encode_utf16().collect::<Vec<u16>>()) };
+        let null_parse: Rc<dyn Fn(Dynamic)> = Rc::new(move |value: Dynamic| {
+            let text = js_text(&value);
+            on_change(if is_nullable && text.is_empty() { Dynamic::Null } else { Dynamic::Number(parse(&text)) });
+        });
+
+        let value_text = match data_element.value() {
+            Dynamic::Number(number) => number_to_js_string(number),
+            _ => String::new(),
+        };
+        render_text_item_value(&self.base, data_element, template, &value_text, null_parse);
+    }
+
+    /// O layout da linha: o campo no `min-width: 200px` do controle. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingTextItemTemplate) -> f64 {
+        layout_text_item(&self.base, template, NUMBER_CONTROL_WIDTH, NUMBER_CONTROL_WIDTH)
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingNumberRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_NUMBER_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        Rc::new(render_text_item_template(&self.base, container, "number", self.services.styles.number_input_box.clone(), true)) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        render_text_item_element(&self.base, node, template_data, &|element, template, on_change| self.render_value(element, template, on_change), &|template| self.layout(template));
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingTextItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingBoolRenderer (linhas 2051 a 2146) ---------------------------------------------------------------------------------
+
+/// `ISettingBoolItemTemplate`.
+pub struct ISettingBoolItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub checkbox: Rc<Checkbox>,
+}
+
+deref_to_common!(ISettingBoolItemTemplate);
+
+/// `SettingBoolRenderer`.
+pub struct SettingBoolRenderer {
+    base: Rc<AbstractSettingRenderer>,
+}
+
+impl Deref for SettingBoolRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingBoolRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        Rc::new(Self { base: AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory) })
+    }
+
+    /// `renderValue(dataElement, template, onChange)`.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingBoolItemTemplate, on_change: Rc<dyn Fn(Dynamic)>) {
+        let ui = self.services.ui();
+        *template.on_change.borrow_mut() = None;
+        template.checkbox.set_checked(data_element.value().is_truthy());
+        if data_element.has_policy_value() || data_element.is_agents_window_read_only() {
+            template.checkbox.disable();
+            let mut tree = ui.tree_mut();
+            tree.add_class(template.description_element, "disabled");
+            // `.setting-item-bool .setting-item-description.disabled { cursor: initial }`
+            tree.style_mut(template.description_element).cursor = None;
+        } else {
+            template.checkbox.enable();
+            {
+                let mut tree = ui.tree_mut();
+                tree.remove_class(template.description_element, "disabled");
+                // `.setting-item-bool .setting-item-description { cursor: pointer }`
+                tree.style_mut(template.description_element).cursor = Some(Cursor::Pointer);
+            }
+
+            // Need to listen for mouse clicks on description and toggle checkbox - use target ID for safety
+            // Also have to ignore embedded links - use closest('a') to handle clicks on child elements of links (e.g. SVG icons inside <a> tags)
+            let (checkbox, slot, ui_for_target) = (Rc::downgrade(&template.checkbox), template.on_change.clone(), ui.clone());
+            template.element_disposables.add(ui.listen(template.description_element, EventKind::PointerDown, false, move |e| {
+                let Some(checkbox) = checkbox.upgrade() else { return };
+                let in_link = {
+                    let tree = ui_for_target.tree();
+                    std::iter::successors(Some(e.target), |node| tree.parent(*node)).any(|node| matches!(tree.role(node), Role::Link))
+                };
+
+                // Toggle target checkbox
+                if !in_link {
+                    checkbox.set_checked(!checkbox.checked());
+                    call_on_change(&slot, Dynamic::Bool(checkbox.checked()));
+                }
+                e.stop(false);
+            }));
+        }
+        template.checkbox.set_title(&data_element.setting.key);
+        *template.on_change.borrow_mut() = Some(on_change);
+    }
+
+    /// O layout da linha: a caixa de marcação à esquerda e a descrição ao lado. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingBoolItemTemplate) -> f64 {
+        let height = self.layout_setting_item(&template.common, (0.0, 0.0));
+        template.checkbox.set_position(0.0, 0.0);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingBoolRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_BOOL_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "bool");
+
+        // O DOM do original: `.setting-item-value-description` (o controle `.setting-item-bool-control` e a descrição) antes do
+        // indicador de modificação (ver o `//!`).
+        {
+            let mut tree = ui.tree_mut();
+            tree.set_class_name(common.value_element, "setting-item-value-description");
+            tree.set_class_name(common.control_element, "setting-item-bool-control");
+            tree.append_child(common.value_element, common.description_element);
+            tree.insert_before(common.container_element, common.value_element, Some(common.modified_indicator_element));
+        }
+
+        let checkbox = Checkbox::new(ui, "", true, self.services.widgets.styles.checkbox.clone());
+        {
+            let mut tree = ui.tree_mut();
+            tree.add_class(checkbox.dom_node(), "setting-value-checkbox");
+            tree.append_child(common.control_element, checkbox.dom_node());
+            tree.add_class(checkbox.dom_node(), AbstractSettingRenderer::CONTROL_CLASS);
+        }
+        common.to_dispose.add_rc(checkbox.clone());
+        let (on_change, weak_checkbox) = (common.on_change.clone(), Rc::downgrade(&checkbox));
+        common.to_dispose.add(checkbox.on_change().listen(move |_| {
+            if let Some(checkbox) = weak_checkbox.upgrade() {
+                call_on_change(&on_change, Dynamic::Bool(checkbox.checked()));
+            }
+        }));
+
+        let template = ISettingBoolItemTemplate { common, checkbox };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingBoolItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|on_change| self.render_value(element, template, on_change));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingBoolItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingBoolItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
+    }
+}
+
+// ---- SettingsExtensionToggleRenderer (linhas 2148 a 2207) ---------------------------------------------------------------------
+
+/// `ISettingExtensionToggleItemTemplate`.
+pub struct ISettingExtensionToggleItemTemplate {
+    pub common: ISettingItemTemplate,
+    pub action_button: Rc<Button>,
+    pub dismiss_button: Rc<Button>,
+}
+
+deref_to_common!(ISettingExtensionToggleItemTemplate);
+
+/// `SettingsExtensionToggleRenderer`.
+pub struct SettingsExtensionToggleRenderer {
+    base: Rc<AbstractSettingRenderer>,
+    on_did_dismiss_extension_setting: Rc<Emitter<String>>,
+}
+
+impl Deref for SettingsExtensionToggleRenderer {
+    type Target = AbstractSettingRenderer;
+
+    fn deref(&self) -> &AbstractSettingRenderer {
+        &self.base
+    }
+}
+
+impl SettingsExtensionToggleRenderer {
+    pub fn new(services: SettingRendererServices, setting_actions: Vec<ActionRef>, disposable_action_factory: DisposableActionFactory) -> Rc<Self> {
+        let base = AbstractSettingRenderer::new(services, setting_actions, disposable_action_factory);
+        let on_did_dismiss_extension_setting = base.register_emitter::<String>();
+        Rc::new(Self { base, on_did_dismiss_extension_setting })
+    }
+
+    pub fn on_did_dismiss_extension_setting(&self) -> BaseEvent<String> {
+        self.on_did_dismiss_extension_setting.event()
+    }
+
+    /// `renderValue(dataElement, template, onChange)`: o `onChange` é `undefined` neste tipo e não é lido.
+    fn render_value(&self, data_element: &Rc<SettingsTreeSettingElement>, template: &ISettingExtensionToggleItemTemplate) {
+        template.element_disposables.clear();
+
+        let Some(extension_id) = data_element.setting.display_extension_id.clone() else { return };
+        {
+            let (telemetry_service, command_service, extension_id) = (self.services.telemetry_service.clone(), self.services.command_service.clone(), extension_id.clone());
+            template.element_disposables.add(template.action_button.on_did_click().listen(move |_| {
+                telemetry_service.public_log2("ManageExtensionClick", Some(Dynamic::object([("extensionId", Dynamic::string(&extension_id))])));
+                let _ = command_service.execute_command("extension.open", vec![Dynamic::string(&extension_id)]);
+            }));
+        }
+        {
+            let (telemetry_service, emitter) = (self.services.telemetry_service.clone(), self.on_did_dismiss_extension_setting.clone());
+            template.element_disposables.add(template.dismiss_button.on_did_click().listen(move |_| {
+                telemetry_service.public_log2("DismissExtensionClick", Some(Dynamic::object([("extensionId", Dynamic::string(&extension_id))])));
+                emitter.fire(extension_id.clone());
+            }));
+        }
+    }
+
+    /// O layout da linha: os dois botões `inline-block` (`width: fit-content`, o segundo com `margin-left: 8px`) numa linha
+    /// depois do último filho em fluxo. Devolve a altura da linha.
+    pub fn layout(&self, template: &ISettingExtensionToggleItemTemplate) -> f64 {
+        for button in [&template.action_button, &template.dismiss_button] {
+            button.set_height(None);
+            button.set_width(Some(button.min_content_width()));
+        }
+        let (action_width, action_height) = template.action_button.size();
+        let (_, dismiss_height) = template.dismiss_button.size();
+        let line_height = action_height.max(dismiss_height);
+
+        template.tail_height.set(line_height);
+        let height = self.layout_setting_item(&template.common, (0.0, 0.0));
+        let top = template.content_bottom.get() - line_height;
+        template.action_button.set_position(ITEM_PADDING_X, top);
+        template.dismiss_button.set_position(ITEM_PADDING_X + action_width + EXTENSION_DISMISS_MARGIN_LEFT, top);
+        height
+    }
+}
+
+impl ITreeRenderer<SettingsObjectTreeModel> for SettingsExtensionToggleRenderer {
+    fn template_id(&self) -> String {
+        SETTINGS_EXTENSION_TOGGLE_TEMPLATE_ID.to_owned()
+    }
+
+    fn render_template(&self, container: NodeId) -> TemplateData {
+        let ui = self.services.ui();
+        let common = self.render_common_template(container, "extension-toggle");
+        let styles = self.services.widgets.styles.button.clone();
+
+        let action_button = Button::new(ui, common.container_element, ButtonOptions { styles: styles.clone(), title: ButtonTitle::None, ..ButtonOptions::default() });
+        ui.tree_mut().add_class(action_button.element(), "setting-item-extension-toggle-button");
+        action_button.set_label(ButtonLabel::Text(localize("showExtension", "Show Extension", &[])));
+        common.to_dispose.add_rc(action_button.clone());
+
+        let dismiss_button = Button::new(ui, common.container_element, ButtonOptions { styles, title: ButtonTitle::None, secondary: true, ..ButtonOptions::default() });
+        ui.tree_mut().add_class(dismiss_button.element(), "setting-item-extension-dismiss-button");
+        dismiss_button.set_label(ButtonLabel::Text(localize("dismiss", "Dismiss", &[])));
+        common.to_dispose.add_rc(dismiss_button.clone());
+
+        let template = ISettingExtensionToggleItemTemplate { common, action_button, dismiss_button };
+        self.add_setting_element_focus_handler(&template.common);
+        Rc::new(template) as Rc<dyn Any>
+    }
+
+    fn render_element(&self, node: &Rc<SettingsTreeNode>, _index: usize, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        let (Some(template), Some(element)) = (template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>(), setting_of(node)) else { return };
+        self.render_setting_element(element, &template.common, &|_on_change| self.render_value(element, template));
+        self.layout(template);
+    }
+
+    fn dispose_element(&self, _node: &Rc<SettingsTreeNode>, _index: i64, template_data: &TemplateData, _details: Option<&TreeElementRenderDetails>) {
+        if let Some(template) = template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>() {
+            self.base.dispose_element(&template.common);
+        }
+    }
+
+    fn dispose_template(&self, template_data: &TemplateData) {
+        if let Some(template) = template_data.downcast_ref::<ISettingExtensionToggleItemTemplate>() {
+            self.base.dispose_template(&template.common);
+        }
     }
 }
