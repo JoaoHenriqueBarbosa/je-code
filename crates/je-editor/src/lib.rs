@@ -275,3 +275,5 @@ pub mod semantic_tokens;
 pub mod semantic_tokens_provider_styling;
 pub mod semantic_tokens_styling;
 pub mod semantic_tokens_styling_service;
+
+pub mod observable_code_editor;

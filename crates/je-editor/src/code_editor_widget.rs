@@ -72,16 +72,20 @@
 //!   `onVisible`, `onHide` (os dois só chamam `view.refreshFocusState`), `writeScreenReaderContent`,
 //!   `applyFontInfo`, `setBanner`, `setAriaOptions`, `createOverviewRuler`, `delegateVerticalScrollbarPointerDown`,
 //!   `delegateScrollFromMouseWheelEvent`, `changeViewZones`, `getTargetAtClientPoint`, `getScrolledVisiblePosition`,
-//!   `getOffsetForColumn`, `getWidthOfLine`, `resetLineWidthCaches`, `hasPendingScrollAnimation` (o `ViewLayout`
+//!   `hasPendingScrollAnimation` (o `ViewLayout`
 //!   ainda não o expõe), `focus` de DOM (ver acima), os atributos `data-mode-id` e `data-uri`, a variável CSS
 //!   `--editor-font-size`, o `DragAndDropObserver` com `showDropIndicatorAt`/`removeDropIndicator` e
-//!   `dropIntoEditorDecorationOptions`.
-//! - Widgets de conteúdo, de overlay e de margem de glifos: `addContentWidget`, `layoutContentWidget`,
-//!   `removeContentWidget`, `addOverlayWidget`, `layoutOverlayWidget`, `removeOverlayWidget`,
-//!   `addGlyphMarginWidget`, `layoutGlyphMarginWidget`, `removeGlyphMarginWidget`.
+//!   `dropIntoEditorDecorationOptions`. `getOffsetForColumn`, `getWidthOfLine` e `resetLineWidthCaches` existem
+//!   e valem o que o original devolve sem `View` real (`-1`, `-1` e nada).
+//! - Widgets de conteúdo e de overlay: `addContentWidget`, `layoutContentWidget`, `removeContentWidget`,
+//!   `addOverlayWidget`, `layoutOverlayWidget` e `removeOverlayWidget` existem e guardam os widgets e a última
+//!   posição de cada um (`_contentWidgets`, `_overlayWidgets`); a chamada à `View` (`hasRealView`) não existe. Os
+//!   tipos estão em `editor_browser` e não têm `getDomNode()`.
+//! - Widgets de margem de glifos: `addGlyphMarginWidget`, `layoutGlyphMarginWidget`, `removeGlyphMarginWidget`.
 //! - Eventos que só a `View` produz: `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
-//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseMove`, `onMouseLeave`, `onMouseWheel`, `onKeyUp`, `onKeyDown`,
-//!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`.
+//!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`, `onKeyUp`,
+//!   `onWillCopy`, `onWillCut`, `onWillPaste`, `onDropIntoEditor`. `onMouseMove`, `onMouseLeave` e `onKeyDown`
+//!   existem, e quem tem a `View` os dispara por `fire_mouse_move`, `fire_mouse_leave` e `fire_key_down`.
 //! - `ICodeEditorService`: `willCreateCodeEditor`, `addCodeEditor` e `removeCodeEditor` chegam pelo
 //!   [`ICodeEditorRegistry`] opcional de [`CodeEditorWidgetServices`] (o construtor e o `dispose` os chamam, como o
 //!   original).
@@ -131,6 +135,7 @@ use crate::editor_decorations_collection::EditorDecorationsCollection;
 use crate::cursor_common::CursorSimpleModel;
 use crate::cursor_events::{CursorChangeReason, ICursorPositionChangedEvent, ICursorSelectionChangedEvent};
 use crate::cursor_word_operations::WordOperations;
+use crate::editor_browser::{ContentWidgetPosition, EditorMouseEvent, IContentWidget, IOverlayWidget, OverlayWidgetPosition, PartialEditorMouseEvent};
 use crate::edit_operation::SingleEditOperation;
 use crate::edits::text_edit::TextEdit;
 use crate::editor_common::{Command, ScrollType};
@@ -857,6 +862,20 @@ editor_emitters! {
     end_update, on_end_update, (), direct, "`onEndUpdate`.";
     before_execute_edit, on_before_execute_edit, BeforeExecuteEditEvent, direct, "`onBeforeExecuteEdit`.";
     key_down, on_key_down, je_platform::keybinding::keybinding::KeyboardEvent, direct, "`onKeyDown`: quem tem a `View` (ou o host nativo que a substitui) entrega as teclas por `fire_key_down`.";
+    mouse_move, on_mouse_move, EditorMouseEvent, direct, "`onMouseMove`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_move`.";
+    mouse_leave, on_mouse_leave, PartialEditorMouseEvent, direct, "`onMouseLeave`: quem tem a `View` (ou o host nativo que a substitui) entrega o evento por `fire_mouse_leave`.";
+}
+
+impl CodeEditorWidget {
+    /// Entrega um movimento do mouse aos ouvintes de `onMouseMove` (o `View` do original dispara o evento).
+    pub fn fire_mouse_move(&self, event: EditorMouseEvent) {
+        self.emitters.mouse_move.fire(event);
+    }
+
+    /// Entrega a saída do mouse aos ouvintes de `onMouseLeave` (o `View` do original dispara o evento).
+    pub fn fire_mouse_leave(&self, event: PartialEditorMouseEvent) {
+        self.emitters.mouse_leave.fire(event);
+    }
 }
 
 impl CodeEditorWidget {
@@ -976,6 +995,20 @@ pub struct CodeEditorWidgetOptions {
     pub telemetry_data: Option<Dynamic>,
 }
 
+/// `IContentWidgetData`: o widget de conteúdo e a última posição que ele deu.
+#[derive(Clone)]
+pub struct ContentWidgetData {
+    pub widget: Rc<dyn IContentWidget>,
+    pub position: Option<ContentWidgetPosition>,
+}
+
+/// `IOverlayWidgetData`: o widget de overlay e a última posição que ele deu.
+#[derive(Clone)]
+pub struct OverlayWidgetData {
+    pub widget: Rc<dyn IOverlayWidget>,
+    pub position: Option<OverlayWidgetPosition>,
+}
+
 /// `CodeEditorWidget`.
 pub struct CodeEditorWidget {
     me: Weak<CodeEditorWidget>,
@@ -1003,6 +1036,10 @@ pub struct CodeEditorWidget {
     /// O serviço de instanciação com que os comandos de editor rodam (o `invokeFunction` do original); sem ele
     /// o `accessor` chega como `None`.
     instantiation_service: RefCell<Option<Rc<InstantiationService>>>,
+    /// `_contentWidgets`, na ordem de inserção (as chaves de um objeto): o par é `(widget.getId(), dados)`.
+    content_widgets: RefCell<Vec<(String, ContentWidgetData)>>,
+    /// `_overlayWidgets`, na mesma forma.
+    overlay_widgets: RefCell<Vec<(String, OverlayWidgetData)>>,
 }
 
 impl CodeEditorWidget {
@@ -1066,6 +1103,8 @@ impl CodeEditorWidget {
             update_counter: Cell::new(0),
             in_composition: Cell::new(false),
             instantiation_service: RefCell::new(None),
+            content_widgets: RefCell::new(Vec::new()),
+            overlay_widgets: RefCell::new(Vec::new()),
         });
 
         this.register_listener(this.configuration.on_did_change(), |editor, e| {
@@ -1215,6 +1254,93 @@ impl CodeEditorWidget {
             model_data.view_model.set_has_widget_focus(has_focus);
         }
     }
+
+    // #endregion
+
+    // #region Widgets de conteúdo e de overlay, e medidas que dependem da View
+
+    /// `addContentWidget(widget)`. Sem `View` real, o widget só fica registrado (e guarda a posição).
+    pub fn add_content_widget(&self, widget: Rc<dyn IContentWidget>) {
+        let id = widget.get_id();
+        let data = ContentWidgetData { position: widget.get_position(), widget };
+        let mut widgets = self.content_widgets.borrow_mut();
+        match widgets.iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            Some((_, existing)) => {
+                eprintln!("Overwriting a content widget with the same id:{id}");
+                *existing = data;
+            }
+            None => widgets.push((id, data)),
+        }
+    }
+
+    /// `layoutContentWidget(widget)`: relê a posição do widget registrado com o mesmo id.
+    pub fn layout_content_widget(&self, widget: &Rc<dyn IContentWidget>) {
+        let id = widget.get_id();
+        // `getPosition` roda fora do empréstimo: o widget pode ler o editor.
+        let position = widget.get_position();
+        if let Some((_, data)) = self.content_widgets.borrow_mut().iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            data.position = position;
+        }
+    }
+
+    /// `removeContentWidget(widget)`.
+    pub fn remove_content_widget(&self, widget: &Rc<dyn IContentWidget>) {
+        let id = widget.get_id();
+        self.content_widgets.borrow_mut().retain(|(widget_id, _)| *widget_id != id);
+    }
+
+    /// `_contentWidgets`: os widgets de conteúdo registrados, na ordem de inserção (a `View` os lê).
+    pub fn content_widgets(&self) -> Vec<ContentWidgetData> {
+        self.content_widgets.borrow().iter().map(|(_, data)| data.clone()).collect()
+    }
+
+    /// `addOverlayWidget(widget)`. Sem `View` real, o widget só fica registrado (e guarda a posição).
+    pub fn add_overlay_widget(&self, widget: Rc<dyn IOverlayWidget>) {
+        let id = widget.get_id();
+        let data = OverlayWidgetData { position: widget.get_position(), widget };
+        let mut widgets = self.overlay_widgets.borrow_mut();
+        match widgets.iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            Some((_, existing)) => {
+                eprintln!("Overwriting an overlay widget with the same id.");
+                *existing = data;
+            }
+            None => widgets.push((id, data)),
+        }
+    }
+
+    /// `layoutOverlayWidget(widget)`: relê a posição do widget registrado com o mesmo id.
+    pub fn layout_overlay_widget(&self, widget: &Rc<dyn IOverlayWidget>) {
+        let id = widget.get_id();
+        // `getPosition` roda fora do empréstimo: o widget pode ler o editor.
+        let position = widget.get_position();
+        if let Some((_, data)) = self.overlay_widgets.borrow_mut().iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            data.position = position;
+        }
+    }
+
+    /// `removeOverlayWidget(widget)`.
+    pub fn remove_overlay_widget(&self, widget: &Rc<dyn IOverlayWidget>) {
+        let id = widget.get_id();
+        self.overlay_widgets.borrow_mut().retain(|(widget_id, _)| *widget_id != id);
+    }
+
+    /// `_overlayWidgets`: os widgets de overlay registrados, na ordem de inserção (a `View` os lê).
+    pub fn overlay_widgets(&self) -> Vec<OverlayWidgetData> {
+        self.overlay_widgets.borrow().iter().map(|(_, data)| data.clone()).collect()
+    }
+
+    /// `getOffsetForColumn(lineNumber, column)`: sem `View` real (`hasRealView` falso) é `-1`.
+    pub fn get_offset_for_column(&self, _line_number: i32, _column: i32) -> f64 {
+        -1.0
+    }
+
+    /// `getWidthOfLine(lineNumber)`: sem `View` real (`hasRealView` falso) é `-1`.
+    pub fn get_width_of_line(&self, _line_number: i32) -> f64 {
+        -1.0
+    }
+
+    /// `resetLineWidthCaches()`: sem `View` real (`hasRealView` falso) não faz nada.
+    pub fn reset_line_width_caches(&self) {}
 
     // #endregion
 
@@ -1618,6 +1744,8 @@ impl IDisposable for CodeEditorWidget {
         }
 
         self.actions.borrow_mut().clear();
+        self.content_widgets.borrow_mut().clear();
+        self.overlay_widgets.borrow_mut().clear();
 
         let detached_model = self.detach_model();
         self.post_detach_model_cleanup(detached_model);
