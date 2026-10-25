@@ -49,6 +49,12 @@
 //! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
 //! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
 //! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`).
+//! Portados com as margens do editor, as camadas de borda dos cartões compactos (`compact_card_border_layers`) e o estilo
+//! das abas conectadas (`tab_variable`, `connected_tab_fill_background`, `connected_edge_border_top_color`,
+//! `tab_border_container`, com o participante `collect_modern_tab_color_customizations`): de `compact density keeps the
+//! panel cluster flush and square` até `uses explicitly customized selected borders only when the active top border is
+//! absent`. O `generateColorThemeCSS` desses casos é o estilo sem `with_explicit_colors_only`, que já aplica os padrões do
+//! registro e os participantes; `createUnloadedTheme` é `ColorTheme::unloaded` e `setCustomColors` é `set_custom_colors`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -103,8 +109,8 @@ use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle, NotificationInsets,
-    NotificationsPlacement, PaneHost, PaneState, SashPlacement, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, GradientKind, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
+    NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TabBorderIndicator, TabElement, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb,
 };
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
@@ -2028,5 +2034,262 @@ fn keeps_macos_corner_radii_in_sync_with_zoom_window_borders_and_chrome() {
         ]
         .map(|(name, value)| (name, value.to_owned()))
     );
+}
+
+/// Os quatro `margin-*` computados, na ordem `top`, `right`, `bottom`, `left`.
+fn margins_css_list(margins: PartMargins) -> [String; 4] {
+    [margins.top, margins.right, margins.bottom, margins.left].map(px)
+}
+
+/// O `margin` computado: o shorthand na forma mais curta (um, dois, três ou quatro valores).
+fn margin_css(margins: PartMargins) -> String {
+    let [top, right, bottom, left] = margins_css_list(margins);
+    if top == right && right == bottom && bottom == left {
+        top
+    } else if top == bottom && right == left {
+        format!("{top} {right}")
+    } else if right == left {
+        format!("{top} {right} {bottom}")
+    } else {
+        format!("{top} {right} {bottom} {left}")
+    }
+}
+
+#[test]
+fn compact_density_keeps_the_panel_cluster_flush_and_square() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-surface-border` e `--vscode-editor-border` são customizações do tema; `--vscode-cornerRadius-large: 8px`,
+    // `--vscode-spacing-size40: 4px`, `--vscode-spacing-sizeNone: 0px` e `--vscode-strokeThickness: 1px` são os valores do tema.
+    let theme = theme_with_colors(&[("surface.border", "#123456"), ("editor.border", "#654321")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-compact floating-panels");
+    let activity_bar = ClassList::new("part activitybar left");
+    let side_bar = ClassList::new("part sidebar floating-part-outer-left floating-part-outer-top floating-part-outer-bottom");
+    let panel = ClassList::new("part panel");
+    let auxiliary_bar = ClassList::new("part auxiliarybar floating-part-outer-right floating-part-outer-top floating-part-outer-bottom");
+    let editor = ClassList::new("part editor floating-editor-outer-left floating-editor-outer-right floating-editor-outer-top floating-editor-outer-bottom");
+    let webview_overlay_content =
+        ClassList::new("webview-overlay-content webview-overlay-outer-left webview-overlay-outer-right webview-overlay-outer-top webview-overlay-outer-bottom");
+    let modal_webview_overlay_content = ClassList::new("webview-overlay-content webview-overlay-modal");
+    let corners = |part: &ClassList| radii_css_list(style.part_corner_radii(part).expect("o raio da parte"));
+    let margin = |part: &ClassList| margins_css_list(style.floating_part_margins(part).expect("a margem da parte"));
+    let floating_border_color = |part: &ClassList| style.floating_part_border_colors(part).expect("a borda da parte").to_css();
+    // `backgroundImage.split('radial-gradient').length - 1` e `backgroundOrigin.split(', ').every(origin => origin === 'border-box')`.
+    let corner_border_count = |part: &ClassList| style.compact_card_border_layers(part).iter().filter(|layer| layer.kind == GradientKind::Radial).count();
+    let all_border_backgrounds_use_border_box = |part: &ClassList| {
+        let layers = style.compact_card_border_layers(part);
+        !layers.is_empty() && layers.iter().all(|layer| layer.origin_border_box)
+    };
+    let square = || ["0px"; 4].map(str::to_owned);
+    let transparent = "rgba(0, 0, 0, 0)".to_owned();
+
+    assert_eq!(
+        (
+            (corners(&activity_bar), corner_border_count(&activity_bar)),
+            (
+                margin(&side_bar),
+                corners(&side_bar),
+                floating_border_color(&side_bar),
+                all_border_backgrounds_use_border_box(&side_bar),
+                corner_border_count(&side_bar),
+            ),
+            (corners(&panel), floating_border_color(&panel), all_border_backgrounds_use_border_box(&panel), corner_border_count(&panel)),
+            (corners(&auxiliary_bar), corner_border_count(&auxiliary_bar)),
+            (
+                margin(&editor),
+                corners(&editor),
+                style.editor_border_color(&editor).map(|color| css_rgb(&color)),
+                all_border_backgrounds_use_border_box(&editor),
+                corner_border_count(&editor),
+            ),
+            radii_css(style.editor_content_corner_radii(&editor).expect("o raio do conteúdo do editor")),
+            radii_css_list(style.webview_overlay_corner_radii(&webview_overlay_content).expect("o raio do webview")),
+            radii_css(style.webview_overlay_corner_radii(&modal_webview_overlay_content).expect("o raio do webview modal")),
+        ),
+        (
+            (square(), 0),
+            (square(), square(), transparent.clone(), true, 0),
+            (square(), transparent.clone(), true, 0),
+            (square(), 0),
+            (square(), square(), Some(transparent), true, 0),
+            "0px".to_owned(),
+            square(),
+            "8px".to_owned(),
+        )
+    );
+}
+
+#[test]
+fn compact_perimeter_stays_flush_with_hidden_window_chrome_and_restores_the_default_density() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let parts: Vec<ClassList> = [
+        "activitybar left",
+        "activitybar right",
+        "sidebar floating-part-outer-left floating-part-outer-top floating-part-outer-bottom",
+        "auxiliarybar floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "panel top floating-part-outer-left floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "panel bottom floating-part-outer-left floating-part-outer-right floating-part-outer-top floating-part-outer-bottom",
+        "editor floating-editor-outer-left floating-editor-outer-right floating-editor-outer-top floating-editor-outer-bottom",
+    ]
+    .iter()
+    .map(|class_name| ClassList::new(&format!("part {class_name}")))
+    .collect();
+    // `{ margin, radius }` de cada parte.
+    let read_geometry = |style: &ModernUiStyle| -> Vec<(String, String)> {
+        parts
+            .iter()
+            .map(|part| (margin_css(style.floating_part_margins(part).expect("a margem da parte")), radii_css(style.part_corner_radii(part).expect("o raio da parte"))))
+            .collect()
+    };
+    let default_geometry = read_geometry(&style);
+
+    for chrome_classes in ["", "top-window-edge", "nostatusbar", "top-window-edge nostatusbar"] {
+        style.set_root_class_name(&format!("monaco-workbench modern-ui floating-panels modern-ui-compact {chrome_classes}"));
+        let flush: Vec<(String, String)> = parts.iter().map(|_| ("0px".to_owned(), "0px".to_owned())).collect();
+        assert_eq!(read_geometry(&style), flush, "{chrome_classes}");
+    }
+
+    style.set_root_class_name("monaco-workbench modern-ui floating-panels");
+    assert_eq!(read_geometry(&style), default_geometry);
+}
+
+/// `ColorThemeData.createUnloadedTheme('vs-dark', colors)`: um tema escuro só com o `colorMap` dado (cores do tema, não
+/// customizações do usuário).
+fn unloaded_theme_with_file_colors(colors: &[(&str, &str)]) -> ColorTheme {
+    ColorTheme::unloaded("", ThemeType::Dark, colors.iter().map(|(id, hex)| ((*id).to_owned(), Color::from_hex(hex))).collect())
+}
+
+/// Os textos de uma lista de cores, no formato do `getComputedStyle`.
+fn some_strings<const N: usize>(texts: [&str; N]) -> [Option<String>; N] {
+    texts.map(|text| Some(text.to_owned()))
+}
+
+#[test]
+fn uses_the_editor_background_for_the_connected_surface() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let backgrounds = [("#1f1f1f", "#ffffff17"), ("#ffffff", "#2468ac"), ("#1f1f1f", "#00000000")].map(|(editor, tab)| {
+        let theme = unloaded_theme_with_file_colors(&[("editor.background", editor), ("modernEditorTab.activeBackground", tab)]);
+        // `--modern-ui-connected-tab-surface` do `registerThemingParticipant` de `connectedEditorTabs.ts`.
+        let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+        style.connected_tab_surface().map(|color| color.to_string())
+    });
+
+    assert_eq!(backgrounds, some_strings(["#1f1f1f", "#ffffff", "#1f1f1f"]));
+}
+
+#[test]
+fn uses_legacy_background_customizations_for_connected_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_with_file_colors(&[("editor.background", "#000000"), ("editorGroupHeader.connectedTabsBackground", "#111111")]);
+    theme.set_custom_colors([
+        ("tab.activeBackground", "#123456"),
+        ("tab.unfocusedActiveBackground", "#234567"),
+        ("tab.inactiveBackground", "#345678"),
+        ("tab.unfocusedInactiveBackground", "#456789"),
+        ("tab.hoverBackground", "#56789A"),
+        ("tab.unfocusedHoverBackground", "#6789AB"),
+    ]);
+    // O CSS gerado pelo tema (`generateColorThemeCSS` com os participantes) é o estilo sem `with_explicit_colors_only`.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    let colors = |group_active: bool| {
+        let tab = |class_name: &str| TabElement::new(class_name, group_active);
+        // O `.title.tabs` do grupo não é uma aba: as sondas `hover-probe` e `active-hover-probe` herdam dele.
+        let title = tab("");
+        // As sondas `upper-*` estão dentro da aba `connected-tab-upper-row`.
+        let upper_tab = tab("tab connected-tab-upper-row");
+        let hover_name = if group_active { "--modern-ui-editor-tab-hover-background" } else { "--modern-ui-editor-tab-unfocused-hover-background" };
+        [
+            style.connected_tab_fill_background(&tab("tab active")),
+            style.connected_tab_fill_background(&tab("tab")),
+            style.tab_variable("--modern-ui-editor-tab-hover-background", &upper_tab),
+            style.tab_variable("--modern-ui-editor-tab-unfocused-hover-background", &upper_tab),
+            style.tab_variable("--modern-ui-editor-tab-action-unfocused-hover-background", &upper_tab),
+            style.tab_variable(hover_name, &title),
+            style.tab_variable("--modern-ui-connected-tab-active-hover-background", &title),
+        ]
+        .map(rgb_of)
+    };
+
+    assert_eq!(
+        (colors(true), colors(false)),
+        (
+            some_strings(["rgb(18, 52, 86)", "rgb(52, 86, 120)", "rgb(86, 120, 154)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(86, 120, 154)", "rgb(86, 120, 154)"]),
+            some_strings(["rgb(35, 69, 103)", "rgb(69, 103, 137)", "rgb(86, 120, 154)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(103, 137, 171)", "rgb(103, 137, 171)"]),
+        )
+    );
+}
+
+#[test]
+fn uses_legacy_border_customizations_for_connected_tabs() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `--vscode-tab-selectedBorderTop` é a customização `tab.selectedBorderTop`; o DOM só tem as variáveis que o caso escreve,
+    // sem o CSS gerado pelo tema.
+    let theme = theme_with_colors(&[("tab.selectedBorderTop", "#56789a")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    style.set_root_variable("--modern-ui-editor-tab-custom-active-border-top", Color::from_hex("#123456"));
+    style.set_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top", Color::from_hex("#234567"));
+    let border_styles = |group_active: bool| {
+        // `--tab-border-top-color` e `--tab-border-bottom-color` que o caso escreve em cada aba.
+        let (active_top, active_bottom) = if group_active { ("#123456", "#345678") } else { ("#234567", "#456789") };
+        let active_tab = TabElement::new("tab active connected-tab-top-row tab-border-top tab-border-bottom", group_active)
+            .with_border_colors(Some(Color::from_hex(active_top)), Some(Color::from_hex(active_bottom)));
+        let selected_tab = TabElement::new("tab selected tab-border-top", group_active).with_border_colors(Some(Color::from_hex("#56789a")), None);
+        let active_top_border = style.tab_border_container(&active_tab, TabBorderIndicator::Top);
+        let active_bottom_border = style.tab_border_container(&active_tab, TabBorderIndicator::Bottom);
+        let selected_top_border = style.tab_border_container(&selected_tab, TabBorderIndicator::Top);
+        (
+            (active_top_border.display, rgb_of(style.connected_tab_fill_border_top_color(&active_tab)), rgb_of(style.connected_edge_border_top_color(&active_tab))),
+            (active_bottom_border.display, css_rgb(&active_bottom_border.background)),
+            (selected_top_border.display, rgb_of(style.connected_tab_fill_border_top_color(&selected_tab))),
+        )
+    };
+
+    let expected = |edge: &str, bottom: &str| {
+        (
+            ("none", Some("rgba(0, 0, 0, 0)".to_owned()), Some(edge.to_owned())),
+            ("block", bottom.to_owned()),
+            ("none", Some("rgb(86, 120, 154)".to_owned())),
+        )
+    };
+    assert_eq!(
+        (border_styles(true), border_styles(false)),
+        (expected("rgb(18, 52, 86)", "rgb(52, 86, 120)"), expected("rgb(35, 69, 103)", "rgb(69, 103, 137)"))
+    );
+}
+
+#[test]
+fn uses_explicitly_customized_selected_borders_only_when_the_active_top_border_is_absent() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    type Colors<'a> = &'a [(&'a str, &'a str)];
+    let cases: [(Colors, Colors, [&str; 2]); 5] = [
+        (&[], &[], ["rgb(37, 37, 38)", "rgb(37, 37, 38)"]),
+        (&[], &[("tab.selectedBorderTop", "#a3e635")], ["rgb(163, 230, 53)", "rgb(163, 230, 53)"]),
+        (&[("tab.activeBorderTop", "#3994bc")], &[("tab.selectedBorderTop", "#a3e635")], ["rgb(37, 37, 38)", "rgb(37, 37, 38)"]),
+        (
+            &[],
+            &[("tab.selectedBorderTop", "#a3e635"), ("tab.activeBorderTop", "#22d3ee"), ("tab.unfocusedActiveBorderTop", "#c084fc")],
+            ["rgb(34, 211, 238)", "rgb(192, 132, 252)"],
+        ),
+        (&[], &[("tab.selectedBorderTop", "#a3e635"), ("tab.activeBorderTop", "#00000000")], ["rgba(0, 0, 0, 0)", "rgba(0, 0, 0, 0)"]),
+    ];
+
+    let actual: Vec<[String; 2]> = cases
+        .iter()
+        .map(|(colors, customizations, _)| {
+            let mut theme = unloaded_theme_with_file_colors(colors);
+            theme.set_custom_colors(customizations.iter().copied());
+            // O CSS gerado pelo tema (`generateColorThemeCSS`) é o estilo sem `with_explicit_colors_only`.
+            let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs modern-ui-connected-editor-tabs");
+            // O grupo ativo e o sem foco, cada um com a aba `active selected tab-border-top` e o seu `tab-connected-edge`.
+            [true, false].map(|group_active| {
+                let tab = TabElement::new("tab active selected tab-border-top", group_active);
+                css_rgb(&style.connected_edge_border_top_color(&tab).expect("a aresta conectada da aba ativa"))
+            })
+        })
+        .collect();
+    let expected: Vec<[String; 2]> = cases.iter().map(|(_, _, expected)| (*expected).map(str::to_owned)).collect();
+
+    assert_eq!(actual, expected);
 }
 
