@@ -488,6 +488,7 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
     let mut classes = vec![
         ("ThemeColor".to_owned(), JsData::Handle(Rc::new(theme_color))),
         ("TerminalProfile".to_owned(), terminal::terminal_profile_class(runner)),
+        ("TerminalLink".to_owned(), terminal::terminal_link_class(runner)),
         ("TreeItem".to_owned(), tree_views::tree_item_class(runner)),
     ];
     classes.extend(tree_view_classes);
