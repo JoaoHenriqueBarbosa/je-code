@@ -25,19 +25,22 @@
 //!   `updateValue` pelo handler do comando registrado e a espera pelo `updateValue` em `set_layout_density`, que é o
 //!   corpo do `run`, num segundo serviço de configuração.
 //!
+//! O `getComputedStyle` do original é o `ModernUiStyle` (`resolved_style.rs`): o estilo que as regras de `floatingPanels.css`
+//! e de `modernUI/browser/media/*.css` resolvem a partir das classes da parte e das cores do tema, o mesmo que os widgets
+//! nativos pintam. Cada `root.style.setProperty('--vscode-X', ...)` é uma customização de cor do tema (`X` com ponto), e as
+//! classes do `appendElement` são as da parte. Os casos de borda, de fundo do shell e das cores das abas conferem esse
+//! estilo resolvido, como o original.
+//!
 //! Recortes: os demais casos da suíte leem o estilo calculado de um DOM com os `*.css` do VS Code (`getComputedStyle`,
-//! `getBoundingClientRect`, `generateColorThemeCSS`); não há DOM, e o `.css` é a especificação lida ao portar cada
-//! widget. Voltam com o desenho nativo dos widgets e com o participante de tema (`generateColorThemeCSS`): `insets multi
-//! diff file rows ...`, `supports isolated notification and dialog presentation`, `uses part-specific pane colors ...`
+//! `getBoundingClientRect`, `generateColorThemeCSS`); a geometria (`getBoundingClientRect`, margens, larguras) ainda não
+//! tem resolvedor, e o `.css` é a especificação lida ao portar cada widget. Voltam com o desenho nativo dos widgets e com o participante de tema (`generateColorThemeCSS`): `supports isolated notification and dialog presentation`, `uses part-specific pane colors ...`
 //! até `rounds activity bar corners ...` e todos os que seguem (barra de atividade, barra de status, menu compacto,
 //! sashes, cantos do macOS, abas conectadas por tema) exceto os portados abaixo, e `uses the editor background for the
 //! connected surface` até `applies editor tab foregrounds ...`, `uses readable theme foregrounds ...` até `fades tab
 //! actions only when ...`, e de `uses legacy color customizations ...` até `keeps panel global actions above ...`.
 //! Nos casos parciais ficou só a parte que não é CSS: no terceiro caso `paneHeaderLineHeight` e
 //! `paneHeaderInlineLineHeight`; em `toggles uppercase view headers without relayout` o `text-transform` dos títulos;
-//! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`); nos casos de
-//! borda e de fundo do shell o `borderColor` e o `backgroundColor` calculados (ficam os padrões registrados); em `uses
-//! the registered modern tab colors` os valores calculados (ficam o registro e os padrões).
+//! em `Explorer title casing ...` o `text-transform` (fica a decisão `shouldPreserveWorkspaceNameCase`).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -81,6 +84,7 @@ use je_widgets::paneview::{Pane, PaneContent, PaneOptions};
 use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
+use je_workbench::contrib::modern_ui::resolved_style::{ActionTabState, ClassList, EditorTabState, ListRowHost, ModernUiStyle, css_rgb};
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, LayoutContainerId, LayoutSettings, ModernUiDensity, ModernUiEditorTabStyle,
@@ -522,6 +526,25 @@ fn toggles_uppercase_view_headers_without_relayout() {
     assert_eq!(after_toggle, (true, 0));
 }
 
+#[test]
+fn insets_multi_diff_file_rows_like_explorer_rows_in_both_layout_densities() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench");
+    // `read(row)`: o `left` e o `right` calculados são o mesmo recuo (a linha vai de borda a borda do recuo).
+    let mut state = |classes: &str| {
+        style.set_root_class_name(&format!("monaco-workbench {classes}"));
+        let inset = |host| style.list_row_horizontal_inset(host);
+        (inset(ListRowHost::PaneBody { chat_view: false }), inset(ListRowHost::MultiDiffFileList))
+    };
+
+    let standard = state("");
+    let modern = state("modern-ui");
+    let compact = state("modern-ui modern-ui-compact");
+
+    assert_eq!((standard, modern, compact), ((0.0, 0.0), (4.0, 4.0), (2.0, 2.0)));
+}
+
 /// O `IWorkspace` literal `{ id: 'test', folders: [], configuration }` do caso.
 struct TestWorkspace {
     configuration: Option<URI>,
@@ -583,37 +606,81 @@ fn is_registered(id: &str) -> bool {
 
 const SURFACE_BORDER: Option<Defaults> = Some(Defaults::Single(ColorValue::Id("surface.border")));
 
+/// O `<div class="monaco-workbench ...">` com as variáveis `--vscode-X` do `style.setProperty`: um tema de cores `X`.
+fn theme_with_colors(colors: &[(&str, &str)]) -> ColorTheme {
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors(colors.iter().copied());
+    theme
+}
+
 #[test]
 fn uses_the_editor_surface_border_color() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    // O `borderColor` calculado do `part editor` vem do `.css` (especificação lida ao portar o desenho da parte): fica o
-    // padrão registrado.
-    assert_eq!(registered_defaults("editor.border"), SURFACE_BORDER);
+    let theme = theme_with_colors(&[("editor.border", "#123456"), ("surface.border", "#654321")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let editor = ClassList::new("part editor");
+
+    assert_eq!(
+        (registered_defaults("editor.border"), style.editor_border_color(&editor).map(|color| css_rgb(&color))),
+        (SURFACE_BORDER, Some("rgb(18, 52, 86)".to_owned()))
+    );
 }
 
 #[test]
 fn uses_the_modern_activity_bar_border_color() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    // Os `borderColor` calculados da barra de atividade e da barra lateral (e o vão cedido à barra) vêm do `.css`.
-    assert_eq!(registered_defaults("modernActivityBar.border"), SURFACE_BORDER);
+    let theme = theme_with_colors(&[("modernActivityBar.border", "#123456"), ("surface.border", "#654321")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let activity_bar = style.floating_part_border_colors(&ClassList::new("part activitybar left"));
+    // Os outros cartões mantêm a borda de superfície compartilhada, menos a aresta que cedem à barra como emenda.
+    let side_bar = style.floating_part_border_colors(&ClassList::new("part sidebar left"));
+
+    assert_eq!(
+        (registered_defaults("modernActivityBar.border"), activity_bar.map(|colors| colors.to_css()), side_bar.map(|colors| colors.to_css())),
+        (
+            SURFACE_BORDER,
+            Some("rgb(18, 52, 86)".to_owned()),
+            Some("rgb(101, 67, 33) rgb(101, 67, 33) rgb(101, 67, 33) rgba(0, 0, 0, 0)".to_owned()),
+        )
+    );
 }
 
 #[test]
 fn uses_the_modern_panel_border_color() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    // O `borderColor` do painel e a `--modern-ui-floating-card-stroke-color` compacta vêm do `.css`.
-    assert_eq!(registered_defaults("modernPanel.border"), SURFACE_BORDER);
+    let theme = theme_with_colors(&[("modernPanel.border", "#123456"), ("surface.border", "#654321")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    let panel = ClassList::new("part panel bottom");
+    let panel_border = style.floating_part_border_colors(&panel).map(|colors| colors.to_css());
+
+    style.set_root_class_name("monaco-workbench modern-ui floating-panels modern-ui-compact");
+
+    assert_eq!(
+        (registered_defaults("modernPanel.border"), panel_border, style.floating_card_stroke_color(&panel).map(|color| color.to_string())),
+        (SURFACE_BORDER, Some("rgb(18, 52, 86)".to_owned()), Some("#123456".to_owned()))
+    );
 }
 
 #[test]
 fn uses_the_modern_ui_shell_background_color() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    // O fundo calculado do workbench e da grade vem do `.css`.
+    let theme = theme_with_colors(&[("modernUI.shellBackground", "#123456"), ("titleBar.activeBackground", "#654321")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui floating-panels");
+    // A raiz do workbench e a grade (`monaco-grid-view`) pintam o mesmo fundo do shell.
+    let shell = style.shell_background().map(|color| css_rgb(&color));
+
     assert_eq!(
-        (registered_defaults("modernUI.shellBackground"), registered_defaults("modernUI.inactiveShellBackground")),
+        (
+            registered_defaults("modernUI.shellBackground"),
+            registered_defaults("modernUI.inactiveShellBackground"),
+            shell.clone(),
+            shell,
+        ),
         (
             Some(Defaults::Single(ColorValue::Id("titleBar.activeBackground"))),
             Some(Defaults::Single(ColorValue::Id("titleBar.inactiveBackground"))),
+            Some("rgb(18, 52, 86)".to_owned()),
+            Some("rgb(18, 52, 86)".to_owned()),
         )
     );
 }
@@ -696,8 +763,31 @@ const fn single(value: ColorValue) -> Option<Defaults> {
 #[test]
 fn uses_the_registered_modern_tab_colors() {
     let _guard = ensure_no_disposables_are_leaked_in_test_suite();
-    // Os valores calculados dos painéis, das abas, das sondas de `var(--modern-ui-...)` e da aba das configurações
-    // (`getComputedStyle`) vêm dos `.css`; ficam o registro e os padrões de cada cor.
+    // As cores das variáveis `--vscode-modernTab-*` e `--vscode-modernEditorTab-*` do `style.setProperty` são as
+    // customizações do tema; o estilo resolvido é o que o `getComputedStyle` lê no original.
+    let theme = theme_with_colors(&[
+        ("modernTab.activeBackground", "#123456"),
+        ("modernTab.activeForeground", "#abcdef"),
+        ("modernTab.hoverBackground", "#654321"),
+        ("modernTab.hoverForeground", "#fedcba"),
+        ("modernEditorTab.activeActionBackground", "#102030"),
+        ("modernEditorTab.activeBackground", "#234567"),
+        ("modernEditorTab.activeForeground", "#bcdef0"),
+        ("modernEditorTab.activeHoverActionBackground", "#203040"),
+        ("modernEditorTab.activeHoverBackground", "#456789"),
+        ("modernEditorTab.inactiveBackground", "#345678"),
+        ("modernEditorTab.hoverActionBackground", "#302010"),
+        ("modernEditorTab.hoverBackground", "#765432"),
+        ("modernEditorTab.hoverForeground", "#edcba9"),
+        ("modernEditorTab.selectedActionBackground", "#554433"),
+    ]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+    let rgb = |color: Option<Color>| color.map(|color| css_rgb(&color));
+    // O grupo do original não leva `active`, as abas `active` e `selected` são as do caso.
+    let group = EditorTabState::default();
+    let active_tab = EditorTabState { active: true, ..group };
+    let selected_tab = EditorTabState { selected: true, actions_focus_within: true, ..group };
+    let checked = ActionTabState { checked: true, ..ActionTabState::default() };
     let modern_tab_ids = ["modernTab.activeBackground", "modernTab.activeForeground", "modernTab.hoverBackground", "modernTab.hoverForeground"];
     let editor_ids = [
         "modernEditorTab.activeActionBackground",
@@ -719,6 +809,24 @@ fn uses_the_registered_modern_tab_colors() {
             modern_tab_ids.map(registered_defaults),
             editor_ids.map(is_registered),
             editor_ids.map(registered_defaults),
+            [
+                rgb(style.pane_tab_indicator_background(checked)),
+                rgb(style.action_tab_foreground(checked)),
+                rgb(style.editor_tab_fill_background(active_tab)),
+                rgb(style.editor_tab_foreground(active_tab)),
+                rgb(style.editor_tab_fill_background(group)),
+                rgb(style.variable("--modern-ui-tab-hover-background")),
+                rgb(style.variable("--vscode-modernTab-hoverForeground")),
+                rgb(style.variable("--modern-ui-editor-tab-hover-background")),
+                rgb(style.variable("--modern-ui-editor-tab-hover-foreground")),
+                rgb(style.variable("--modern-ui-editor-tab-active-hover-background")),
+                rgb(style.variable("--modern-ui-editor-tab-action-active-background")),
+                rgb(style.variable("--modern-ui-editor-tab-action-active-hover-background")),
+                rgb(style.variable("--modern-ui-editor-tab-action-hover-background")),
+                rgb(style.editor_tab_actions_background(selected_tab)),
+                rgb(style.settings_tab_background(checked)),
+                rgb(style.action_tab_foreground(checked)),
+            ],
         ),
         (
             [true; 4],
@@ -742,6 +850,25 @@ fn uses_the_registered_modern_tab_colors() {
                 single(Id("modernTab.hoverForeground")),
                 single(ColorValue::Transform(&ColorTransform::Opaque { value: Id("tab.selectedBackground"), background: Id("editor.background") })),
             ],
+            [
+                "rgb(18, 52, 86)",
+                "rgb(171, 205, 239)",
+                "rgb(35, 69, 103)",
+                "rgb(188, 222, 240)",
+                "rgb(52, 86, 120)",
+                "rgb(101, 67, 33)",
+                "rgb(254, 220, 186)",
+                "rgb(118, 84, 50)",
+                "rgb(237, 203, 169)",
+                "rgb(69, 103, 137)",
+                "rgb(16, 32, 48)",
+                "rgb(32, 48, 64)",
+                "rgb(48, 32, 16)",
+                "rgb(85, 68, 51)",
+                "rgb(18, 52, 86)",
+                "rgb(171, 205, 239)",
+            ]
+            .map(|expected| Some(expected.to_owned())),
         )
     );
 }
