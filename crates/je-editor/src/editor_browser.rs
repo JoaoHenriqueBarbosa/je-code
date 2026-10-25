@@ -1,8 +1,9 @@
 //! Porte parcial de `src/vs/editor/browser/editorBrowser.ts`: o `MouseTargetType`, as interfaces de alvo do
 //! mouse (`IBaseMouseTarget` e derivadas, o union `IMouseTarget`) e `IEditorMouseEvent` /
 //! `IPartialEditorMouseEvent`, os widgets de conteúdo e de overlay (`IContentWidget`, `IOverlayWidget` e as
-//! posições) e as view zones (`IViewZone`, `IViewZoneChangeAccessor`). O resto do arquivo (`IEditor`, `ICodeEditor`,
-//! `IDiffEditor`, widgets de margem de glifos, `IPasteEvent` e afins) não está aqui.
+//! posições), os widgets da margem de glifos (`IGlyphMarginWidget`, `IGlyphMarginWidgetPosition`) e as view zones
+//! (`IViewZone`, `IViewZoneChangeAccessor`). O resto do arquivo (`IEditor`, `ICodeEditor`, `IDiffEditor`, `IPasteEvent` e
+//! afins) não está aqui.
 //!
 //! Divergências:
 //! - O union `IMouseTarget` vira o enum `MouseTarget`, com um struct de dados por variante. Os campos que a
@@ -546,6 +547,27 @@ pub trait IOverlayWidget {
     fn get_min_content_width_in_px(&self) -> Option<f64> {
         None
     }
+}
+
+/// `IGlyphMarginWidgetPosition`: onde o widget da margem de glifos fica.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphMarginWidgetPosition {
+    /// The glyph margin lane where the widget should be displayed.
+    pub lane: GlyphMarginLane,
+    /// The z-index of the widget, to allow controlling which widget shows first.
+    pub z_index: i32,
+    /// The position of the widget (`IRange`).
+    pub range: Range,
+}
+
+/// `IGlyphMarginWidget`: renders in the glyph margin. Sem DOM, o `getDomNode()` do original não existe (ver
+/// [`IContentWidget`]).
+pub trait IGlyphMarginWidget {
+    /// `getId()`.
+    fn get_id(&self) -> String;
+
+    /// `getPosition()`.
+    fn get_position(&self) -> GlyphMarginWidgetPosition;
 }
 
 // #endregion

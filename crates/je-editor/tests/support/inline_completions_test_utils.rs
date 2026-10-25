@@ -809,14 +809,14 @@ impl IAccessibilityService for TestAccessibilityService {
 }
 
 /// O `IAccessibilitySignalService` do `utils.ts`: `{ playSignal: async () => { }, isSoundEnabled: () => false }`.
-struct SilentAccessibilitySignalService;
+pub struct SilentAccessibilitySignalService;
 
 impl IAccessibilitySignalService for SilentAccessibilitySignalService {
     fn play_signal(&self, _signal: AccessibilitySignal) {}
 }
 
 /// `MockKeybindingService` de `mockKeybindingService.ts`: não tem atalho nenhum e resolve pelo layout US.
-struct MockKeybindingService;
+pub struct MockKeybindingService;
 
 fn current_os() -> OperatingSystem {
     Platform::detect().os
