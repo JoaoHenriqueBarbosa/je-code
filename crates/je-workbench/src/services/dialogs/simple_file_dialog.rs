@@ -74,7 +74,7 @@ use je_platform::workspace::IWorkspaceContextService;
 use je_storage::storage::StorageValue;
 
 use crate::common::editor::{EditorIdentifier, SaveOptions, SaveReason};
-use crate::services::editor::editor_service::{I_EDITOR_SERVICE, SaveEditorsOptions};
+use crate::services::editor::editor_service::{I_EDITOR_SERVICE, SaveEditorsOptions, SaveEditorsResult};
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
 use crate::services::remote::remote_agent_service::IRemoteAgentService;
 
@@ -111,10 +111,10 @@ pub mod save_local_file_command {
             let editor_service = accessor.get(I_EDITOR_SERVICE);
             let pane = editor_service.active_editor_pane();
             let Some(pane) = pane else {
-                return promise_result(Promise::resolved(None));
+                return promise_result(Promise::resolved(None::<SaveEditorsResult>));
             };
             let Some(editor) = pane.input() else {
-                return promise_result(Promise::resolved(None));
+                return promise_result(Promise::resolved(None::<SaveEditorsResult>));
             };
             let options = SaveEditorsOptions {
                 base: SaveOptions {
