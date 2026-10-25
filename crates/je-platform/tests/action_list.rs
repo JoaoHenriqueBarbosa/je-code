@@ -3012,6 +3012,196 @@ fn scrolling_a_submenu_relayouts_an_open_child_hover() {
     });
 }
 
+/// `settleLayout()`: dois quadros de animação.
+async fn settle_layout() {
+    timeout(32).await.unwrap();
+}
+
+/// Uma linha cujo `onDidBecomeVisible` anota o id em `visible`.
+fn notifying_when_visible(index: usize, visible: &Rc<RefCell<Vec<String>>>) -> TestItem {
+    let id = format!("item-{index}");
+    let record = visible.clone();
+    let noted = id.clone();
+    IActionListItem { on_did_become_visible: Some(Rc::new(move || record.borrow_mut().push(noted.clone()))), ..action(&id) }
+}
+
+/// A `focusState()` do teste: onde está o `document.activeElement` (`list`, `panel` ou `toolbar`) e o nome dele (`aria-label`
+/// ou `textContent`), no formato `local:nome`.
+fn focus_state(widget: &ActionListWidget<Item>) -> String {
+    if let Some((_, label)) = widget.focused_toolbar_button() {
+        return format!("toolbar:{label}");
+    }
+    if let Some(control) = widget.focused_control() {
+        return format!("panel:{}", control.accessible_label());
+    }
+    if widget.is_list_focused() {
+        return "list:Action Widget".to_owned();
+    }
+    "other:".to_owned()
+}
+
+/// `document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey, bubbles, cancelable }))`.
+fn press(widget: &ActionListWidget<Item>, key: &str, shift: bool) -> UiKeyEvent {
+    let mut event = key_event(key);
+    event.shift_key = shift;
+    let target = if widget.focused_control().is_some() || widget.is_panel_focused() {
+        KeyTarget::SubmenuPanel
+    } else if widget.is_list_focused() {
+        KeyTarget::List
+    } else {
+        KeyTarget::DomNode
+    };
+    dispatch_key(widget, event, target)
+}
+
+/// A linha que o teste de Tab monta: ação na barra e um painel com um link do repositório, um da referência e um botão de
+/// copiar a branch (`createPanel` e `integratedAction`).
+fn integrated_action(id: &str, on_remove: bool) -> TestItem {
+    let controls: Rc<RefCell<Vec<Rc<HoverElement>>>> = Rc::new(RefCell::new(Vec::new()));
+    let (build_controls, tabbable_controls) = (controls.clone(), controls);
+    let panel_id = id.to_owned();
+    IActionListItem {
+        toolbar_actions: Some(vec![to_action_with(&format!("copy-{id}"), &format!("Copy {id}"), None, None, noop())]),
+        on_remove: on_remove.then(|| -> OnRemove { Rc::new(|| Promise::resolved(())) }),
+        hover: Some(IActionListItemHover {
+            content: Some(HoverContent::Lazy(Rc::new(move || {
+                let repository = HoverElement::new(&format!("repo-{panel_id}"));
+                let reference = HoverElement::new(&format!("#{panel_id}"));
+                let branch = HoverElement::new(&format!("branch-{panel_id}"));
+                branch.set_aria_label(&format!("Copy branch {panel_id}"));
+                *build_controls.borrow_mut() = vec![repository, reference, branch];
+                HoverElement::new(&format!("repo-{panel_id}#{panel_id}branch-{panel_id}"))
+            }))),
+            expandable: true,
+            show_indicator: Some(false),
+            tab_through_panel: true,
+            get_tabbable_elements: Some(Rc::new(move || tabbable_controls.borrow().clone())),
+            content_owns_padding: true,
+            ..IActionListItemHover::default()
+        }),
+        ..action(id)
+    }
+}
+
+fn never_reserving_submenu_space() -> IActionListOptions {
+    IActionListOptions { show_filter: false, reserve_submenu_space: Some(ReserveSubmenuSpace::Never), ..IActionListOptions::default() }
+}
+
+#[test]
+fn notifies_initially_visible_rows_once_when_scrolling_begins() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let visible = Rc::new(RefCell::new(Vec::<String>::new()));
+        let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config((0..20).map(|index| notifying_when_visible(index, &visible)).collect()) });
+        widget.layout(47.0, Some(200.0));
+        settle_layout().await;
+        widget.set_scroll_top(1.0);
+        settle_layout().await;
+        widget.set_scroll_top(0.0);
+        settle_layout().await;
+        assert_eq!(visible.borrow().clone(), strings(&["item-0", "item-1"]));
+    });
+}
+
+#[test]
+fn notifies_virtualized_items_when_scrolling_makes_them_visible() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let visible = Rc::new(RefCell::new(Vec::<String>::new()));
+        let items: Vec<TestItem> = (0..20).map(|index| notifying_when_visible(index, &visible)).collect();
+        let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(items.clone()) });
+        widget.layout(48.0, Some(200.0));
+        settle_layout().await;
+        widget.set_scroll_top(240.0);
+        settle_layout().await;
+        widget.update_items(&rcs(items), None, Some(IActionListUpdateOptions { preserve_scroll_position: true, ..IActionListUpdateOptions::default() }));
+        widget.set_scroll_top(241.0);
+        widget.set_scroll_top(242.0);
+        settle_layout().await;
+
+        let notified = visible.borrow().clone();
+        let unique: std::collections::BTreeSet<&String> = notified.iter().collect();
+        assert_eq!(
+            (!notified.is_empty(), notified.iter().all(|id| id["item-".len()..].parse::<usize>().unwrap() >= 9), unique.len() == notified.len()),
+            (true, true, true),
+            "Already visible rows must not be notified again after metadata or pixel scroll updates",
+        );
+    });
+}
+
+#[test]
+fn tabs_through_a_focused_row_toolbar_and_hover_panel_while_preserving_list_navigation() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, Config { list_options: never_reserving_submenu_space(), ..config(vec![integrated_action("one", false), integrated_action("two", false)]) });
+
+    widget.focus();
+    let initial = (focus_state(&widget), !widget.panel_displayed());
+    press(&widget, "Tab", false);
+    let opened = (widget.panel_role(), widget.panel_aria_label(), widget.panel_header_owns_padding());
+    let copy = focus_state(&widget);
+    press(&widget, "Tab", false);
+    let repository = focus_state(&widget);
+    press(&widget, "Tab", false);
+    let reference = focus_state(&widget);
+    press(&widget, "Tab", false);
+    let branch = focus_state(&widget);
+    // O ouvinte de `keydown` do `domNode` só vê as teclas que o painel deixa subir.
+    let enter = press(&widget, "Enter", false);
+    let space = press(&widget, " ", false);
+    let panel_activation = (
+        [&enter, &space].iter().filter(|event| !event.propagation_stopped()).map(|event| event.key.clone()).collect::<Vec<_>>(),
+        !enter.default_prevented(),
+        !space.default_prevented(),
+    );
+    press(&widget, "Tab", true);
+    let back_to_reference = focus_state(&widget);
+    press(&widget, "Tab", true);
+    let back_to_repository = focus_state(&widget);
+    press(&widget, "Tab", true);
+    let back_to_copy = focus_state(&widget);
+    press(&widget, "Tab", true);
+    let back_to_list = focus_state(&widget);
+    press(&widget, "Tab", false);
+    press(&widget, "Tab", false);
+    press(&widget, "ArrowDown", false);
+    let next_item = (focus_state(&widget), widget.get_focused_element().and_then(|element| element.item_id()), widget.panel_aria_label());
+
+    assert_eq!(
+        (initial, opened, copy, repository, reference, branch, panel_activation, back_to_reference, back_to_repository, back_to_copy, back_to_list, next_item),
+        (
+            ("list:Action Widget".to_owned(), true),
+            (Some("dialog".to_owned()), Some("one".to_owned()), Some(true)),
+            "toolbar:Copy one".to_owned(),
+            "panel:repo-one".to_owned(),
+            "panel:#one".to_owned(),
+            "panel:Copy branch one".to_owned(),
+            (Vec::<String>::new(), true, true),
+            "panel:#one".to_owned(),
+            "panel:repo-one".to_owned(),
+            "toolbar:Copy one".to_owned(),
+            "list:Action Widget".to_owned(),
+            ("list:Action Widget".to_owned(), Some("two".to_owned()), Some("two".to_owned())),
+        ),
+    );
+}
+
+#[test]
+fn shift_tab_traverses_the_panel_and_toolbar_controls_in_reverse_order() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, Config { list_options: never_reserving_submenu_space(), ..config(vec![integrated_action("one", true)]) });
+    let toolbar_label = |widget: &ActionListWidget<Item>| widget.focused_toolbar_button().map(|(_, label)| label);
+
+    widget.focus();
+    press(&widget, "Tab", false); // list -> Copy
+    press(&widget, "Tab", false); // Copy -> Remove
+    press(&widget, "Tab", false); // Remove -> panel link
+    press(&widget, "Tab", true); // panel link -> Shift+Tab back into the toolbar
+    let first_reverse_target = toolbar_label(&widget);
+    press(&widget, "Tab", true); // Remove -> Copy
+
+    assert_eq!((first_reverse_target, toolbar_label(&widget)), (Some("Remove".to_owned()), Some("Copy one".to_owned())));
+}
+
 #[test]
 fn mouse_removal_from_a_row_toolbar_does_not_select_the_row() {
     run_with_faked_timers(async move {
@@ -3036,6 +3226,30 @@ fn mouse_removal_from_a_row_toolbar_does_not_select_the_row() {
 
         assert_eq!((removed.get(), selected.borrow().clone()), (1, Vec::<String>::new()));
     });
+}
+
+#[test]
+fn ctrl_meta_alt_tab_bubble_to_the_keybinding_service_instead_of_driving_panel_traversal() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(&guard, Config { list_options: never_reserving_submenu_space(), ..config(vec![integrated_action("one", false)]) });
+    widget.focus();
+
+    let results: Vec<(&str, bool, bool)> = ["ctrlKey", "metaKey", "altKey"]
+        .into_iter()
+        .map(|modifier| {
+            let before = focus_state(&widget);
+            let mut event = key_event("Tab");
+            match modifier {
+                "ctrlKey" => event.ctrl_key = true,
+                "metaKey" => event.meta_key = true,
+                _ => event.alt_key = true,
+            }
+            let event = dispatch_key(&widget, event, KeyTarget::DomNode);
+            (modifier, focus_state(&widget) == before, !event.default_prevented())
+        })
+        .collect();
+
+    assert_eq!(results, vec![("ctrlKey", true, true), ("metaKey", true, true), ("altKey", true, true)]);
 }
 
 #[test]
@@ -3088,5 +3302,659 @@ fn rebuilding_the_items_in_place_can_preserve_the_scroll_position() {
 
     // `list.scrollTop` é o deslocamento negativo de `.monaco-list-rows`.
     assert_eq!(widget.rows_top(), -120.0);
+}
+
+#[test]
+fn refreshing_an_open_submenu_keeps_its_row_focused_while_the_filter_has_focus() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let submenu_action = to_action_with("child", "Child", None, None, noop());
+        let item = |id: &str, checked: bool| IActionListItem {
+            item: Some(Item { id: id.to_owned(), checked }),
+            submenu_actions: (id == "other").then(|| vec![submenu_action.clone()]),
+            ..action(id)
+        };
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { show_filter: true, focus_filter_on_open: true, filter_as_combobox: true, ..IActionListOptions::default() },
+                ..config(vec![item("selected", true), item("other", false)])
+            },
+        );
+        widget.focus();
+        widget.pointer_over(1, &PointerEvent::default());
+        widget.pointer_move(1, &moved(1.0, 0.0));
+        timeout(600).await.unwrap();
+
+        widget.update_items(&rcs(vec![item("selected", true), item("other", false)]), None, Some(IActionListUpdateOptions { preserve_hover: true, ..IActionListUpdateOptions::default() }));
+        let focused_row_id = widget.focused_row_id();
+
+        assert_eq!(
+            (
+                widget.filter_input().is_some_and(|input| input.is_focused()),
+                focused_id(&widget),
+                widget.panel_displayed(),
+                widget.filter_aria().and_then(|aria| aria.active_descendant),
+                focused_row_id.clone(),
+            ),
+            (true, Some("other".to_owned()), true, focused_row_id.clone(), focused_row_id),
+        );
+    });
+}
+
+#[test]
+fn removing_the_focused_row_toolbar_restores_focus_inside_the_remaining_list() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: no_filter(),
+            ..config(vec![
+                IActionListItem { toolbar_actions: Some(vec![to_action_with("remove", "Remove", None, None, noop())]), ..action("one") },
+                action("two"),
+                action("three"),
+            ])
+        },
+    );
+    widget.focus();
+    widget.focus_toolbar_button(0);
+    widget.update_items(&rcs(vec![action("two"), action("three")]), None, None);
+
+    assert_eq!((focus_inside(&widget), focused_id(&widget), visible_row_text(&widget)), (true, Some("two".to_owned()), strings(&["two", "three"])));
+}
+
+/// `{ ...action(id), hover: { content: text } }`.
+fn with_hover_text(item: TestItem, text: &str) -> TestItem {
+    IActionListItem { hover: Some(IActionListItemHover { content: Some(HoverContent::Text(text.to_owned())), ..IActionListItemHover::default() }), ..item }
+}
+
+/// `{ ...action(id), item: { id, checked: true } }`.
+fn checked_action(id: &str) -> TestItem {
+    IActionListItem { item: Some(Item { id: id.to_owned(), checked: true }), ..action(id) }
+}
+
+#[test]
+fn refreshing_the_initial_selection_stays_quiet_until_hover_or_keyboard_navigation() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let items = vec![with_hover_text(checked_action("selected"), "Selected details"), with_hover_text(action("other"), "Other details")];
+        let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(items.clone()) });
+        let state = |widget: &ActionListWidget<Item>| (focused_id(widget), widget.panel_displayed(), widget.panel_text(), widget.is_list_focused());
+        widget.focus();
+        let initial = state(&widget);
+        widget.update_items(&rcs(items), None, None);
+        timeout(1000).await.unwrap();
+        let refreshed = state(&widget);
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        timeout(1000).await.unwrap();
+        let hovered = state(&widget);
+        widget.focus_next();
+        let navigated = state(&widget);
+
+        let selected = Some("selected".to_owned());
+        assert_eq!(
+            (initial, refreshed, hovered, navigated),
+            (
+                (selected.clone(), false, String::new(), true),
+                (selected.clone(), false, String::new(), true),
+                (selected, true, "Selected details".to_owned(), true),
+                (Some("other".to_owned()), true, "Other details".to_owned(), true),
+            ),
+        );
+    });
+}
+
+fn refreshing_an_open_hover_preserves_its_latest_content(persistent_hover: bool) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config { list_options: IActionListOptions { show_filter: false, persistent_hover, ..IActionListOptions::default() }, ..config(vec![with_hover_text(checked_action("selected"), "Original details")]) },
+    );
+    widget.focus();
+    widget.show_hover_for_checked_item();
+    widget.update_items(&rcs(vec![with_hover_text(checked_action("selected"), "Updated details")]), None, None);
+
+    assert_eq!((focused_id(&widget), widget.panel_displayed(), widget.panel_text()), (Some("selected".to_owned()), true, "Updated details".to_owned()));
+}
+
+#[test]
+fn refreshing_an_open_hover_preserves_its_latest_content_persistent_false() {
+    refreshing_an_open_hover_preserves_its_latest_content(false);
+}
+
+#[test]
+fn refreshing_an_open_hover_preserves_its_latest_content_persistent_true() {
+    refreshing_an_open_hover_preserves_its_latest_content(true);
+}
+
+#[test]
+fn an_explicit_focus_target_after_refreshing_can_still_open_a_hover() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let items = vec![with_hover_text(checked_action("selected"), "Selected details"), with_hover_text(action("other"), "Other details")];
+    let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(items.clone()) });
+    widget.focus();
+    widget.update_items(&rcs(items), Some("other"), None);
+
+    assert_eq!((focused_id(&widget), widget.panel_displayed(), widget.panel_text()), (Some("other".to_owned()), true, "Other details".to_owned()));
+}
+
+#[test]
+fn shows_a_row_hover_panel_once_the_hover_delay_elapses() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(
+            &guard,
+            Config {
+                list_options: IActionListOptions { show_filter: true, header_text: Some("Cache hint".to_owned()), ..IActionListOptions::default() },
+                ..config(vec![with_hover_text(action("auto"), "Auto routes based on your task"), action("other")])
+            },
+        );
+
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        timeout(1000).await.unwrap();
+
+        assert_eq!((widget.panel_displayed(), widget.panel_text()), (true, "Auto routes based on your task".to_owned()));
+    });
+}
+
+/// O `mainWindow.innerWidth` do teste: o tamanho padrão da janela do widget.
+const WINDOW_INNER_WIDTH: f64 = 1280.0;
+
+/// O que `createPersistentPreview(side, pointerIntentOnly)` devolve: o widget, o popup, os três conteúdos de hover e o `onSelect`.
+struct PersistentPreview {
+    widget: Widget,
+    popup: Rc<ViewElement>,
+    contents: Vec<Rc<HoverElement>>,
+    selected: Rc<RefCell<Vec<String>>>,
+}
+
+/// `createPersistentPreview(side, pointerIntentOnly)`: o popup `position: fixed; top: 120px; width: 260px; padding: 8px`.
+fn create_persistent_preview(guard: &LeakGuard, side: &str, pointer_intent_only: bool) -> PersistentPreview {
+    let selected = Rc::new(RefCell::new(Vec::<String>::new()));
+    let contents: Vec<Rc<HoverElement>> = ["first", "second", "third"]
+        .into_iter()
+        .map(|label| {
+            let content = HoverElement::new(&format!("Details for {label}"));
+            content.set_size(180.0, 180.0);
+            content
+        })
+        .collect();
+    let mut items: Vec<TestItem> = ["first", "second", "third"]
+        .into_iter()
+        .zip(&contents)
+        .map(|(id, content)| IActionListItem { hover: Some(IActionListItemHover { content: Some(HoverContent::Element(content.clone())), ..IActionListItemHover::default() }), ..action(id) })
+        .collect();
+    items.push(action("plain"));
+    let widget = create_action_list_widget(
+        guard,
+        Config {
+            on_select: recording(&selected),
+            list_options: IActionListOptions {
+                show_filter: false,
+                persistent_hover: !pointer_intent_only,
+                submenu_pointer_intent: pointer_intent_only,
+                header_text: Some("Cache hint".to_owned()),
+                ..IActionListOptions::default()
+            },
+            ..config(items)
+        },
+    );
+    let popup = ViewElement::with_classes(&["action-widget"]);
+    popup.set_size(260.0, 120.0 + 16.0);
+    widget.dom_node().set_parent(Some(popup.clone()));
+    widget.layout(120.0, Some(240.0));
+    let preview = PersistentPreview { widget, popup, contents, selected };
+    preview.place_popup(if side == "left" { WINDOW_INNER_WIDTH - 320.0 } else { 40.0 });
+    preview
+}
+
+impl PersistentPreview {
+    /// `popup.style.left = ...px`: o popup e a lista dentro do padding de 8px dele.
+    fn place_popup(&self, left: f64) {
+        self.popup.set_position(120.0, left);
+        self.widget.dom_node().set_position(120.0 + 8.0, left + 8.0);
+    }
+
+    /// `hover(index, clientX)`: `mouseover` e `mousemove` no centro da linha (ou no `clientX`); devolve o ponto.
+    fn hover(&self, index: usize, client_x: Option<f64>) -> (f64, f64) {
+        let bounds = self.widget.visible_row_rect(index);
+        let point = (client_x.unwrap_or(bounds.left + bounds.width / 2.0), bounds.top + bounds.height / 2.0);
+        let event = PointerEvent { client_x: point.0, client_y: point.1, ..PointerEvent::default() };
+        self.widget.pointer_over(index, &event);
+        self.widget.pointer_move(index, &PointerEvent { movement_x: 1.0, ..event });
+        point
+    }
+
+    /// `isCenteredOnRow(index)`.
+    fn is_centered_on_row(&self, index: usize) -> bool {
+        let row = self.widget.visible_row_rect(index);
+        let panel = self.widget.panel_rect().expect("o painel está posicionado");
+        (panel.top + panel.height / 2.0 - row.top - row.height / 2.0).abs() < 1.0
+    }
+}
+
+#[test]
+fn persistent_previews_follow_each_row_immediately_without_selecting_or_taking_pointer_focus() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let preview = create_persistent_preview(&guard, "right", false);
+    let widget = &preview.widget;
+    // O botão `outside` tem o foco do documento (a lista ainda não o tem): o hover não o toma.
+    preview.hover(0, None);
+    let first = widget.panel_text();
+    let first_centered = preview.is_centered_on_row(0);
+    preview.hover(1, None);
+    let second = widget.panel_text();
+    let second_centered = preview.is_centered_on_row(1);
+    let pointer_focus_preserved = !widget.is_list_focused();
+    widget.focus();
+    widget.focus_next();
+
+    assert_eq!(
+        (first, second, widget.panel_text(), pointer_focus_preserved, preview.selected.borrow().clone(), [first_centered, second_centered, preview.is_centered_on_row(2)]),
+        ("Details for first".to_owned(), "Details for second".to_owned(), "Details for third".to_owned(), true, Vec::<String>::new(), [true, true, true]),
+    );
+}
+
+#[test]
+fn persistent_previews_start_with_the_focused_item_when_the_tab_has_no_checked_item() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let preview = create_persistent_preview(&guard, "right", false);
+    preview.widget.focus();
+    preview.widget.show_hover_for_checked_item();
+
+    assert_eq!(
+        (preview.widget.panel_text(), preview.selected.borrow().clone(), focused_id(&preview.widget)),
+        ("Details for first".to_owned(), Vec::<String>::new(), Some("first".to_owned())),
+    );
+}
+
+#[test]
+fn persistent_previews_remain_visible_over_chrome_plain_rows_and_pointer_gaps() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", false);
+        let widget = &preview.widget;
+        preview.hover(0, None);
+        widget.pointer_leave();
+        widget.panel_pointer_enter();
+        widget.panel_pointer_leave();
+        widget.header_pointer_enter();
+        preview.hover(3, None);
+        timeout(1000).await.unwrap();
+
+        assert_eq!((widget.panel_displayed(), widget.panel_text(), widget.panel_contains(&preview.contents[0])), (true, "Details for first".to_owned(), true));
+    });
+}
+
+#[test]
+fn persistent_previews_close_when_their_source_items_are_replaced() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let preview = create_persistent_preview(&guard, "right", false);
+    preview.hover(0, None);
+    preview.widget.update_items(&rcs(vec![action("replacement")]), None, None);
+    assert_eq!((preview.widget.panel_displayed(), preview.widget.panel_text()), (false, String::new()));
+}
+
+#[test]
+fn persistent_previews_retain_their_last_row_position_during_virtualization() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let preview = create_persistent_preview(&guard, "right", false);
+    preview.hover(2, None);
+    let top = preview.widget.panel_rect().expect("o painel está posicionado").top;
+    preview.widget.layout(24.0, Some(240.0));
+
+    assert_eq!(
+        (preview.widget.panel_displayed(), preview.widget.panel_contains(&preview.contents[2]), (preview.widget.panel_rect().expect("o painel está posicionado").top - top).abs() < 1.0),
+        (true, true, true),
+    );
+}
+
+#[test]
+fn persistent_previews_keep_their_side_and_width_across_differently_sized_content() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let preview = create_persistent_preview(&guard, "right", false);
+    preview.place_popup(WINDOW_INNER_WIDTH - 480.0);
+    preview.contents[0].set_size(260.0, 180.0);
+    preview.contents[1].set_size(120.0, 180.0);
+    preview.hover(0, None);
+    let first = preview.widget.panel_rect().expect("o painel está posicionado");
+    let first_centered = preview.is_centered_on_row(0);
+    preview.hover(1, None);
+    let second = preview.widget.panel_rect().expect("o painel está posicionado");
+    let parent = preview.popup.rect();
+
+    assert_eq!(
+        ((first.left + first.width - parent.left).abs() < 1.0, (second.left + second.width - parent.left).abs() < 1.0, [first_centered, preview.is_centered_on_row(1)], first.width == second.width),
+        (true, true, [true, true], true),
+    );
+}
+
+fn pointer_travel_into_the_preview_does_not_switch_to_a_crossed_row(side: &'static str) {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, side, false);
+        let widget = &preview.widget;
+        let origin = preview.hover(0, None);
+        preview.hover(1, Some(origin.0 + if side == "right" { 60.0 } else { -60.0 }));
+        let during_travel = widget.panel_text();
+        timeout(100).await.unwrap();
+        widget.panel_pointer_enter();
+        timeout(300).await.unwrap();
+        let after_entering = widget.panel_text();
+        widget.panel_pointer_leave();
+        preview.hover(1, None);
+
+        assert_eq!(
+            (during_travel, after_entering, widget.panel_text()),
+            ("Details for first".to_owned(), "Details for first".to_owned(), "Details for second".to_owned()),
+        );
+    });
+}
+
+#[test]
+fn pointer_travel_into_the_left_preview_does_not_switch_to_a_crossed_row() {
+    pointer_travel_into_the_preview_does_not_switch_to_a_crossed_row("left");
+}
+
+#[test]
+fn pointer_travel_into_the_right_preview_does_not_switch_to_a_crossed_row() {
+    pointer_travel_into_the_preview_does_not_switch_to_a_crossed_row("right");
+}
+
+#[test]
+fn submenu_pointer_intent_does_not_apply_persistent_preview_sizing() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", true);
+        let widget = &preview.widget;
+        let origin = preview.hover(0, None);
+        let initial_width = widget.panel_rect().expect("o painel está posicionado").width;
+        preview.hover(1, Some(origin.0 + 60.0));
+        timeout(100).await.unwrap();
+        widget.panel_pointer_enter();
+        timeout(300).await.unwrap();
+
+        assert_eq!((widget.panel_text(), initial_width == preview.popup.rect().width), ("Details for first".to_owned(), false));
+    });
+}
+
+#[test]
+fn submenu_pointer_intent_keeps_the_panel_open_while_crossing_a_plain_row() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", true);
+        let widget = &preview.widget;
+        let origin = preview.hover(0, None);
+        preview.hover(3, Some(origin.0 + 60.0));
+        let during_travel = widget.panel_text();
+        widget.panel_pointer_enter();
+        timeout(300).await.unwrap();
+
+        assert_eq!((during_travel, widget.panel_text()), ("Details for first".to_owned(), "Details for first".to_owned()));
+    });
+}
+
+#[test]
+fn pointer_travel_grace_is_bounded_across_multiple_crossed_rows() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", false);
+        let origin = preview.hover(0, None);
+        preview.hover(1, Some(origin.0 + 60.0));
+        timeout(150).await.unwrap();
+        preview.hover(2, Some(origin.0 + 80.0));
+        let before_expiry = preview.widget.panel_text();
+        timeout(60).await.unwrap();
+
+        assert_eq!((before_expiry, preview.widget.panel_text()), ("Details for first".to_owned(), "Details for third".to_owned()));
+    });
+}
+
+#[test]
+fn keyboard_navigation_supersedes_a_pending_pointer_preview() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", false);
+        let widget = &preview.widget;
+        let origin = preview.hover(0, None);
+        preview.hover(1, Some(origin.0 + 60.0));
+        widget.focus();
+        widget.focus_next();
+        let immediate = widget.panel_text();
+        timeout(300).await.unwrap();
+
+        assert_eq!((immediate, widget.panel_text()), ("Details for third".to_owned(), "Details for third".to_owned()));
+    });
+}
+
+#[test]
+fn disposing_a_persistent_preview_cancels_pending_pointer_travel() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let preview = create_persistent_preview(&guard, "right", false);
+        let origin = preview.hover(0, None);
+        preview.hover(1, Some(origin.0 + 60.0));
+        preview.widget.dispose();
+        timeout(300).await.unwrap();
+
+        assert_eq!(preview.widget.panel_text(), "Details for first");
+    });
+}
+
+/// `{ ...action('permissions'), label: 'Permissions', submenuActions: [toAction({ id: 'manual', label: 'Manual', run })] }`.
+fn permissions_with_manual_submenu() -> TestItem {
+    IActionListItem {
+        label: Some("Permissions".to_owned()),
+        submenu_actions: Some(vec![to_action_with("manual", "Manual", None, None, noop())]),
+        ..action("permissions")
+    }
+}
+
+#[test]
+fn opens_a_submenu_on_hover_after_the_delay_without_moving_dom_focus() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(vec![permissions_with_manual_submenu(), action("mode")]) });
+        // popup: position: fixed; top: 100px; left: 40px; width: 200px; padding: 8px.
+        let popup = ViewElement::with_classes(&["action-widget"]);
+        popup.set_position(100.0, 40.0);
+        popup.set_size(200.0, 216.0);
+        widget.dom_node().set_parent(Some(popup.clone()));
+        widget.dom_node().set_position(108.0, 48.0);
+        widget.layout(200.0, Some(180.0));
+        widget.focus();
+        widget.focus_next();
+        let list_focused = widget.is_list_focused();
+
+        widget.pointer_over(0, &PointerEvent::default());
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        timeout(300).await.unwrap();
+        let displayed_before_delay = widget.panel_displayed();
+        timeout(300).await.unwrap();
+
+        let highlighted: Vec<String> = widget.focused_index().and_then(|index| widget.row_state(index)).map(|row| row.title_text).into_iter().collect();
+        assert_eq!(
+            (
+                displayed_before_delay,
+                widget.panel_displayed(),
+                widget.submenu_rows().and_then(|rows| rows.into_iter().next().flatten()),
+                widget.row_state(0).and_then(|row| row.aria_expanded),
+                widget.is_list_focused() == list_focused,
+                highlighted,
+            ),
+            (false, true, Some("Manual".to_owned()), Some("true".to_owned()), true, strings(&["Permissions"])),
+        );
+    });
+}
+
+#[test]
+fn opens_a_submenu_immediately_when_the_hover_delay_is_zero() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: false, submenu_hover_delay: Some(0), ..IActionListOptions::default() },
+            ..config(vec![permissions_with_manual_submenu()])
+        },
+    );
+
+    widget.pointer_over(0, &PointerEvent::default());
+    widget.pointer_move(0, &moved(1.0, 0.0));
+
+    assert_eq!(
+        (widget.panel_displayed(), widget.submenu_rows().and_then(|rows| rows.into_iter().next().flatten()), widget.row_state(0).and_then(|row| row.aria_expanded)),
+        (true, Some("Manual".to_owned()), Some("true".to_owned())),
+    );
+}
+
+#[test]
+fn cancels_a_submenu_hover_when_the_pointer_leaves_before_the_delay() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = create_action_list_widget(&guard, Config { list_options: no_filter(), ..config(vec![permissions_with_manual_submenu()]) });
+        widget.pointer_over(0, &PointerEvent::default());
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        widget.pointer_leave();
+        timeout(1000).await.unwrap();
+
+        assert_eq!((widget.panel_displayed(), widget.panel_text()), (false, String::new()));
+    });
+}
+
+/// A lista de `{ ...action('auto'), hover: { content: 'Auto routes based on your task' } }` e `other`, com o banner `Cache hint`.
+fn auto_routes_widget(guard: &LeakGuard) -> Widget {
+    create_action_list_widget(
+        guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, header_text: Some("Cache hint".to_owned()), ..IActionListOptions::default() },
+            ..config(vec![with_hover_text(action("auto"), "Auto routes based on your task"), action("other")])
+        },
+    )
+}
+
+#[test]
+fn does_not_open_a_row_hover_panel_once_the_pointer_has_left_the_list() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = auto_routes_widget(&guard);
+
+        // The banner is a sibling of the list, so reaching it drags the pointer across a row.
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        widget.pointer_leave();
+        timeout(1000).await.unwrap();
+
+        assert_eq!((widget.panel_displayed(), widget.panel_text()), (false, String::new()));
+    });
+}
+
+#[test]
+fn dismisses_an_open_row_hover_panel_when_the_pointer_reaches_the_header_banner() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let widget = auto_routes_widget(&guard);
+
+        // Dwelling on the row long enough for the panel to open, then continuing to the banner.
+        widget.pointer_move(0, &moved(1.0, 0.0));
+        timeout(600).await.unwrap();
+        let opened_while_on_row = widget.panel_text();
+
+        widget.pointer_leave();
+        widget.header_pointer_enter();
+
+        assert_eq!(
+            (opened_while_on_row, widget.panel_displayed(), widget.panel_text()),
+            ("Auto routes based on your task".to_owned(), false, String::new()),
+        );
+    });
+}
+
+#[test]
+fn header_renders_a_learn_more_link_to_the_given_uri() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: true,
+                header_text: Some("Cache hint".to_owned()),
+                header_link: Some(IActionListHeaderLink { label: "Learn more".to_owned(), uri: URI::parse("https://aka.ms/test", false) }),
+                ..IActionListOptions::default()
+            },
+            ..config(Vec::new())
+        },
+    );
+
+    assert_eq!(widget.header_link(), Some(("Learn more".to_owned(), "https://aka.ms/test".to_owned())), "a \"Learn more\" link should render in the header");
+}
+
+#[test]
+fn updates_an_open_search_and_focuses_the_exact_duplicate_label_row_without_selecting() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, filter_as_combobox: true, ..IActionListOptions::default() },
+            ..config(vec![
+                IActionListItem { label: Some("GPT".to_owned()), ..action("source") },
+                IActionListItem { label: Some("GPT".to_owned()), ..action("target") },
+                action("different"),
+            ])
+        },
+    );
+    widget.set_filter("GPT", Some("target"));
+    widget.set_filter("GPT", Some("target"));
+    assert_eq!((widget.filter_input().map(|input| input.value()), focused_id(&widget)), (Some("GPT".to_owned()), Some("target".to_owned())));
+}
+
+#[test]
+fn focuses_the_configured_initial_item_when_opened() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, initial_focus_item_id: Some("active".to_owned()), ..IActionListOptions::default() },
+            ..config(vec![action("first"), action("active"), action("last")])
+        },
+    );
+
+    widget.focus();
+
+    assert_eq!(focused_id(&widget), Some("active".to_owned()));
+}
+
+#[test]
+fn skips_a_disabled_configured_and_checked_item_when_choosing_initial_focus() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions { show_filter: true, initial_focus_item_id: Some("disabled".to_owned()), ..IActionListOptions::default() },
+            ..config(vec![action("first"), IActionListItem { item: Some(Item { id: "disabled".to_owned(), checked: true }), disabled: true, ..action("disabled") }, action("last")])
+        },
+    );
+
+    widget.focus();
+
+    assert_eq!(focused_id(&widget), Some("first".to_owned()));
+}
+
+#[test]
+fn opening_the_checked_hover_reveals_a_model_in_a_collapsed_section() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let widget = create_action_list_widget(
+        &guard,
+        Config {
+            list_options: IActionListOptions {
+                show_filter: false,
+                collapsed_by_default: Some(std::collections::BTreeSet::from(["other".to_owned()])),
+                ..IActionListOptions::default()
+            },
+            ..config(vec![action("pinned"), IActionListItem { section: Some("other".to_owned()), ..with_hover_text(checked_action("active"), "Active model details") }])
+        },
+    );
+    widget.focus();
+    widget.show_hover_for_checked_item();
+
+    assert_eq!((focused_id(&widget), widget.panel_text()), (Some("active".to_owned()), "Active model details".to_owned()));
 }
 
