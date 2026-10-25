@@ -30,6 +30,11 @@
 //!   [`IProgressIndicator`]).
 //! - **`CompositePart<T>`.** O parâmetro de tipo do composite desaparece: o registro é o [`ICompositeRegistry`] (nome e fábrica
 //!   por identificador) e os composites são [`Composite`].
+//! - **Sobrescritas de `showComposite`, `hideActiveComposite` e `onTitleAreaUpdate`** (as da `AbstractPaneCompositePart`) são os
+//!   ganchos `did_show_composite`, `did_hide_active_composite` e `did_title_area_update` do [`CompositePartBehavior`], chamados
+//!   depois do `super`; `show_composite_base`, `hide_active_composite_base` e `on_title_area_update_base` são o `super`.
+//! - **`layout`.** O resultado inteiro do `layoutContents` (os tamanhos do cabeçalho, do título, do conteúdo e do rodapé) fica em
+//!   [`CompositePart::layout_result`], para a vista nativa posicionar os nós.
 //! - **`onDidCompositeOpen`/`onDidCompositeClose`** carregam o `Rc<Composite>`, que implementa o `IComposite` do original.
 //! - **`focus?: boolean`** ausente é `false`.
 
@@ -56,6 +61,7 @@ use je_platform::notification::{INotificationService, NotificationMessage};
 use je_platform::storage::{StorageScope, StorageService, StorageTarget};
 use je_storage::StorageValue;
 use je_theme::color::Color;
+use je_ui::NodeId;
 use je_widgets::action_bar::{IActionViewItemProvider, prepare_actions};
 use je_widgets::action_view_items::{IActionViewItem, IActionViewItemOptions};
 use je_widgets::hover_api::{IHoverDelegate, IScopedHoverDelegate, create_instant_hover_delegate};
@@ -63,8 +69,8 @@ use je_widgets::sash::BoundarySashes;
 use je_widgets::toolbar::{IToolBarResponsiveBehaviorOptions, ToolBar};
 
 use crate::browser::composite::{Composite, IComposite, ICompositeRegistry};
-use crate::browser::part::{Part, PartBehavior, PartOptions, assert_returns_defined};
-use crate::platform::actions::toolbar::WorkbenchToolBar;
+use crate::browser::part::{LayoutContentResult, Part, PartBehavior, PartOptions, assert_returns_defined};
+use crate::platform::actions::toolbar::{MenuWorkbenchToolBar, WorkbenchToolBar};
 use crate::services::layout::layout_service::IWorkbenchLayoutService;
 use crate::services::progress::progress_indicator::{AbstractProgressScope, IProgressBar, IProgressScope, ScopedProgressIndicator};
 
@@ -94,8 +100,37 @@ pub trait ICompositeProgressBar: IProgressBar + IDisposable {}
 
 impl<T: IProgressBar + IDisposable> ICompositeProgressBar for T {}
 
+/// O que as barras de ferramentas da parte informam sobre os itens que mostram.
+pub trait IToolBarItems: IDisposable {
+    /// `getItemsWidth()`.
+    fn get_items_width(&self) -> f64;
+
+    /// `getItemsLength()`.
+    fn get_items_length(&self) -> usize;
+}
+
+impl IToolBarItems for WorkbenchToolBar {
+    fn get_items_width(&self) -> f64 {
+        ToolBar::get_items_width(self)
+    }
+
+    fn get_items_length(&self) -> usize {
+        ToolBar::get_items_length(self)
+    }
+}
+
+impl IToolBarItems for MenuWorkbenchToolBar {
+    fn get_items_width(&self) -> f64 {
+        ToolBar::get_items_width(self)
+    }
+
+    fn get_items_length(&self) -> usize {
+        ToolBar::get_items_length(self)
+    }
+}
+
 /// O que a [`CompositePart`] usa da `WorkbenchToolBar`.
-pub trait ICompositeToolBar: IDisposable {
+pub trait ICompositeToolBar: IToolBarItems {
     /// `setActions(primaryActions, secondaryActions, menuIds)`.
     fn set_actions(&self, primary_actions: &[ActionRef], secondary_actions: &[ActionRef], menu_ids: Option<&[MenuId]>);
 
@@ -110,9 +145,44 @@ pub trait ICompositeToolBar: IDisposable {
 
     /// `setAriaLabel(label)`.
     fn set_aria_label(&self, label: &str);
+
+    /// `getElement()`: o nó da árvore de widgets onde a barra se desenha.
+    fn get_element(&self) -> NodeId;
+
+    /// `getItemAction(index)`.
+    fn get_item_action(&self, index: usize) -> Option<ActionRef>;
+
+    /// `getItemWidth(index)`.
+    fn get_item_width(&self, index: usize) -> f64;
+
+    /// `getItemElement(index)`.
+    fn get_item_element(&self, index: usize) -> Option<NodeId>;
+
+    /// `relayout()`.
+    fn relayout(&self);
 }
 
 impl ICompositeToolBar for WorkbenchToolBar {
+    fn get_element(&self) -> NodeId {
+        ToolBar::get_element(self)
+    }
+
+    fn get_item_action(&self, index: usize) -> Option<ActionRef> {
+        ToolBar::get_item_action(self, index)
+    }
+
+    fn get_item_width(&self, index: usize) -> f64 {
+        ToolBar::get_item_width(self, index)
+    }
+
+    fn get_item_element(&self, index: usize) -> Option<NodeId> {
+        ToolBar::get_item_element(self, index)
+    }
+
+    fn relayout(&self) {
+        ToolBar::relayout(self);
+    }
+
     fn set_actions(&self, primary_actions: &[ActionRef], secondary_actions: &[ActionRef], menu_ids: Option<&[MenuId]>) {
         WorkbenchToolBar::set_actions(self, primary_actions, secondary_actions, menu_ids);
     }
@@ -278,6 +348,15 @@ pub trait CompositePartBehavior {
     fn layout(&self, part: &CompositePart, width: f64, height: f64, top: f64, left: f64) {
         part.layout_base(width, height, top, left);
     }
+
+    /// O que a subclasse faz depois do `super.showComposite(composite)` da sobrescrita de `showComposite`.
+    fn did_show_composite(&self, _part: &CompositePart) {}
+
+    /// O que a subclasse faz depois do `super.hideActiveComposite()` da sobrescrita de `hideActiveComposite`.
+    fn did_hide_active_composite(&self, _part: &CompositePart) {}
+
+    /// O que a subclasse faz depois do `super.onTitleAreaUpdate(compositeId)` da sobrescrita de `onTitleAreaUpdate`.
+    fn did_title_area_update(&self, _part: &CompositePart, _composite_id: &str) {}
 }
 
 /// `CompositeItem`.
@@ -297,6 +376,7 @@ struct CompositePartState {
     tool_bar: Option<Rc<dyn ICompositeToolBar>>,
     progress_bar: Option<Rc<dyn ICompositeProgressBar>>,
     content_area_size: Option<Dimension>,
+    layout_result: Option<LayoutContentResult>,
     current_composite_open_token: Option<String>,
     boundary_sashes: Option<BoundarySashes>,
     composite_containers: HashMap<String, Rc<ViewElement>>,
@@ -526,6 +606,16 @@ impl CompositePart {
         &self.name_for_telemetry
     }
 
+    /// `storageService`.
+    pub fn storage_service(&self) -> &Rc<dyn StorageService> {
+        &self.storage_service
+    }
+
+    /// `toolbarHoverDelegate`.
+    pub fn toolbar_hover_delegate(&self) -> Rc<dyn IScopedHoverDelegate> {
+        self.toolbar_hover_delegate.clone()
+    }
+
     /// `options`.
     pub fn options(&self) -> &ICompositePartOptions {
         &self.options
@@ -686,7 +776,14 @@ impl CompositePart {
         composite
     }
 
+    /// `showComposite(composite)`, com o que a subclasse faz depois do `super.showComposite`.
     pub fn show_composite(&self, composite: &Rc<Composite>) {
+        self.show_composite_base(composite);
+        self.behavior.did_show_composite(self);
+    }
+
+    /// `showComposite(composite)` da `CompositePart`.
+    pub fn show_composite_base(&self, composite: &Rc<Composite>) {
         // Remember Composite
         self.state.borrow_mut().active_composite = Some(composite.clone());
 
@@ -794,7 +891,14 @@ impl CompositePart {
         }
     }
 
+    /// `onTitleAreaUpdate(compositeId)`, com o que a subclasse faz depois do `super.onTitleAreaUpdate`.
     pub fn on_title_area_update(&self, composite_id: &str) {
+        self.on_title_area_update_base(composite_id);
+        self.behavior.did_title_area_update(self, composite_id);
+    }
+
+    /// `onTitleAreaUpdate(compositeId)` da `CompositePart`.
+    pub fn on_title_area_update_base(&self, composite_id: &str) {
         // Title
         let composite = self.state.borrow().instantiated.get(composite_id).map(|item| item.composite.clone());
         if let Some(composite) = composite {
@@ -866,7 +970,15 @@ impl CompositePart {
         self.state.borrow().last_active_composite_id.clone()
     }
 
+    /// `hideActiveComposite()`, com o que a subclasse faz depois do `super.hideActiveComposite`.
     pub fn hide_active_composite(&self) -> Option<Rc<Composite>> {
+        let composite = self.hide_active_composite_base();
+        self.behavior.did_hide_active_composite(self);
+        composite
+    }
+
+    /// `hideActiveComposite()` da `CompositePart`.
+    pub fn hide_active_composite_base(&self) -> Option<Rc<Composite>> {
         // Nothing to do
         let composite = self.state.borrow_mut().active_composite.take()?;
 
@@ -1007,13 +1119,29 @@ impl CompositePart {
         self.part.layout_base(width, height, top, left);
 
         // Layout contents
-        let content_area_size = self.part.layout_contents(width, height).content_size;
-        self.state.borrow_mut().content_area_size = Some(content_area_size);
+        let layout_result = self.part.layout_contents(width, height);
+        let content_area_size = layout_result.content_size;
+        {
+            let mut state = self.state.borrow_mut();
+            state.content_area_size = Some(content_area_size);
+            state.layout_result = Some(layout_result);
+        }
 
         // Layout composite
         if let Some(active_composite) = self.get_active_composite() {
             active_composite.layout(content_area_size, None);
         }
+    }
+
+    /// O resultado do último `layoutContents` (os tamanhos do cabeçalho, do título, do conteúdo e do rodapé), que a vista nativa usa
+    /// para posicionar os nós.
+    pub fn layout_result(&self) -> Option<LayoutContentResult> {
+        self.state.borrow().layout_result
+    }
+
+    /// `contentAreaSize`.
+    pub fn content_area_size(&self) -> Option<Dimension> {
+        self.state.borrow().content_area_size
     }
 
     /// `setBoundarySashes(sashes)`.

@@ -29,3 +29,15 @@ pub mod titlebar;
 
 // A base das partes de composites (`compositePart.ts`).
 pub mod composite_part;
+
+// O rastreador de contêineres de visões visíveis (`visibleViewContainersTracker.ts`).
+pub mod visible_view_containers_tracker;
+
+// A base das partes de painéis (`paneCompositePart.ts`) e a vista nativa dela e da `CompositePart`.
+pub mod pane_composite_part;
+pub mod native_composite_part_view;
+
+// A barra lateral, o painel e a barra auxiliar.
+pub mod sidebar;
+pub mod panel;
+pub mod auxiliarybar;

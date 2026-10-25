@@ -25,6 +25,7 @@ use je_ui::NodeId;
 use je_widgets::action_bar::ActionsOrientation;
 use je_widgets::hover_api::HoverPosition;
 
+use crate::browser::dnd::{CompositeDragAndDropData, DragEvent};
 use crate::services::layout::layout_service::Parts;
 
 /// O que `fillExtraContextMenuActions` lê do `e.target`: o resultado de `isAncestor(e.target, menuBarContainer)`.
@@ -130,6 +131,8 @@ pub struct PaneCompositeBarOptions {
     pub composite_size: f64,
     pub colors: Rc<dyn Fn(&dyn IColorTheme) -> CompositeBarColors>,
     pub overflow_action_size: f64,
+    /// `compact` (do `ICompositeBarOptions`): ausente é falso.
+    pub compact: bool,
 }
 
 /// O que `PaneCompositeBar` expõe à parte que a hospeda.
@@ -151,6 +154,19 @@ pub trait IPaneCompositeBar: IDisposable {
 
     /// `getPaneCompositeIds()`.
     fn get_pane_composite_ids(&self) -> Vec<String>;
+
+    /// `getContextMenuActions()`: as ações do menu de contexto da barra (o padrão é a barra sem menu).
+    fn get_context_menu_actions(&self) -> Vec<ActionRef> {
+        Vec::new()
+    }
+
+    /// `dndHandler.onDragEnter(data, undefined, event)`: se o dado arrastado pode ser solto na barra.
+    fn on_drag_enter(&self, _data: &CompositeDragAndDropData, _event: &Rc<DragEvent>) -> bool {
+        false
+    }
+
+    /// `dndHandler.drop(data, undefined, event)`.
+    fn on_drop(&self, _data: &CompositeDragAndDropData, _event: &Rc<DragEvent>) {}
 }
 
 /// O que `GlobalCompositeBar` expõe à `ActivityBarCompositeBar`.
