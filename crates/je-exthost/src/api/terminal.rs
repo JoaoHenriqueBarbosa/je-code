@@ -43,6 +43,7 @@ use je_base::lifecycle::IDisposable;
 use je_base::promise::{MaybePromise, Promise};
 use je_base::themables::{ThemeColor, ThemeIcon};
 use je_platform::terminal::terminal::{ITerminalEnvironment, ShellCwd, TerminalEnvironmentValue, TerminalLocation};
+use je_workbench::api::common::ext_host_values::ApiValue;
 use je_workbench::api::common::ext_host_terminal_service::{
     ExtensionTerminalOptions, Pseudoterminal, TerminalCreationOptions, TerminalDimensions, TerminalEditorLocationOptions, TerminalIconPath, TerminalLinkContext,
     TerminalLinkProvider, TerminalLocationOption, TerminalOptions, TerminalProfile, TerminalProfileProvider, TerminalProfileResult, VscodeTerminal, WorkerExtHostTerminalService,

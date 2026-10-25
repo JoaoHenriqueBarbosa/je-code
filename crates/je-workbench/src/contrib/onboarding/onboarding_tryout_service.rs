@@ -642,6 +642,7 @@ impl IOnboardingTryoutService for OnboardingTryoutService {
         }));
 
         let id = id.to_string();
+        let run = active_run.clone();
         let promise = je_base::async_::async_fn(async move {
             Promise::resolved(()).await?;
             let scenario = this.get_tryout(&id);
@@ -733,7 +734,7 @@ impl IOnboardingTryoutService for OnboardingTryoutService {
             }
             outcome
         });
-        *active_run.promise.borrow_mut() = promise.clone();
+        *run.promise.borrow_mut() = promise.clone();
         promise
     }
 }
