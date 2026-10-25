@@ -30,31 +30,55 @@
 //! - **Estado da vista em JSON.** `JSON.stringify` e `JSON.parse` do `IAsyncDataTreeViewState` são
 //!   [`tree_view_state_to_json`] e [`tree_view_state_from_json`] (a segunda devolve `None` para um texto inválido).
 //!
-//! Fica para a parte B, no mesmo módulo, o que o `createTree` e o `renderBody` chamam, com estas assinaturas (métodos em
-//! `impl ExplorerView`, sobre `self: &Rc<Self>` quando o corpo precisa do `Rc`): `refresh(&self, recursive: bool, item:
-//! Option<&Rc<ExplorerItem>>, cancel_editing: bool) -> Promise<()>`, `set_tree_input(self: &Rc<Self>) -> Promise<()>`,
-//! `select_active_file(self: &Rc<Self>, reveal: Option<ExplorerReveal>) -> Promise<()>`, `on_context_menu(&self, event:
-//! &ExplorerContextMenuEvent)`, o `impl IExplorerView for ExplorerView` (o construtor passa `this.clone()` ao `registerView`)
-//! e o resto de `selectResource`, `setEditable`, `itemsCopied`, `expandAll`, `collapseAll`, as navegações comprimidas e
-//! `hasPhantomElements`. Os campos que ela usa já existem: `set_tree_input_sequencer`, `horizontal_scrolling`, `tree_container`,
-//! `file_copied_context_key`, `resource_cut_context_key`, `drag_and_drop`, `find_provider`, `filter`, `renderer`, `services`.
+//! A segunda metade do módulo (de `refresh` até o fim) é o [`IExplorerView`] e o resto da vista:
+//! - **Membros do `IExplorerView`.** `autoReveal`, `getContext`, `refresh`, `selectResource`, `setTreeInput`, `itemsCopied`,
+//!   `setEditable`, `isItemVisible`, `isItemCollapsed`, `hasFocus`, `getFocus`, `focusNext`, `focusLast` e `hasPhantomElements` têm o
+//!   corpo no próprio `impl IExplorerView for ExplorerView`, sem método avulso que só o repasse. Os parâmetros com valor padrão do
+//!   original (`cancelEditing = true`, `reveal = this._autoReveal`, `retry = 0`) chegam como `Option`.
+//! - **Entrada da árvore.** `ExplorerInput` é a lista dos itens do topo: com um espaço de uma pasta, a entrada do original é a
+//!   própria pasta e a lista são os filhos dela, resolvidos pela `ExplorerDataSource` (com o mesmo progresso e o mesmo item de
+//!   erro). O que o original guarda em `tree.getInput()` (a pasta ou o vetor de raízes) é o campo `tree_input`, que responde a
+//!   `Array.isArray(treeInput)`, a `treeInput === item` e a `hasNode(raiz)`. Como a lista dos filhos da pasta fica fixa na
+//!   entrada, `refresh` da pasta (e `refresh` sem item) refaz a entrada com o estado da vista, em vez do `updateChildren`.
+//! - **`horizontalScrolling`.** A árvore do `je-widgets` não tem rolagem horizontal, então o par `updateOptions({ horizontalScrolling
+//!   })` de `setEditable` (desligar na edição e restaurar depois) não tem efeito e não existe aqui.
+//! - **Menu de contexto.** O evento da árvore não carrega a posição do ponteiro nem as linhas da pasta comprimida: a âncora é o nó
+//!   alvo do evento (ou a própria árvore), e o ajuste `labels[index]` do teclado em pasta comprimida, que só vale quando a âncora é
+//!   um elemento (teclado), não tem rótulo para apontar. `isEditableElement` é o papel `TextInput` do nó alvo.
+//! - **`getOptimalWidth`.** `getLargestChildWidth` mede a largura dos nós `.label-name` dentro de `.explorer-item` pelos limites
+//!   absolutos do `Ui` (sem `scrollWidth` nem margens).
+//! - **`JSON.parse` do estado.** Um texto inválido rejeita a promessa de `setTreeInput`, como o `SyntaxError` do original.
+//! - **`perf.mark`.** É [`je_base::performance::mark`].
+//! - **`DelayedDragHandler` e `dragHandler`.** O arrasto sobre o cabeçalho não existe (ver acima), então `dispose` não o libera.
+//! - **Ações do arquivo.** As quatro `registerAction2` do fim (`createFileFromExplorer`, `createFolderFromExplorer`,
+//!   `refreshFilesExplorer` e `collapseExplorerFolders`) não entram aqui: a última chama `collapseAll` na vista achada por
+//!   `IViewsService.getViewWithId`, e o [`IViewPane`](crate::services::views::views_service::IViewPane) do porte só expõe
+//!   `setExpanded` e `focus`; elas entram com o contrato de views que devolve a `ExplorerView`. `ExplorerResourceWritableContext`
+//!   (`ExplorerResourceReadonlyContext.toNegated()`) e os ícones dessas ações também ainda não existem.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::{Rc, Weak};
 
-use je_base::async_::{Sequencer, async_fn};
+use je_base::actions::ActionRef;
+use je_base::async_::{Sequencer, async_fn, await_maybe};
 use je_base::dynamic::{Dynamic, Truthy};
 use je_base::errors::{self, Error};
 use je_base::event::Event;
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, to_disposable};
 use je_base::nls::localize;
+use je_base::parts::contextmenu::IContextMenuEvent;
+use je_base::performance::mark;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::services::clipboard_service::IClipboardService;
 use je_platform::accessibility::IAccessibilityService;
+use je_platform::actions::{MenuActionOptions, menu_ids};
 use je_platform::commands::commands::ICommandService;
 use je_platform::configuration::ConfigurationOverrides;
 use je_platform::contextkey::contextkey::{IContextKey, IContextKeyService};
+use je_platform::contextview::context_view::{AnchorTarget, ContextMenuRequest, IContextMenuDelegate, IContextMenuMenuDelegate};
+use je_platform::contextview::view_element::ViewElement;
 use je_platform::dialogs::dialogs::IDialogService;
 use je_platform::environment::environment::EnvironmentService;
 use je_platform::files::files::FileSystemProviderCapabilities;
@@ -62,13 +86,13 @@ use je_platform::files::i_file_service::IFileService;
 use je_platform::label::label::{ILabelService, WorkspaceLabelTarget};
 use je_platform::notification::notification::INotificationService;
 use je_platform::opener::editor_types::{EditorOpenSource, EditorOptions};
-use je_platform::progress::progress::IProgressService;
+use je_platform::progress::progress::{IProgressService, ProgressLocation, ProgressOptions};
 use je_platform::storage::storage::{StorageScope, StorageService, StorageTarget};
 use je_platform::telemetry::telemetry::ITelemetryService;
 use je_platform::uri_identity::uri_identity::IUriIdentityService;
 use je_platform::workspace::{IWorkspace, IWorkspaceContextService, WorkbenchState, is_untitled_workspace};
 use je_storage::StorageValue;
-use je_ui::{NodeId, Role, Ui};
+use je_ui::{NodeId, Role, Tree, Ui};
 use je_widgets::dom::{create_el, is_ancestor_of_active_element};
 use je_widgets::list::list_styles::IListStyles;
 use je_widgets::list::list_types::{BrowserEvent, IIdentityProvider, IKeyboardNavigationLabelProvider, TemplateData};
@@ -77,7 +101,7 @@ use je_widgets::tree::async_data_tree_node::{AsyncDataTreeNodeWrapper, IAsyncDat
 use je_widgets::tree::compressible_async_data_tree::{
     CompressibleAsyncDataTreeNodeWrapper, CompressibleAsyncDataTreeOptions, ICompressibleAsyncDataTreeRenderer, ICompressibleAsyncKeyboardNavigationLabelProvider,
 };
-use je_widgets::tree::tree_types::{InputOrElement, TreeElementRenderDetails, TreeFilterResult, TreeMouseEventTarget, TreeNodeApi, TreeVisibility};
+use je_widgets::tree::tree_types::{IAsyncDataSource, InputOrElement, TreeElementRenderDetails, TreeFilterResult, TreeMouseEventTarget, TreeNodeApi, TreeVisibility};
 
 use super::explorer_viewer::{
     ExplorerCompressionDelegate, ExplorerDelegate, FileSorter, ICompressedNavigationController, IExplorerFindHighlightTree,
@@ -85,11 +109,12 @@ use super::explorer_viewer::{
 use super::explorer_viewer_data::{ExplorerDataSource, ExplorerFindActiveKey, ExplorerFindProvider, ExplorerFindTree, ExplorerInput, FilesFilter};
 use super::explorer_viewer_dnd::{ExternalFileDropHandler, FileDragAndDrop, FileDragAndDropServices};
 use super::explorer_viewer_renderer::{FILES_RENDERER_TEMPLATE_ID, FileIconThemeInfo, FilesRenderer, FilesRendererServices, InlineEditServices};
+use crate::api::common::ext_host_values::ApiValue;
 use crate::browser::labels::{IResourceLabelsContainer, ResourceLabels, ResourceLabelsServices};
 use crate::browser::parts::views::view_pane::{IViewPaneOptions, ListOverrideStyleColors, ViewPane, ViewPaneDelegate, ViewPaneServices};
 use crate::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchCompressibleAsyncDataTree, WorkbenchTreeServices};
-use crate::common::editor::{TextEditorOptions, UntypedEditorInput};
-use crate::contrib::files::browser_files::{ExplorerReveal, IExplorerService};
+use crate::common::editor::{EditorResourceAccessor, EditorResourceAccessorOptions, SideBySideEditor, TextEditorOptions, UntypedEditorInput};
+use crate::contrib::files::browser_files::{ExplorerReveal, IExplorerService, IExplorerView};
 use crate::contrib::files::common_files::{
     explorer_compressed_first_focus_context, explorer_compressed_focus_context, explorer_compressed_last_focus_context, explorer_find_provider_active, explorer_focused_context,
     explorer_folder_context, explorer_resource_available_editor_ids_context, explorer_resource_cut, explorer_resource_moveable_to_trash, explorer_resource_parent_read_only_context,
@@ -318,6 +343,16 @@ pub enum ContextMenuArg {
     Empty,
 }
 
+impl ContextMenuArg {
+    /// O `arg: URI | {}` como valor da API (o `URI` na forma de [`ApiValue`], o objeto vazio sem propriedades).
+    pub fn to_dynamic(&self) -> Dynamic {
+        match self {
+            ContextMenuArg::Resource(resource) => <URI as ApiValue>::to_dynamic(resource),
+            ContextMenuArg::Empty => Dynamic::object(std::iter::empty::<(&str, Dynamic)>()),
+        }
+    }
+}
+
 /// `arg` de `onContextMenu`.
 pub fn context_menu_arg(
     stat: Option<&Rc<ExplorerItem>>,
@@ -344,21 +379,6 @@ pub fn context_menu_actions_context(stat: Option<&Rc<ExplorerItem>>, selection: 
         Some(stat) => vec![stat.resource()],
         None => Vec::new(),
     }
-}
-
-/// Onde o menu de contexto ancora num item comprimido: o rótulo do segmento corrente (teclado ou clique no nome da pasta
-/// comprimida) ou o último segmento (qualquer outro clique, que também chama `last()` nos controladores).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompressedAnchor {
-    /// `controllers[0].labels[controllers[0].index]`.
-    CurrentLabel,
-    /// `controllers.forEach(controller => controller.last())`.
-    LastSegment,
-}
-
-/// A decisão de ancoragem de `onContextMenu` para um item com controladores de navegação comprimida.
-pub fn compressed_anchor(is_keyboard_event: bool, target_is_compressed_folder_name: bool) -> CompressedAnchor {
-    if is_keyboard_event || target_is_compressed_folder_name { CompressedAnchor::CurrentLabel } else { CompressedAnchor::LastSegment }
 }
 
 /// `shouldPreserveWorkspaceNameCase(workbenchState, workspace, environmentService)`: whether the Explorer title shows a
@@ -741,7 +761,10 @@ pub struct ExplorerView {
     resource_cut_context_key: RefCell<Option<Rc<dyn IContextKey>>>,
 
     set_tree_input_sequencer: Sequencer,
-    horizontal_scrolling: Cell<Option<bool>>,
+    /// O que o original guarda em `tree.getInput()` (ver as divergências do módulo): a pasta ou as raízes.
+    tree_input: RefCell<Option<ExplorerTreeInput>>,
+    /// A fonte de dados da árvore, que resolve os itens do topo de um espaço de uma pasta.
+    data_source: RefCell<Option<Rc<ExplorerDataSource<IAsyncDataTreeViewState>>>>,
     auto_reveal: RefCell<ExplorerReveal>,
     tree_container: Cell<Option<NodeId>>,
     container: Cell<Option<NodeId>>,
@@ -789,7 +812,8 @@ impl ExplorerView {
             file_copied_context_key: RefCell::new(None),
             resource_cut_context_key: RefCell::new(None),
             set_tree_input_sequencer: Sequencer::new(),
-            horizontal_scrolling: Cell::new(None),
+            tree_input: RefCell::new(None),
+            data_source: RefCell::new(None),
             auto_reveal: RefCell::new(ExplorerReveal::Flag(false)),
             tree_container: Cell::new(None),
             container: Cell::new(None),
@@ -812,16 +836,6 @@ impl ExplorerView {
     }
 
     // Propriedades
-
-    /// `autoReveal`.
-    pub fn auto_reveal(&self) -> ExplorerReveal {
-        self.auto_reveal.borrow().clone()
-    }
-
-    /// `set autoReveal(autoReveal)`.
-    pub fn set_auto_reveal(&self, auto_reveal: ExplorerReveal) {
-        *self.auto_reveal.borrow_mut() = auto_reveal;
-    }
 
     /// `name`.
     pub fn name(&self) -> String {
@@ -880,8 +894,13 @@ impl ExplorerView {
     }
 
     /// A árvore criada por `createTree` (o `tree!` do original).
-    fn tree(&self) -> Rc<ExplorerTree> {
+    pub fn tree(&self) -> Rc<ExplorerTree> {
         self.tree_slot.borrow().clone().expect("o corpo do explorador ainda não foi desenhado")
+    }
+
+    /// O `FilesRenderer` criado por `createTree` (o `renderer!` do original).
+    pub fn renderer(&self) -> Rc<FilesRenderer> {
+        self.renderer.borrow().clone().expect("o corpo do explorador ainda não foi desenhado")
     }
 
     // Título do espaço de trabalho
@@ -951,46 +970,47 @@ impl ExplorerView {
         }
     }
 
-    /// `hasFocus()`.
-    pub fn has_focus(&self) -> bool {
-        self.container.get().is_some_and(|container| is_ancestor_of_active_element(&self.ui, container))
-    }
-
-    /// `getFocus()`.
-    pub fn get_focus(&self) -> Vec<Rc<ExplorerItem>> {
-        self.tree().get_focus()
-    }
-
-    /// `focusNext()`.
-    pub fn focus_next(&self) {
-        self.tree().focus_next(1, false, None, None);
-    }
-
-    /// `focusLast()`.
-    pub fn focus_last(&self) {
-        self.tree().focus_last(None, None);
-    }
-
-    /// `getContext(respectMultiSelection)`.
-    pub fn get_context(&self, respect_multi_selection: bool) -> Vec<Rc<ExplorerItem>> {
-        let tree = self.tree();
-        let focused_items = if tree.get_focused_part() == AbstractTreePart::StickyScroll { tree.get_sticky_scroll_focus() } else { tree.get_focus() };
-        let renderer = self.renderer.borrow().clone().expect("o corpo do explorador ainda não foi desenhado");
-        get_context(&focused_items, &tree.get_selection(), respect_multi_selection, renderer.as_ref())
-    }
-
-    /// `isItemVisible(item)`.
-    pub fn is_item_visible(&self, item: &Rc<ExplorerItem>) -> bool {
-        // If filter is undefined it means the tree hasn't been rendered yet, so nothing is visible
-        let Some(filter) = self.filter.borrow().clone() else {
-            return false;
-        };
-        filter_result_is_visible(&filter.filter_stat(item, TreeVisibility::Visible))
-    }
-
-    /// `isItemCollapsed(item)`.
+    /// `isItemCollapsed(item)`: a pasta da entrada não é um nó da árvore e nunca está recolhida.
     pub fn is_item_collapsed(&self, item: &Rc<ExplorerItem>) -> bool {
+        if self.is_tree_input_item(item) {
+            return false;
+        }
         self.tree().is_collapsed(&InputOrElement::Element(item.clone()))
+    }
+
+    /// O `this` como `Rc`, para as funções `async` (o `ExplorerView` só existe dentro de um `Rc`).
+    fn rc(&self) -> Rc<Self> {
+        self.weak_self.upgrade().expect("o ExplorerView foi descartado")
+    }
+
+    /// `treeInput === item` quando a entrada é a pasta do espaço de uma pasta.
+    fn is_tree_input_item(&self, item: &Rc<ExplorerItem>) -> bool {
+        matches!(&*self.tree_input.borrow(), Some(ExplorerTreeInput::Item(root)) if Rc::ptr_eq(root, item))
+    }
+
+    /// `tree.hasNode(item)`: a pasta da entrada é a raiz da árvore e sempre existe.
+    fn has_node(&self, item: &Rc<ExplorerItem>) -> bool {
+        self.is_tree_input_item(item) || self.tree().has_node(&InputOrElement::Element(item.clone()))
+    }
+
+    /// `tree.expand(item)`: a pasta da entrada já está sempre expandida.
+    fn expand_item(&self, item: &Rc<ExplorerItem>) -> Promise<bool> {
+        if self.is_tree_input_item(item) {
+            return Promise::resolved(false);
+        }
+        self.tree().widget().expand(item, false)
+    }
+
+    /// Os itens do topo da árvore para a entrada: as raízes, ou os filhos da pasta (ver as divergências do módulo).
+    fn resolve_top_level(&self, input: &ExplorerTreeInput) -> Promise<ExplorerInput> {
+        match input {
+            ExplorerTreeInput::Roots(roots) => Promise::resolved(roots.clone()),
+            ExplorerTreeInput::Item(root) => {
+                let data_source = self.data_source.borrow().clone().expect("o corpo do explorador ainda não foi desenhado");
+                let children = data_source.get_children(&InputOrElement::Element(root.clone()));
+                async_fn(async move { await_maybe(children).await })
+            }
+        }
     }
 
     /// `tryGetRelativeTop(element)`: o item que a árvore ainda não conhece vale `None`.
@@ -1027,7 +1047,7 @@ impl ExplorerView {
         let weak = self.weak_self.clone();
         self.disposables.register(filter.on_did_change().listen(move |_| {
             if let Some(this) = weak.upgrade() {
-                let _ = this.refresh(true, None, true);
+                let _ = this.refresh(true, None, None);
             }
         }));
         let explorer_labels = ResourceLabels::new(IResourceLabelsContainer { on_did_change_visibility: self.pane.on_did_change_body_visibility() }, services.resource_labels.clone());
@@ -1146,6 +1166,19 @@ impl ExplorerView {
             override_styles: Some((services.list_override_styles)(&self.pane.get_location_based_colors().list_override_styles)),
             ..IWorkbenchTreeOptions::default()
         };
+        let data_source = Rc::new(ExplorerDataSource::new(
+            filter.clone(),
+            find_provider.clone(),
+            services.progress_service.clone(),
+            configuration_service.clone(),
+            services.notification_service.clone(),
+            services.layout_service.clone(),
+            services.file_service.clone(),
+            services.explorer_service.clone(),
+            services.context_service.clone(),
+            services.files_config_service.clone(),
+        ));
+        *self.data_source.borrow_mut() = Some(data_source.clone());
         let tree = ExplorerTree::new(
             "FileExplorer",
             &self.ui,
@@ -1153,18 +1186,7 @@ impl ExplorerView {
             Rc::new(ExplorerDelegate),
             Rc::new(ExplorerCompressionDelegate),
             renderers,
-            Rc::new(ExplorerDataSource::new(
-                filter.clone(),
-                find_provider.clone(),
-                services.progress_service.clone(),
-                configuration_service.clone(),
-                services.notification_service.clone(),
-                services.layout_service.clone(),
-                services.file_service.clone(),
-                services.explorer_service.clone(),
-                services.context_service.clone(),
-                services.files_config_service.clone(),
-            )),
+            data_source,
             options,
             workbench_options,
             &services.tree,
@@ -1263,7 +1285,7 @@ impl ExplorerView {
         let weak = self.weak_self.clone();
         self.disposables.register(tree.on_context_menu().listen(move |e| {
             if let Some(this) = weak.upgrade() {
-                this.on_context_menu(&ExplorerContextMenuEvent {
+                let _ = this.on_context_menu(&ExplorerContextMenuEvent {
                     element: e.element.clone().flatten().map(|node| node.element_t()),
                     browser_event: e.browser_event,
                     target: e.target,
@@ -1338,7 +1360,7 @@ impl ExplorerView {
 
         // Push down config updates to components of viewer
         if affects.is_some_and(|affects| affects("explorer.decorations.colors") || affects("explorer.decorations.badges")) {
-            let _ = self.refresh(true, None, true);
+            let _ = self.refresh(true, None, None);
         }
     }
 
@@ -1415,6 +1437,512 @@ impl ExplorerView {
         self.view_has_some_collapsible_root_item.set(Dynamic::Bool(has_expanded_node(&handle, &tree_input)));
         // synchronize state to cache
         self.store_tree_view_state();
+    }
+}
+
+/// `uri.toString()`.
+fn uri_text(uri: &URI) -> String {
+    uri.to_string(false).to_string_lossy()
+}
+
+/// O `IContextMenuDelegate` base do `showContextMenu` de `onContextMenu`: a âncora e o foco de volta na árvore ao cancelar.
+struct ExplorerContextMenuDelegate {
+    anchor: AnchorTarget,
+    tree: Weak<ExplorerTree>,
+}
+
+impl IContextMenuDelegate for ExplorerContextMenuDelegate {
+    fn get_anchor(&self) -> AnchorTarget {
+        self.anchor.clone()
+    }
+
+    /// O `IContextMenuMenuDelegate` ignora o `getActions` do delegado base: as ações vêm do `menuId`.
+    fn get_actions(&self) -> Vec<ActionRef> {
+        Vec::new()
+    }
+
+    fn on_hide(&self, did_cancel: bool) {
+        if did_cancel && let Some(tree) = self.tree.upgrade() {
+            tree.dom_focus();
+        }
+    }
+}
+
+/// Os nós `.label-name` dentro de `.explorer-item` abaixo de `node` (`querySelectorAll('.explorer-item .label-name')`).
+fn collect_explorer_label_names(tree: &Tree, node: NodeId, inside_item: bool, out: &mut Vec<NodeId>) {
+    for &child in tree.children(node) {
+        if inside_item && tree.has_class(child, "label-name") {
+            out.push(child);
+        }
+        collect_explorer_label_names(tree, child, inside_item || tree.has_class(child, "explorer-item"), out);
+    }
+}
+
+/// `createFileIconThemableTreeContainerScope(container, themeService)`: `theme` é o `themeService.getFileIconTheme()` e
+/// `on_did_file_icon_theme_change` o `themeService.onDidFileIconThemeChange`. Devolve o que desfaz a escuta.
+pub fn create_file_icon_themable_tree_container_scope(ui: &Ui, container: NodeId, theme: FileIconThemeInfo, on_did_file_icon_theme_change: Event<FileIconThemeInfo>) -> DisposableRef {
+    {
+        let mut tree = ui.tree_mut();
+        tree.add_class(container, "file-icon-themable-tree");
+        tree.add_class(container, "show-file-icons");
+    }
+
+    let ui = ui.clone();
+    let on_did_change_file_icon_theme = move |theme: &FileIconThemeInfo| {
+        let mut tree = ui.tree_mut();
+        tree.toggle_class(container, "align-icons-and-twisties", theme.has_file_icons && !theme.has_folder_icons);
+        tree.toggle_class(container, "hide-arrows", theme.hides_explorer_arrows);
+    };
+
+    on_did_change_file_icon_theme(&theme);
+    on_did_file_icon_theme_change.listen(on_did_change_file_icon_theme)
+}
+
+impl ExplorerView {
+    /// `this.findProvider?.isShowingFilterResults()`.
+    fn is_showing_filter_results(&self) -> bool {
+        self.find_provider.borrow().as_ref().is_some_and(|provider| provider.is_showing_filter_results())
+    }
+
+    /// `selectActiveFile(reveal = this._autoReveal)`.
+    fn select_active_file(self: &Rc<Self>, reveal: Option<ExplorerReveal>) -> Promise<()> {
+        let this = self.clone();
+        let reveal = reveal.unwrap_or_else(|| self.auto_reveal());
+        async_fn(async move {
+            if reveal_is_enabled(&this.auto_reveal.borrow()) {
+                let options = EditorResourceAccessorOptions { support_side_by_side: Some(SideBySideEditor::Primary), filter_by_scheme: None };
+                let active_editor = this.services.editor_service.active_editor();
+                if let Some(active_file) = EditorResourceAccessor::get_canonical_uri(active_editor.as_ref(), Some(&options)) {
+                    let tree = this.tree();
+                    let (focus, selection) = (tree.get_focus(), tree.get_selection());
+                    let ext_uri = this.services.uri_identity_service.ext_uri();
+                    if focus.len() == 1
+                        && ext_uri.is_equal(Some(&focus[0].resource()), Some(&active_file), false)
+                        && selection.len() == 1
+                        && ext_uri.is_equal(Some(&selection[0].resource()), Some(&active_file), false)
+                    {
+                        // No action needed, active file is already focused and selected
+                        return Ok(());
+                    }
+                    return this.services.explorer_service.select(&active_file, Some(reveal)).await;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// `selectResource(resource, reveal, retry)`, com os padrões já resolvidos.
+    fn select_resource_with_retry(self: &Rc<Self>, resource: Option<URI>, reveal: ExplorerReveal, retry: usize) -> Promise<()> {
+        let this = self.clone();
+        async_fn(async move {
+            // do no retry more than once to prevent infinite loops in cases of inconsistent model
+            if retry == 2 {
+                return Ok(());
+            }
+
+            let Some(resource) = resource.filter(|_| this.pane.is_body_visible()) else {
+                return Ok(());
+            };
+
+            // If something is refreshing the explorer, we must await it or else a selection race condition can occur
+            this.set_tree_input_sequencer.queue(|| Promise::resolved(())).await?;
+
+            // Expand all stats in the parent chain.
+            let ext_uri = this.services.uri_identity_service.ext_uri();
+            let mut item = this.services.explorer_service.find_closest_root(&resource);
+            while let Some(current) = item.clone() {
+                if uri_text(&current.resource()) == uri_text(&resource) {
+                    break;
+                }
+                if this.expand_item(&current).await.is_err() {
+                    return this.select_resource_with_retry(Some(resource), reveal, retry + 1).await;
+                }
+                item = current.children().into_iter().find(|child| ext_uri.is_equal_or_parent(&resource, &child.resource(), false, false));
+            }
+
+            let Some(item) = item else {
+                return Ok(());
+            };
+
+            let tree = this.tree();
+            if this.is_tree_input_item(&item) {
+                tree.set_focus(&[], None);
+                tree.set_selection(&[], None);
+                return Ok(());
+            }
+
+            // We must expand the nest to have it be populated in the tree
+            if let Some(nested_parent) = item.nested_parent()
+                && this.expand_item(&nested_parent).await.is_err()
+            {
+                return this.select_resource_with_retry(Some(resource), reveal, retry + 1).await;
+            }
+
+            let selected = errors::catch(|| {
+                let force = matches!(&reveal, ExplorerReveal::Flag(true)) || matches!(&reveal, ExplorerReveal::Mode(mode) if mode == "force");
+                if force && tree.get_relative_top(&item).is_none() {
+                    // Don't scroll to the item if it's already visible, or if set not to.
+                    tree.reveal(&item, Some(0.5));
+                }
+
+                tree.set_focus(&[item.clone()], None);
+                tree.set_selection(&[item.clone()], None);
+            });
+            if selected.is_err() {
+                // Element might not be in the tree, try again and silently fail
+                return this.select_resource_with_retry(Some(resource), reveal, retry + 1).await;
+            }
+            Ok(())
+        })
+    }
+
+    /// `doSetTreeInput()`.
+    fn do_set_tree_input(self: &Rc<Self>) -> Promise<()> {
+        let this = self.clone();
+        async_fn(async move {
+            if !this.pane.is_body_visible() {
+                return Ok(());
+            }
+
+            let tree = this.tree();
+            let initial_input_setup = tree.get_input().is_none();
+            if initial_input_setup {
+                mark("code/willResolveExplorer", None);
+            }
+            let roots = this.services.explorer_service.roots();
+            let workbench_state = this.services.context_service.get_workbench_state();
+            // `roots[0].error` só é lido num espaço de uma pasta (o `||` do original curto-circuita).
+            let first_root_has_error = workbench_state == WorkbenchState::Folder
+                && roots.first().ok_or_else(|| Error::type_error("Cannot read properties of undefined (reading 'error')"))?.error().is_some();
+            // Display roots only when multi folder workspace
+            let input = choose_tree_input(workbench_state, &roots, first_root_has_error);
+
+            let view_state = if tree.get_input().is_some() {
+                Some(tree.get_view_state())
+            } else {
+                let raw_view_state = this.services.storage_service.get(TREE_VIEW_STATE_STORAGE_KEY, StorageScope::Workspace, None).filter(|raw| !raw.is_empty());
+                match raw_view_state {
+                    Some(raw) => Some(tree_view_state_from_json(&raw).ok_or_else(|| Error::new("Unexpected token in the stored explorer tree view state"))?),
+                    None => None,
+                }
+            };
+
+            let previous_input = this.tree_input.borrow().clone();
+            let top_level = this.resolve_top_level(&input).await?;
+            *this.tree_input.borrow_mut() = Some(input.clone());
+
+            let promise = {
+                let (this, tree, view_state) = (this.clone(), tree.clone(), view_state.clone());
+                async_fn(async move {
+                    tree.widget().set_input(top_level, view_state.clone()).await?;
+                    if let ExplorerTreeInput::Roots(input) = &input {
+                        if view_state.is_none() || matches!(previous_input, Some(ExplorerTreeInput::Item(_))) {
+                            // There is no view state for this workspace (we transitioned from a folder workspace?), expand up to five roots.
+                            // If there are many roots in a workspace, expanding them all would can cause performance issues #176226
+                            for root in input.iter().take(roots_to_expand_without_view_state(input.len())) {
+                                let _ = tree.widget().expand(root, false).await;
+                            }
+                        }
+                        // Reloaded or transitioned from an empty workspace, but only have a single folder in the workspace.
+                        if previous_input.is_none()
+                            && input.len() == 1
+                            && this.services.pane.configuration_service.get_value(None, None).get_str("explorer").get_str("expandSingleFolderWorkspaces").is_truthy()
+                        {
+                            let _ = tree.widget().expand(&input[0], false).await;
+                        }
+                        if let Some(ExplorerTreeInput::Roots(previous_input)) = &previous_input {
+                            let previous_roots: HashSet<String> = previous_input.iter().map(|previous_root| uri_text(&previous_root.resource())).collect();
+
+                            // Roots added to the explorer -> expand them.
+                            let expansions: Vec<Promise<bool>> =
+                                input.iter().filter(|item| !previous_roots.contains(&uri_text(&item.resource()))).map(|item| tree.widget().expand(item, false)).collect();
+                            for expansion in expansions {
+                                let _ = expansion.await;
+                            }
+                        }
+                    }
+                    if initial_input_setup {
+                        mark("code/didResolveExplorer", None);
+                    }
+                    Ok(())
+                })
+            };
+
+            let mut options = ProgressOptions::new(ProgressLocation::Explorer);
+            // reduce progress visibility when still restoring
+            options.delay = Some(if this.services.layout_service.is_restored() { 800.0 } else { 1500.0 });
+            let tracked = promise.clone();
+            let _ = this.services.progress_service.with_progress(options, Box::new(move |_progress| tracked.then(|_| ())), None);
+
+            promise.await
+        })
+    }
+
+    /// O `refresh` de uma entrada que é a pasta do espaço: a lista dos filhos fica fixa na entrada da árvore, então a entrada é
+    /// refeita com o estado da vista (ver as divergências do módulo).
+    fn refresh_tree_input(&self, root: Rc<ExplorerItem>) -> Promise<()> {
+        let (this, tree) = (self.rc(), self.tree());
+        async_fn(async move {
+            let top_level = this.resolve_top_level(&ExplorerTreeInput::Item(root)).await?;
+            let view_state = tree.get_view_state();
+            tree.widget().set_input(top_level, Some(view_state)).await
+        })
+    }
+
+    /// `onContextMenu(e)`.
+    pub fn on_context_menu(&self, event: &ExplorerContextMenuEvent) -> Promise<()> {
+        let browser_event = event.browser_event;
+        if browser_event.target.is_some_and(|target| self.ui.tree().role(target) == Role::TextInput) {
+            return Promise::resolved(());
+        }
+
+        let tree = self.tree();
+        let stat = event.element.clone();
+        if let Some(selection) = selection_for_context_menu(stat.as_ref(), &tree.get_selection()) {
+            // Do not forward the keyboard event: selecting the context-menu target must not open it.
+            tree.set_selection(&selection, None);
+        }
+
+        let anchor = AnchorTarget::Element(ViewElement::from_native(Rc::new(browser_event.target.unwrap_or_else(|| tree.get_html_element()))));
+
+        let this = self.rc();
+        async_fn(async move {
+            // update dynamic contexts
+            let has_resources = this.services.clipboard_service.has_resources().await?;
+            this.file_copied_context_key().set(Dynamic::Bool(has_resources));
+            this.set_context_keys(stat.as_ref());
+
+            let selection = tree.get_selection();
+
+            // If the click is outside of the elements pass the root resource if there is only one root. If there are multiple roots pass empty object.
+            let roots = this.services.explorer_service.roots();
+            let renderer = this.renderer();
+            let arg = context_menu_arg(stat.as_ref(), renderer.as_ref(), &roots);
+            let actions_context = context_menu_actions_context(stat.as_ref(), &selection);
+
+            let context_key_service: Rc<dyn IContextKeyService> = tree.context_key_service();
+            this.services.pane.context_menu_service.show_context_menu(ContextMenuRequest::Menu(IContextMenuMenuDelegate {
+                menu_id: Some(menu_ids::explorer_context()),
+                menu_action_options: Some(MenuActionOptions { arg: Some(arg.to_dynamic()), should_forward_args: true, ..MenuActionOptions::default() }),
+                get_actions_context: Some(Rc::new(move |_: Option<&IContextMenuEvent>| Some(Dynamic::array(actions_context.iter().map(<URI as ApiValue>::to_dynamic))))),
+                context_key_service: Some(context_key_service),
+                get_actions: None,
+                base: Rc::new(ExplorerContextMenuDelegate { anchor, tree: Rc::downgrade(&tree) }),
+            }));
+            Ok(())
+        })
+    }
+
+    /// `expandAll()`.
+    pub fn expand_all(&self) {
+        if self.services.explorer_service.is_editable(None) {
+            self.tree().dom_focus();
+        }
+
+        self.tree().expand_all();
+    }
+
+    /// `collapseAll()`.
+    pub fn collapse_all(&self) {
+        let tree = self.tree();
+        if self.services.explorer_service.is_editable(None) {
+            tree.dom_focus();
+        }
+
+        let tree_input = self.tree_input.borrow().clone();
+        if let Some(tree_input) = &tree_input
+            && collapse_root_children(&ExplorerTreeHandle { slot: self.tree_slot.clone() }, tree_input)
+        {
+            return;
+        }
+
+        tree.collapse_all();
+    }
+
+    /// O corpo comum de `previousCompressedStat`, `nextCompressedStat`, `firstCompressedStat` e `lastCompressedStat`.
+    fn navigate_compressed_stat(&self, navigate: impl Fn(&dyn ICompressedNavigationController)) {
+        let focused = self.tree().get_focus();
+        let Some(focused) = focused.first() else {
+            return;
+        };
+
+        let Some(compressed_navigation_controllers) = self.renderer().get_compressed_navigation_controller(focused) else {
+            errors::throw(Error::type_error("Cannot read properties of undefined (reading 'forEach')"))
+        };
+        for controller in compressed_navigation_controllers {
+            navigate(controller.as_ref());
+            self.update_compressed_navigation_context_keys(controller.as_ref());
+        }
+    }
+
+    /// `previousCompressedStat()`.
+    pub fn previous_compressed_stat(&self) {
+        self.navigate_compressed_stat(|controller| controller.previous());
+    }
+
+    /// `nextCompressedStat()`.
+    pub fn next_compressed_stat(&self) {
+        self.navigate_compressed_stat(|controller| controller.next());
+    }
+
+    /// `firstCompressedStat()`.
+    pub fn first_compressed_stat(&self) {
+        self.navigate_compressed_stat(|controller| controller.first());
+    }
+
+    /// `lastCompressedStat()`.
+    pub fn last_compressed_stat(&self) {
+        self.navigate_compressed_stat(|controller| controller.last());
+    }
+}
+
+impl IExplorerView for ExplorerView {
+    fn id(&self) -> String {
+        self.pane.id.clone()
+    }
+
+    /// `autoReveal`.
+    fn auto_reveal(&self) -> ExplorerReveal {
+        self.auto_reveal.borrow().clone()
+    }
+
+    /// `set autoReveal(autoReveal)`.
+    fn set_auto_reveal(&self, value: ExplorerReveal) {
+        *self.auto_reveal.borrow_mut() = value;
+    }
+
+    /// `getContext(respectMultiSelection)`.
+    fn get_context(&self, respect_multi_selection: bool) -> Vec<Rc<ExplorerItem>> {
+        let tree = self.tree();
+        let focused_items = if tree.get_focused_part() == AbstractTreePart::StickyScroll { tree.get_sticky_scroll_focus() } else { tree.get_focus() };
+        let renderer = self.renderer();
+        get_context(&focused_items, &tree.get_selection(), respect_multi_selection, renderer.as_ref())
+    }
+
+    /// Refresh the contents of the explorer to get up to date data from the disk about the file structure. If the item is
+    /// passed we refresh only that level of the tree, otherwise we do a full refresh.
+    fn refresh(&self, recursive: bool, item: Option<&Rc<ExplorerItem>>, cancel_editing: Option<bool>) -> Promise<()> {
+        let cancel_editing = cancel_editing.unwrap_or(true);
+        let Some(tree) = self.tree_slot.borrow().clone() else {
+            return Promise::resolved(());
+        };
+        if !self.pane.is_body_visible() || item.is_some_and(|item| !self.has_node(item)) || (self.is_showing_filter_results() && recursive) {
+            // Tree node doesn't exist yet, when it becomes visible we will refresh
+            return Promise::resolved(());
+        }
+
+        if cancel_editing && self.services.explorer_service.is_editable(None) {
+            tree.dom_focus();
+        }
+
+        // `item || this.tree.getInput()`: a pasta da entrada refaz a entrada.
+        let input_root = match item {
+            Some(item) => Some(item).filter(|item| self.is_tree_input_item(item)).cloned(),
+            None => match &*self.tree_input.borrow() {
+                Some(ExplorerTreeInput::Item(root)) => Some(root.clone()),
+                _ => None,
+            },
+        };
+        if let Some(root) = input_root {
+            return self.refresh_tree_input(root);
+        }
+        match item {
+            Some(item) => tree.widget().update_children(Some(&InputOrElement::Element(item.clone())), recursive, true, None),
+            None => tree.widget().update_children(None, recursive, false, None),
+        }
+    }
+
+    /// `selectResource(resource, reveal = this._autoReveal, retry = 0)`.
+    fn select_resource(&self, resource: Option<&URI>, reveal: Option<ExplorerReveal>, retry: Option<usize>) -> Promise<()> {
+        self.rc().select_resource_with_retry(resource.cloned(), reveal.unwrap_or_else(|| self.auto_reveal()), retry.unwrap_or(0))
+    }
+
+    /// `setTreeInput()`.
+    fn set_tree_input(&self) -> Promise<()> {
+        let this = self.rc();
+        self.set_tree_input_sequencer.queue(move || this.do_set_tree_input())
+    }
+
+    /// `itemsCopied(stats, cut, previousCut)`.
+    fn items_copied(&self, stats: &[Rc<ExplorerItem>], cut: bool, previous_cut: Option<&[Rc<ExplorerItem>]>) {
+        self.file_copied_context_key().set(Dynamic::Bool(!stats.is_empty()));
+        self.resource_cut_context_key().set(Dynamic::Bool(cut && !stats.is_empty()));
+        let tree = self.tree();
+        for item in previous_cut.into_iter().flatten() {
+            tree.rerender(Some(item));
+        }
+        if cut {
+            for stat in stats {
+                tree.rerender(Some(stat));
+            }
+        }
+    }
+
+    /// `setEditable(stat, isEditing)`.
+    fn set_editable(&self, stat: &Rc<ExplorerItem>, is_editing: bool) -> Promise<()> {
+        let (this, stat) = (self.rc(), stat.clone());
+        async_fn(async move {
+            let tree = this.tree();
+            if is_editing {
+                let Some(parent) = stat.parent() else {
+                    return Err(Error::new("Data tree node not found"));
+                };
+                this.expand_item(&parent).await?;
+            } else if let Some(tree_container) = this.tree_container.get() {
+                this.ui.tree_mut().remove_class(tree_container, "highlight");
+            }
+
+            IExplorerView::refresh(&*this, false, stat.parent().as_ref(), Some(false)).await?;
+
+            if is_editing {
+                if let Some(tree_container) = this.tree_container.get() {
+                    this.ui.tree_mut().add_class(tree_container, "highlight");
+                }
+                tree.reveal(&stat, None);
+            } else {
+                tree.dom_focus();
+            }
+            Ok(())
+        })
+    }
+
+    /// `isItemVisible(item)`.
+    fn is_item_visible(&self, item: &Rc<ExplorerItem>) -> bool {
+        // If filter is undefined it means the tree hasn't been rendered yet, so nothing is visible
+        let Some(filter) = self.filter.borrow().clone() else {
+            return false;
+        };
+        filter_result_is_visible(&filter.filter_stat(item, TreeVisibility::Visible))
+    }
+
+    /// `isItemCollapsed(item)`.
+    fn is_item_collapsed(&self, item: &Rc<ExplorerItem>) -> Result<bool, Error> {
+        errors::catch(|| ExplorerView::is_item_collapsed(self, item))
+    }
+
+    /// `hasFocus()`.
+    fn has_focus(&self) -> bool {
+        self.container.get().is_some_and(|container| is_ancestor_of_active_element(&self.ui, container))
+    }
+
+    /// `getFocus()`.
+    fn get_focus(&self) -> Vec<Rc<ExplorerItem>> {
+        self.tree().get_focus()
+    }
+
+    /// `focusNext()`.
+    fn focus_next(&self) {
+        self.tree().focus_next(1, false, None, None);
+    }
+
+    /// `focusLast()`.
+    fn focus_last(&self) {
+        self.tree().focus_last(None, None);
+    }
+
+    /// `hasPhantomElements()`.
+    fn has_phantom_elements(&self) -> bool {
+        self.is_showing_filter_results()
     }
 }
 
@@ -1507,6 +2035,24 @@ impl ViewPaneDelegate for ExplorerView {
     /// `layoutBody(height, width)` depois do `super.layoutBody`.
     fn layout_body(&self, height: f64, width: f64) {
         self.tree().layout(Some(height), Some(width));
+    }
+
+    /// `getOptimalWidth()`: `DOM.getLargestChildWidth(parentNode, childNodes)` dos `.explorer-item .label-name` da árvore.
+    fn get_optimal_width(&self) -> f64 {
+        let parent_node = self.tree().get_html_element();
+        let ui_tree = self.ui.tree();
+        let mut child_nodes = Vec::new();
+        collect_explorer_label_names(&ui_tree, parent_node, false, &mut child_nodes);
+
+        // `Math.max(getTotalScrollWidth(child), getTotalWidth(child)) + getRelativeLeft(child, parent)`; `Math.max()` sem nós é `-Infinity`.
+        let parent_left = ui_tree.absolute_bounds(parent_node).x0;
+        child_nodes
+            .into_iter()
+            .map(|child| {
+                let bounds = ui_tree.absolute_bounds(child);
+                (bounds.x1 - bounds.x0) + (bounds.x0 - parent_left)
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
     }
 }
 
