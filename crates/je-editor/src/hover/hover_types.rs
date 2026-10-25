@@ -3,23 +3,37 @@
 //! contrato do participante do hover.
 //!
 //! Diferenças do original:
-//! - `IEditorHoverParticipant` traz só os membros que não dependem de tipos sem porte: `hoverOrdinal`,
-//!   `hideCopyButton`, `suggestHoverAnchor`, `getAccessibleContent`, `handleResize`, `handleHide` e
-//!   `handleContentsChanged`. Ficam de fora `computeSync`, `computeAsync` e `createLoadingMessage` (precisam do
-//!   `HoverStartSource`, de `hoverOperation.ts`, e do `IModelDecoration`), `renderHoverParts` (monta DOM, que a
-//!   UI nativa troca pelos widgets) e `handleScroll`. O `T extends IHoverPart` genérico dos métodos vira o
-//!   `&dyn IHoverPart`.
-//! - Os membros opcionais (`?`) viram métodos com o corpo padrão do "não definido".
+//! - `IEditorHoverParticipant` traz `hoverOrdinal`, `hideCopyButton`, `suggestHoverAnchor`, `computeSync`, `computeAsync`,
+//!   `createLoadingMessage`, `getAccessibleContent`, `handleResize`, `handleHide`, `handleContentsChanged` e
+//!   `handleScroll`. Fica de fora `renderHoverParts` (monta DOM, que a UI nativa troca pelos widgets, no porte do
+//!   `ContentHoverWidget`). O `T extends IHoverPart` genérico dos métodos vira o `Rc<dyn IHoverPart>` (nos retornos) e o
+//!   `&dyn IHoverPart` (nos argumentos).
+//! - Os membros opcionais (`?`) viram métodos com o corpo padrão do "não definido": `computeAsync` devolve `None` (o
+//!   método ausente, que o `ContentHoverComputer` troca pelo `AsyncIterableProducer.EMPTY`), `createLoadingMessage` devolve
+//!   `None` (o `null`) e `handleScroll` não faz nada. `computeAsync` devolve o `AsyncIterable<T>` do original como
+//!   `Rc<dyn AsyncIterable<Rc<dyn IHoverPart>>>`.
 //! - `owner` é o `Rc<dyn IEditorHoverParticipant>`; a igualdade de dono (`this.owner === other.owner`) compara o
 //!   endereço do objeto.
-//! - `IEditorHoverStatusBar`, `IEditorHoverAction`, `IEditorHoverColorPickerWidget`, `IEditorHoverContext`,
-//!   `IEditorHoverRenderContext`, `IRenderedHoverPart(s)`, `RenderedHoverParts`, `HoverParticipantRegistry` e
-//!   `IHoverWidget` descrevem a montagem do widget em DOM e ficam para o porte dele.
+//! - `IEditorHoverStatusBar` e `IEditorHoverAction` são os traits deste módulo: o `HTMLElement` do `append` e do `run` é o
+//!   [`NodeId`] da árvore do `je-ui`, e as opções de `addAction` são o [`IHoverAction`] do `je-widgets`, que tem os mesmos
+//!   campos (`label`, `iconClass`, `run`, `commandId`).
+//! - `IEditorHoverColorPickerWidget`, `IEditorHoverContext`, `IEditorHoverRenderContext`, `IRenderedHoverPart(s)`,
+//!   `RenderedHoverParts`, `HoverParticipantRegistry` e `IHoverWidget` descrevem a montagem do widget em DOM e ficam para
+//!   o porte dele.
 //! - `initialMousePosX` e `initialMousePosY` (`number | undefined`) são `Option<f64>`.
 
 use std::rc::Rc;
 
+use je_base::async_::AsyncIterable;
+use je_base::cancellation::CancellationToken;
+use je_base::scrollable::ScrollEvent;
+use je_ui::NodeId;
+use je_widgets::hover_api::IHoverAction;
+use je_widgets::hover_widget::HoverAction;
+
 use crate::editor_browser::EditorMouseEvent;
+use crate::hover::hover_operation::HoverStartSource;
+use crate::model::ModelDecoration;
 use crate::position::Position;
 use crate::range::Range;
 
@@ -141,6 +155,27 @@ impl HoverAnchor {
     }
 }
 
+/// `IEditorHoverAction`.
+pub trait IEditorHoverAction {
+    /// `setEnabled(enabled)`.
+    fn set_enabled(&self, enabled: bool);
+}
+
+impl IEditorHoverAction for HoverAction {
+    fn set_enabled(&self, enabled: bool) {
+        HoverAction::set_enabled(self, enabled);
+    }
+}
+
+/// `IEditorHoverStatusBar`.
+pub trait IEditorHoverStatusBar {
+    /// `addAction(actionOptions)`.
+    fn add_action(&self, action_options: IHoverAction) -> Rc<dyn IEditorHoverAction>;
+
+    /// `append(element)`: devolve o próprio elemento.
+    fn append(&self, element: NodeId) -> NodeId;
+}
+
 /// `IEditorHoverParticipant` (ver as diferenças no topo do módulo).
 pub trait IEditorHoverParticipant {
     /// `hoverOrdinal`.
@@ -156,6 +191,25 @@ pub trait IEditorHoverParticipant {
         None
     }
 
+    /// `computeSync(anchor, lineDecorations, source)`.
+    fn compute_sync(&self, anchor: &HoverAnchor, line_decorations: &[ModelDecoration], source: HoverStartSource) -> Vec<Rc<dyn IHoverPart>>;
+
+    /// `computeAsync?(anchor, lineDecorations, source, token)`: sem implementação, o método ausente.
+    fn compute_async(
+        &self,
+        _anchor: &HoverAnchor,
+        _line_decorations: &[ModelDecoration],
+        _source: HoverStartSource,
+        _token: &CancellationToken,
+    ) -> Option<Rc<dyn AsyncIterable<Rc<dyn IHoverPart>>>> {
+        None
+    }
+
+    /// `createLoadingMessage?(anchor)`: sem implementação, o `null` do original.
+    fn create_loading_message(&self, _anchor: &HoverAnchor) -> Option<Rc<dyn IHoverPart>> {
+        None
+    }
+
     /// `getAccessibleContent(hoverPart)`.
     fn get_accessible_content(&self, hover_part: &dyn IHoverPart) -> String;
 
@@ -167,4 +221,7 @@ pub trait IEditorHoverParticipant {
 
     /// `handleContentsChanged()`.
     fn handle_contents_changed(&self) {}
+
+    /// `handleScroll(e)`.
+    fn handle_scroll(&self, _e: &ScrollEvent) {}
 }

@@ -3,10 +3,12 @@
 //! hover do editor quando o ponteiro para sobre o texto fantasma (`showToolbar: 'onHover'`).
 //!
 //! Notas de tradução:
-//! - **O que `IEditorHoverParticipant` não tem.** O trait do porte (`hover/hover_types`) só traz os membros que não
-//!   dependem de DOM: `computeSync` e `renderHoverParts` ficam como métodos próprios do participante
-//!   ([`InlineCompletionsHoverParticipant::compute_sync`] e [`InlineCompletionsHoverParticipant::render_hover_parts`]), com
-//!   a mesma assinatura e o mesmo corpo, e o hover widget os chama quando for portado. O `IEditorHoverRenderContext` não tem
+//! - **O que `IEditorHoverParticipant` não tem.** O trait do porte (`hover/hover_types`) não traz `renderHoverParts`, que
+//!   monta DOM. Ele fica como método próprio do participante
+//!   ([`InlineCompletionsHoverParticipant::render_hover_parts`]), com a mesma assinatura e o mesmo corpo, e o hover widget
+//!   o chama quando for portado. O `computeSync` do trait devolve as partes como `Rc<dyn IHoverPart>`; o método próprio
+//!   [`InlineCompletionsHoverParticipant::compute_sync`] devolve as partes concretas, e o do trait o chama. O
+//!   `IEditorHoverRenderContext` não tem
 //!   porte: o participante só usa o `onContentsChanged` e o `fragment`, e o `fragment` é o retorno
 //!   ([`RenderedInlineCompletionsHoverPart`]), então o contexto é o trait [`IInlineCompletionsHoverRenderContext`];
 //! - **Controller.** O `InlineCompletionsController` (fatia 4c-6) ainda não tem porte; o `InlineCompletionsController.get(editor)`
@@ -41,6 +43,7 @@ use crate::config::editor_options::inline_suggest::{INLINE_SUGGEST, InlineSugges
 use crate::config::editor_options::registry::SCREEN_READER_ANNOUNCE_INLINE_SUGGESTION;
 use crate::cursor_common::CursorSimpleModel;
 use crate::editor_browser::{EditorMouseEvent, ElementId, MouseTarget, MouseTargetType};
+use crate::hover::hover_operation::HoverStartSource;
 use crate::hover::hover_types::{HoverAnchor, HoverAnchorType, HoverForeignElementAnchor, IEditorHoverParticipant, IHoverPart};
 use crate::inline_completions::inline_completions_model::InlineCompletionsModel;
 use crate::model::ModelDecoration;
@@ -311,5 +314,12 @@ impl IEditorHoverParticipant for InlineCompletionsHoverParticipant {
 
     fn get_accessible_content(&self, _hover_part: &dyn IHoverPart) -> String {
         localize("hoverAccessibilityStatusBar", "There are inline completions here", &[])
+    }
+
+    fn compute_sync(&self, anchor: &HoverAnchor, line_decorations: &[ModelDecoration], _source: HoverStartSource) -> Vec<Rc<dyn IHoverPart>> {
+        InlineCompletionsHoverParticipant::compute_sync(self, anchor, line_decorations)
+            .into_iter()
+            .map(|part| Rc::new(part) as Rc<dyn IHoverPart>)
+            .collect()
     }
 }

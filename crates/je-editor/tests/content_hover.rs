@@ -18,7 +18,9 @@ use std::rc::Rc;
 use common::ensure_no_disposables_are_leaked_in_test_suite;
 use je_base::dynamic::Dynamic;
 use je_editor::hover::content_hover_rendered::{HoverPositions, RenderedContentHover};
+use je_editor::hover::hover_operation::HoverStartSource;
 use je_editor::hover::hover_types::{HoverAnchor, IEditorHoverParticipant, IHoverPart};
+use je_editor::model::ModelDecoration;
 use je_editor::position::Position;
 use je_editor::range::Range;
 use support::test_code_editor::{TestCodeEditorInstantiationOptions, with_test_code_editor};
@@ -29,6 +31,10 @@ struct NullHoverParticipant;
 impl IEditorHoverParticipant for NullHoverParticipant {
     fn hover_ordinal(&self) -> i32 {
         0
+    }
+
+    fn compute_sync(&self, _anchor: &HoverAnchor, _line_decorations: &[ModelDecoration], _source: HoverStartSource) -> Vec<Rc<dyn IHoverPart>> {
+        Vec::new()
     }
 
     fn get_accessible_content(&self, _hover_part: &dyn IHoverPart) -> String {
