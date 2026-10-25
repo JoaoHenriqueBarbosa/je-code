@@ -17,12 +17,10 @@
 //! - [`render`]: `renderMarkdown`, o tratamento de links e imagens (`transformUri`, `baseUri`, `uris`, `isTrusted`,
 //!   `actionHandler`), `supportHtml`, `supportThemeIcons`, `supportAlertSyntax`, `codeBlockRendererSync`.
 //!
-//! Plano da fatia 2 (o que ficou de fora de propósito):
-//! - os 127 casos de `base/test/browser/markdownRenderer.test.ts`, portados um a um (esta fatia não os roda);
-//! - `codeBlockRenderer` assíncrono e `asyncRenderCallback` (dependem de promessas e do carregamento de imagem do
-//!   widget), e o parâmetro `target` (`replaceChildrenPreservingCodeBlocks`);
-//! - os ouvintes de clique e teclado de `renderMarkdown`: aqui existe [`render::RenderedMarkdown::activate_link`],
-//!   que o widget chama com o `data-href` do `a` clicado (Space e Enter, botão esquerdo ou do meio);
+//! Fatia 2: `codeBlockRenderer` assíncrono, `asyncRenderCallback`, `target` (`render_markdown_into`) e os 127 casos de
+//! `base/test/browser/markdownRenderer.test.ts` (em `tests/markdown_renderer.rs`). Ficam de fora de propósito:
+//! - os ouvintes de clique e teclado de `renderMarkdown`: existe [`render::RenderedMarkdown::activate_link`], que o widget
+//!   chama com o `data-href` do `a` clicado (Space e Enter, botão esquerdo ou do meio), e o ouvinte de `load` das imagens;
 //! - `markedExtensions` (o `marked` portado não tem extensões);
 //! - o mapeamento da árvore para os widgets do je-ui e do je-widgets, com os codicons.
 
@@ -36,5 +34,5 @@ mod re;
 pub use incomplete::fill_in_incomplete_tokens;
 pub use render::{
     MarkdownActionHandler, MarkdownEnvironment, MarkdownLinkKind, MarkdownRenderOptions, MarkdownRendererMarkedOptions, MarkdownSanitizerConfig,
-    RenderedMarkdown, allowed_markdown_html_attributes, allowed_markdown_html_tags, render_markdown,
+    RenderedMarkdown, allowed_markdown_html_attributes, allowed_markdown_html_tags, render_markdown, render_markdown_into,
 };
