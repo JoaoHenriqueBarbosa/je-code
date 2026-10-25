@@ -505,6 +505,9 @@ pub struct UserDataProfilesService {
     store: Rc<dyn ProfilesStore>,
     profiles_home: URI,
     profiles_cache_home: URI,
+    /// O `agentPluginsHome` do perfil padrão, quando o `UserDataProfilesMainService` o define (ver
+    /// `set_agent_plugins_home`); sem ele vale `<location>/agent-plugins`.
+    agent_plugins_home: RefCell<Option<URI>>,
     state: RefCell<State>,
     on_did_change_profiles: Rc<Emitter<DidChangeProfilesEvent>>,
     on_will_create_profile: Rc<Emitter<WillChangeProfileEvent>>,
@@ -541,6 +544,7 @@ impl UserDataProfilesService {
             store,
             profiles_home,
             profiles_cache_home,
+            agent_plugins_home: RefCell::new(None),
             state: RefCell::new(State { profiles_object: None, transient: ProfilesObject::default(), profile_creation_promises: HashMap::new() }),
             on_did_change_profiles,
             on_will_create_profile,
@@ -566,6 +570,19 @@ impl UserDataProfilesService {
     /// `init()`.
     pub fn init(&self) {
         self.state.borrow_mut().profiles_object = None;
+    }
+
+    /// O `createDefaultProfile` sobrescrito do `UserDataProfilesMainService`: o perfil padrão (e, por herança, os
+    /// perfis que usam o `agentPluginsHome` dele) passa a ter `agent_plugins_home`. Descarta o cache dos perfis para
+    /// que o perfil padrão seja refeito.
+    pub(super) fn set_agent_plugins_home(&self, agent_plugins_home: URI) {
+        *self.agent_plugins_home.borrow_mut() = Some(agent_plugins_home);
+        self.state.borrow_mut().profiles_object = None;
+    }
+
+    /// Os ids das janelas vazias associadas a um perfil (`profilesObject.emptyWindows.keys()`), sem as transitórias.
+    pub(super) fn associated_empty_window_ids(&self) -> Vec<String> {
+        self.profiles_object().empty_windows.into_iter().map(|(window_id, _)| window_id).collect()
     }
 
     fn profiles_object(&self) -> ProfilesObject {
@@ -654,6 +671,9 @@ impl UserDataProfilesService {
             default_profile.extensions_resource = extensions;
         }
         default_profile.is_default = true;
+        if let Some(agent_plugins_home) = self.agent_plugins_home.borrow().clone() {
+            default_profile.agent_plugins_home = agent_plugins_home;
+        }
         default_profile
     }
 
