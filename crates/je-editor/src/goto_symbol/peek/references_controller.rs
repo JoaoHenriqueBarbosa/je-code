@@ -15,11 +15,10 @@
 //!   primeiro `await` roda dentro da chamada.
 //! - `@IContextKeyService`, `@ICodeEditorService`, `@INotificationService`, `@IStorageService`, `@IConfigurationService` e
 //!   `@IInstantiationService` do construtor chegam em [`ReferencesControllerServices`] (o mesmo expediente de
-//!   `CommonFindControllerServices`). O `createInstance(ReferenceWidget, editor, defaultTreeKeyboardSupport, data)` é o
-//!   [`IReferenceWidgetFactory`].
-//! - A chave `peekViewLayout` guarda o `LayoutData` como texto JSON. `LayoutData.fromJSON(raw)` e o `JSON.stringify` do
-//!   `layoutData` são do widget (que é o dono do `LayoutData`): a fábrica recebe o texto lido e o widget devolve o texto a
-//!   guardar em [`IReferenceWidget::layout_data_json`].
+//!   `CommonFindControllerServices`). O `createInstance(ReferenceWidget, editor, defaultTreeKeyboardSupport, data)` é a
+//!   construção direta [`ReferenceWidget::new`], com os serviços do widget em [`ReferencesControllerServices::widget`].
+//! - A chave `peekViewLayout` guarda o `LayoutData` como texto JSON: `LayoutData.fromJSON(raw)` é [`LayoutData::from_json`]
+//!   e o `JSON.stringify(layoutData)` que o `onDidClose` guarda é [`IReferenceWidget::layout_data_json`].
 //! - `lastFocusedList?.getFocus()[0] instanceof OneReference` dos comandos de teclado é o primeiro elemento em foco da
 //!   lista (`IListWidget::get_focused_element`) com `downcast` para `Rc<OneReference>`; a árvore do widget registra os
 //!   elementos como `Rc<OneReference>`.
@@ -27,18 +26,18 @@
 //! - `CommandsRegistry.registerCommandAlias`, `registerCommand`, `registerCommandAndKeybindingRule` e
 //!   `registerKeybindingRule` do carregamento do módulo são [`register_references_controller`], idempotente por thread.
 //!
-//! # Contrato do `ReferenceWidget` (`referencesWidget.ts`, a fatia seguinte)
+//! # Contrato do `ReferenceWidget` (`referencesWidget.ts`, em [`references_widget`](super::references_widget))
 //!
-//! O controlador cria o widget pela [`IReferenceWidgetFactory`] e fala com ele pela [`IReferenceWidget`]. A fatia do widget
-//! implementa os dois e entrega a fábrica em [`ReferencesControllerServices::widget_factory`]:
-//! - **A fábrica** (`createInstance(ReferenceWidget, editor, defaultTreeKeyboardSupport, data)`): recebe o editor, o
-//!   `defaultTreeKeyboardSupport` e o texto JSON do `LayoutData` (`'{}'` quando nada foi guardado), e devolve o widget já
-//!   criado (o construtor do original chama `this.create()`, aplica o tema e registra o widget na `IPeekViewService` com
-//!   `addExclusiveWidget(editor, this)`).
+//! O controlador cria o [`ReferenceWidget`] e fala com ele pela [`IReferenceWidget`], que o widget implementa:
+//! - **A construção** (`createInstance(ReferenceWidget, editor, defaultTreeKeyboardSupport, data)`): recebe o editor, o
+//!   `defaultTreeKeyboardSupport` e o [`LayoutData`] lido do armazenamento (`'{}'` quando nada foi guardado); o construtor do
+//!   original chama `this.create()`, aplica o tema e registra o widget na `IPeekViewService` com
+//!   `addExclusiveWidget(editor, this)`.
 //! - **O widget** é um [`PeekViewWidget`](crate::peek_view::PeekViewWidget) por dentro (`setTitle`, `setMetaTitle`,
-//!   `show`/`hide`/`position` do `ZoneWidget` e `onDidClose`). `show(range)` é o `show(where)` do `ReferenceWidget`, que usa
-//!   `layoutData.heightInLines || 18`. `dispose` marca `isClosing` antes de qualquer outra coisa (o controlador depende
-//!   disso para não recursar no `onDidClose`). `layout_data_json()` é o `JSON.stringify(layoutData)`.
+//!   `show`/`hide`/`position` do `ZoneWidget` e `onDidClose`, este pelo [`IPeekViewWidget`], de que a [`IReferenceWidget`]
+//!   herda). `show(range)` é o `show(where)` do `ReferenceWidget`, que usa `layoutData.heightInLines || 18`. `dispose` marca
+//!   `isClosing` antes de qualquer outra coisa (o controlador depende disso para não recursar no `onDidClose`).
+//!   `layout_data_json()` é o `JSON.stringify(layoutData)`.
 //! - **Os eventos** `onDidSelectReference` carregam o [`SelectionEvent`] (`kind`, `source` e `element: Location`), também
 //!   definido aqui porque o controlador é quem o consome.
 //! - `setModel`, `setSelection` e `revealReference` devolvem [`Promise<()>`](Promise) (o `Promise<unknown>` do original).
@@ -75,10 +74,11 @@ use crate::core_commands::{editor_text_focus, text_editor_selection_source};
 use crate::editor_extensions::register_editor_contribution;
 use crate::embedded_code_editor_widget::get_outer_editor;
 use crate::goto_symbol::go_to_commands::{I_REFERENCES_CONTROLLER_LOOKUP, IReferencesController, IReferencesControllerLookup};
+use crate::goto_symbol::peek::references_widget::{LayoutData, ReferenceWidget, ReferenceWidgetServices};
 use crate::goto_symbol::references_model::{OneReference, ReferencesModel};
 use crate::language_features_service::Location;
 use crate::opener_service::{ICodeEditorService, TextEditorOptions, TextResourceEditorInput, range_to_text_editor_selection};
-use crate::peek_view::in_peek_editor;
+use crate::peek_view::{IPeekViewWidget, in_peek_editor};
 use crate::position::Position;
 use crate::range::Range;
 
@@ -127,8 +127,9 @@ pub struct SelectionEvent {
     pub element: Option<Location>,
 }
 
-/// O que o controlador pede ao `ReferenceWidget` (ver "Contrato do `ReferenceWidget`" no cabeçalho).
-pub trait IReferenceWidget: IDisposable {
+/// O que o controlador pede ao `ReferenceWidget` (ver "Contrato do `ReferenceWidget`" no cabeçalho). O `onDidClose` e o
+/// `dispose` vêm do [`IPeekViewWidget`].
+pub trait IReferenceWidget: IPeekViewWidget {
     /// `setTitle(primaryHeading, secondaryHeading?)`.
     fn set_title(&self, primary_heading: &str, secondary_heading: Option<&str>);
     /// `setMetaTitle(value)`.
@@ -139,8 +140,6 @@ pub trait IReferenceWidget: IDisposable {
     fn hide(&self);
     /// `position`.
     fn position(&self) -> Option<Position>;
-    /// `onDidClose`.
-    fn on_did_close(&self) -> Event<()>;
     /// `onDidSelectReference`.
     fn on_did_select_reference(&self) -> Event<SelectionEvent>;
     /// `JSON.stringify(layoutData)`.
@@ -161,12 +160,6 @@ pub trait IReferenceWidget: IDisposable {
     fn reveal_reference(&self, reference: &Rc<OneReference>) -> Promise<()>;
 }
 
-/// `createInstance(ReferenceWidget, editor, defaultTreeKeyboardSupport, data)`.
-pub trait IReferenceWidgetFactory {
-    /// `layout_data` é o texto JSON guardado de `LayoutData` (`'{}'` quando não há nada).
-    fn create(&self, editor: &Rc<CodeEditorWidget>, default_tree_keyboard_support: bool, layout_data: &str) -> Rc<dyn IReferenceWidget>;
-}
-
 // #endregion
 
 /// Os serviços que o construtor de `ReferencesController` recebe por injeção.
@@ -177,11 +170,12 @@ pub struct ReferencesControllerServices {
     pub notification_service: Rc<dyn INotificationService>,
     pub storage_service: Rc<dyn StorageService>,
     pub configuration_service: Rc<dyn IConfigurationService>,
-    pub widget_factory: Rc<dyn IReferenceWidgetFactory>,
+    /// Os serviços do `ReferenceWidget` (o `@IInstantiationService` que o `createInstance` usa).
+    pub widget: ReferenceWidgetServices,
 }
 
 /// `{ uri, range }` de uma referência (um `OneReference` usado como `Location`).
-fn location_of(reference: &OneReference) -> Location {
+pub(crate) fn location_of(reference: &OneReference) -> Location {
     Location { uri: reference.uri().clone(), range: reference.range() }
 }
 
@@ -488,7 +482,8 @@ impl IReferencesController for ReferencesController {
         }));
 
         let layout_data = self.services.storage_service.get(PEEK_VIEW_LAYOUT_KEY, StorageScope::Profile, Some("{}")).unwrap_or_else(|| "{}".to_owned());
-        let widget = self.services.widget_factory.create(&editor, self.default_tree_keyboard_support, &layout_data);
+        let widget: Rc<dyn IReferenceWidget> =
+            ReferenceWidget::new(&editor, self.default_tree_keyboard_support, LayoutData::from_json(&layout_data), self.services.widget.clone());
         *self.widget.borrow_mut() = Some(Rc::clone(&widget));
         widget.set_title(&localize("labelLoading", "Loading...", &[]), None);
         widget.show(range);
