@@ -21,12 +21,14 @@ use std::rc::{Rc, Weak};
 use je_base::lifecycle::{Disposable, IDisposable, to_disposable};
 use je_base::nls::localize;
 use je_base::observable::observables::derived::derived_owned;
-use je_base::observable::{DebugOwner, Observable, autorun_with_store};
+use je_base::observable::{DebugOwner, IObservable, Observable, autorun_with_store};
 use je_base::themables::ThemeIcon;
 
 use crate::diff::range_mapping::{DetailedLineRangeMapping, RangeMapping};
+use crate::diff_editor::components::diff_editor_editors::DiffEditorEditors;
 use crate::diff_editor::diff_editor_widget::DiffEditorWidget;
 use crate::diff_editor::feature_contracts::DiffEditorFeatureContext;
+use crate::diff_editor_view_model::DiffEditorViewModel;
 use crate::editor_browser::{GlyphMarginWidgetPosition, IGlyphMarginWidget};
 use crate::line_range::{LineRange, LineRangeSet};
 use crate::model::GlyphMarginLane;
@@ -36,6 +38,54 @@ use crate::range::Range;
 pub struct SelectedDiff {
     pub mapping_index: usize,
     pub range_mappings: Vec<RangeMapping>,
+}
+
+/// O derivado `selectedDiffs`: as diferenças que a seleção do editor modificado toca, com os mapeamentos internos que ela intersecta.
+/// O `RevertButtonsFeature` e o `DiffEditorGutter` o calculam do mesmo jeito, então o cálculo mora aqui. A constante `emptyArr` (que
+/// não dispara mudança, porque `[]` é sempre um array novo) é um `Rc` criado uma vez por derivado.
+pub fn selected_diffs_observable(
+    owner: DebugOwner,
+    editors: Rc<DiffEditorEditors>,
+    diff_model: IObservable<Option<Rc<DiffEditorViewModel>>>,
+) -> IObservable<Rc<Vec<SelectedDiff>>> {
+    let empty_arr: Rc<Vec<SelectedDiff>> = Rc::default();
+    derived_owned(owner, move |reader| {
+        // selectedDiffs
+        let diff = diff_model.read(reader).and_then(|model| model.diff.read(reader));
+        // Return `emptyArr` because it is a constant. [] is always a new array and would trigger a change.
+        let Some(diff) = diff else { return empty_arr.clone() };
+
+        let selections = editors.modified_selections.read(reader);
+        if selections.iter().all(|s| s.is_empty()) {
+            return empty_arr.clone();
+        }
+
+        let selected_line_numbers = LineRangeSet::new(selections.iter().map(|s| LineRange::from_range_inclusive(s)).collect());
+
+        let result: Vec<SelectedDiff> = diff
+            .mappings
+            .iter()
+            .enumerate()
+            .filter_map(|(mapping_index, m)| {
+                let inner_changes = m.line_range_mapping.inner_changes.as_ref()?;
+                if !selected_line_numbers.intersects(&m.line_range_mapping.modified) {
+                    return None;
+                }
+                Some(SelectedDiff {
+                    mapping_index,
+                    range_mappings: inner_changes
+                        .iter()
+                        .filter(|c| selections.iter().any(|s| Range::are_intersecting(&c.modified_range, s)))
+                        .copied()
+                        .collect(),
+                })
+            })
+            .collect();
+        if result.is_empty() || result.iter().all(|r| r.range_mappings.is_empty()) {
+            return empty_arr.clone();
+        }
+        Rc::new(result)
+    })
 }
 
 /// `RevertButtonsFeature`.
@@ -52,48 +102,7 @@ impl RevertButtonsFeature {
         let options = context.options.clone();
         let widget = context.diff_editor.clone();
 
-        // `emptyArr`: a constante que não dispara mudança (`[]` é sempre um array novo).
-        let empty_arr: Rc<Vec<SelectedDiff>> = Rc::default();
-        let selected_diffs = {
-            let (editors, diff_model) = (editors.clone(), diff_model.clone());
-            derived_owned(owner, move |reader| {
-                // selectedDiffs
-                let diff = diff_model.read(reader).and_then(|model| model.diff.read(reader));
-                // Return `emptyArr` because it is a constant. [] is always a new array and would trigger a change.
-                let Some(diff) = diff else { return empty_arr.clone() };
-
-                let selections = editors.modified_selections.read(reader);
-                if selections.iter().all(|s| s.is_empty()) {
-                    return empty_arr.clone();
-                }
-
-                let selected_line_numbers = LineRangeSet::new(selections.iter().map(|s| LineRange::from_range_inclusive(s)).collect());
-
-                let result: Vec<SelectedDiff> = diff
-                    .mappings
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(mapping_index, m)| {
-                        let inner_changes = m.line_range_mapping.inner_changes.as_ref()?;
-                        if !selected_line_numbers.intersects(&m.line_range_mapping.modified) {
-                            return None;
-                        }
-                        Some(SelectedDiff {
-                            mapping_index,
-                            range_mappings: inner_changes
-                                .iter()
-                                .filter(|c| selections.iter().any(|s| Range::are_intersecting(&c.modified_range, s)))
-                                .copied()
-                                .collect(),
-                        })
-                    })
-                    .collect();
-                if result.is_empty() || result.iter().all(|r| r.range_mappings.is_empty()) {
-                    return empty_arr.clone();
-                }
-                Rc::new(result)
-            })
-        };
+        let selected_diffs = selected_diffs_observable(owner, editors.clone(), diff_model.clone());
 
         base.register(autorun_with_store(move |reader, store| {
             if !options.should_render_old_revert_arrows.read(reader) {

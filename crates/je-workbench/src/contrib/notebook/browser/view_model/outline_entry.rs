@@ -7,7 +7,7 @@
 //! - `children`/`parent` do original são campos mutáveis: aqui `RefCell` com `Weak` para o pai (sem ciclo de contagem), e
 //!   `addChild` exige o `Rc` da entrada (`self: &Rc<Self>`) para registrar o pai.
 //! - `range?: IRange` é `Option<Range>` e `symbolKind?: SymbolKind` é `Option<SymbolKind>`.
-//! - `SymbolKinds.toIcon(kind)` (de `editor/common/languages.ts`) não tem porte: [`symbol_kind_to_icon`] é a tabela do original.
+//! - `SymbolKinds.toIcon(kind)` é [`SymbolKind::to_icon`] (em `je_editor::language_providers`).
 //! - `Codicon.markdown`/`Codicon.code` e `executingStateIcon` (`Codicon.sync`, ver `notebookIcons.ts`) são `ThemeIcon::from_id`;
 //!   `ThemeIcon.modify(icon, 'spin')` é `ThemeIcon::modify`.
 //! - `this.symbolKind` como teste de verdade é [`OutlineEntry::has_symbol_kind`] (`SymbolKind.File` é `0`, falso em JavaScript).
@@ -30,39 +30,6 @@ use crate::contrib::notebook::common::notebook_common::CellKind;
 pub struct IOutlineMarkerInfo {
     pub count: usize,
     pub top_sev: MarkerSeverity,
-}
-
-/// `SymbolKinds.toIcon(kind)`.
-pub fn symbol_kind_to_icon(kind: SymbolKind) -> ThemeIcon {
-    let id = match kind {
-        SymbolKind::File => "symbol-file",
-        SymbolKind::Module => "symbol-module",
-        SymbolKind::Namespace => "symbol-namespace",
-        SymbolKind::Package => "symbol-package",
-        SymbolKind::Class => "symbol-class",
-        SymbolKind::Method => "symbol-method",
-        SymbolKind::Property => "symbol-property",
-        SymbolKind::Field => "symbol-field",
-        SymbolKind::Constructor => "symbol-constructor",
-        SymbolKind::Enum => "symbol-enum",
-        SymbolKind::Interface => "symbol-interface",
-        SymbolKind::Function => "symbol-function",
-        SymbolKind::Variable => "symbol-variable",
-        SymbolKind::Constant => "symbol-constant",
-        SymbolKind::String => "symbol-string",
-        SymbolKind::Number => "symbol-number",
-        SymbolKind::Boolean => "symbol-boolean",
-        SymbolKind::Array => "symbol-array",
-        SymbolKind::Object => "symbol-object",
-        SymbolKind::Key => "symbol-key",
-        SymbolKind::Null => "symbol-null",
-        SymbolKind::EnumMember => "symbol-enum-member",
-        SymbolKind::Struct => "symbol-struct",
-        SymbolKind::Event => "symbol-event",
-        SymbolKind::Operator => "symbol-operator",
-        SymbolKind::TypeParameter => "symbol-type-parameter",
-    };
-    ThemeIcon::from_id(id)
 }
 
 /// `OutlineEntry`.
@@ -118,7 +85,7 @@ impl OutlineEntry {
         if self.has_symbol_kind()
             && let Some(symbol_kind) = self.symbol_kind
         {
-            return symbol_kind_to_icon(symbol_kind);
+            return symbol_kind.to_icon();
         }
         let executing_state_icon = ThemeIcon::from_id("sync");
         if self.is_executing && self.is_paused {
