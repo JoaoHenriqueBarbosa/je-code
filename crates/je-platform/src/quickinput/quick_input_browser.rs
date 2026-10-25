@@ -27,9 +27,9 @@
 //!   [`IQuickInputUi::on_container_key_up`]; `renderQuickInputDescription` e o `dom.reset` da mensagem são
 //!   [`IQuickInputUi::reset_message`] e [`IQuickInputUi::render_message`].
 //!
-//! Fica para a fatia 2: o `QuickInputController` (`quickInputController.ts`), a lista (`quickInputList.ts`), a árvore
-//! (`quickInputTree`), a `QuickInputBox`, os estilos e as opções (`IQuickInputOptions`, `IQuickInputStyles`), o `QuickTree`, o
-//! `renderQuickInputDescription` e o `QuickInputHoverDelegate` (depende do `WorkbenchHoverDelegate`, ainda não portado).
+//! Fica fora daqui o `QuickInputController` (`quickInputController.ts`), a lista (`quickInputList.ts`), a árvore e o `QuickTree`
+//! (`tree/`), a `QuickInputBox`, os estilos, as opções (`IQuickInputOptions`, `IQuickInputStyles`), o `renderQuickInputDescription`
+//! e o `QuickInputHoverDelegate`: cada um tem o seu módulo.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -51,9 +51,10 @@ use super::quick_input::{
     IInputBox, IKeyMods, IQuickInput, IQuickInputButton, IQuickInputHideEvent, IQuickNavigateConfiguration, IQuickPick, IQuickPickDidAcceptEvent,
     IQuickPickItem, IQuickPickItemButtonEvent, IQuickPickSeparatorButtonEvent, IQuickPickWillAcceptEvent, ItemActivation, MatchOnLabelMode,
     NO_KEY_MODS, QuickInputAnchor, QuickInputAnchorPosition, QuickInputButtonLocation, QuickInputButtonRef, QuickInputHideReason, QuickInputType,
-    QuickPickFocus, QuickPickInput, QuickPickOk,
+    QuickPickFocus, QuickPickInput, QuickPickOk, QuickTreeItemChecked,
 };
 use super::quick_input_utils::{OnTrigger, quick_input_button_to_action, quick_input_buttons_to_action_arrays};
+use super::tree::quick_input_tree_controller::QuickInputTreeController;
 use crate::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, RawContextKey};
 use crate::contextview::view_element::ViewElement;
 use je_base::actions::ActionRef;
@@ -241,6 +242,15 @@ pub trait IQuickInputUi {
     fn container(&self) -> Rc<ViewElement>;
     fn input_box(&self) -> Rc<dyn IQuickInputBoxUi>;
     fn list(&self) -> Rc<dyn IQuickInputListUi>;
+    /// `ui.tree`: a árvore do `QuickTree`.
+    fn tree(&self) -> Rc<QuickInputTreeController>;
+    /// `ui.checkAll.checked`.
+    fn check_all_state(&self) -> QuickTreeItemChecked;
+    fn set_check_all_state(&self, state: QuickTreeItemChecked);
+    /// `ui.checkAll.onChange`.
+    fn on_did_change_check_all(&self) -> Event<()>;
+    /// `ui.count.setCount(count)`.
+    fn set_count(&self, count: usize);
 
     /// `ui.title.textContent`.
     fn title_text(&self) -> String;
@@ -903,6 +913,8 @@ macro_rules! impl_quick_input {
     };
 }
 
+pub(crate) use impl_quick_input;
+
 /// Pares `get`/`set` de um filho: guardam o valor e mandam atualizar (`$upd = update`).
 macro_rules! props {
     ($($get:ident, $set:ident, $field:ident: $ty:ty, $upd:ident;)*) => {$(
@@ -921,7 +933,7 @@ macro_rules! props {
 }
 
 /// Amarra o controlador recém-criado à base e o devolve.
-fn bind_core<T: QuickInputUpdate + IQuickInput + 'static>(this: Rc<T>, core: &QuickInputBase) -> Rc<T> {
+pub(crate) fn bind_core<T: QuickInputUpdate + IQuickInput + 'static>(this: Rc<T>, core: &QuickInputBase) -> Rc<T> {
     let update_target: Weak<dyn QuickInputUpdate> = Rc::downgrade(&this) as Weak<dyn QuickInputUpdate>;
     let owner: Weak<dyn IQuickInput> = Rc::downgrade(&this) as Weak<dyn IQuickInput>;
     core.bind(update_target, owner);

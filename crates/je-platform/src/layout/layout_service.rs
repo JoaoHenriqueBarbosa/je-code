@@ -32,12 +32,29 @@ pub struct LayoutAddContainerEvent {
     pub disposables: Rc<DisposableStore>,
 }
 
+/// `ILayoutOffsetInfo`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutOffsetInfo {
+    /// Generic top offset.
+    pub top: f64,
+    /// Quick pick specific top offset.
+    pub quick_pick_top: f64,
+}
+
 /// `ILayoutService`.
 pub trait ILayoutService {
     /// `mainContainer`.
     fn main_container(&self) -> Rc<ViewElement>;
     /// `activeContainer`.
     fn active_container(&self) -> Rc<ViewElement>;
+    /// `activeContainerDimension`: o tamanho do contêiner ativo.
+    fn active_container_dimension(&self) -> ISize {
+        self.active_container().size()
+    }
+    /// `activeContainerOffset`: sem barra de título própria nem painéis flutuantes, nenhum deslocamento.
+    fn active_container_offset(&self) -> LayoutOffsetInfo {
+        LayoutOffsetInfo { top: 0.0, quick_pick_top: 0.0 }
+    }
     /// `getContainer(window)`.
     fn get_container(&self) -> Rc<ViewElement>;
     /// `onDidLayoutContainer`.

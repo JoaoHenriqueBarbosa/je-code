@@ -4,3 +4,4 @@
 pub mod hover_service;
 pub mod hover_widget;
 pub mod updatable_hover_widget;
+pub mod workbench_hover_delegate;

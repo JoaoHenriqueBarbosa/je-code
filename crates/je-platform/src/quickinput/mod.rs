@@ -6,7 +6,8 @@
 //! ([`quick_access_controller`]), o provedor de seletor de `browser/pickerQuickAccess.ts` ([`picker_quick_access`]), os
 //! controladores de `browser/quickInput.ts` ([`quick_input_browser`]: `QuickPick`, `InputBox`, `QuickWidget`), a caixa de texto
 //! de `browser/quickInputBox.ts` ([`quick_input_box`]), a lista de `browser/quickInputList.ts` ([`quick_input_list`]) e o
-//! `QuickInputController` de `browser/quickInputController.ts` ([`quick_input_controller`]).
+//! `QuickInputController` de `browser/quickInputController.ts` ([`quick_input_controller`]), o `QuickInputHoverDelegate` de
+//! `browser/quickInput.ts` ([`quick_input_hover`]) e a árvore e o `QuickTree` de `browser/tree` ([`tree`]).
 
 pub mod picker_quick_access;
 pub mod quick_access;
@@ -15,6 +16,7 @@ pub mod quick_input;
 pub mod quick_input_box;
 pub mod quick_input_browser;
 pub mod quick_input_controller;
+pub mod quick_input_hover;
 pub mod quick_input_list;
 pub mod quick_input_utils;
 pub mod tree;

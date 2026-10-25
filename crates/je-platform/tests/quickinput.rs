@@ -90,6 +90,8 @@ fn setup(guard: &LeakGuard) -> Env {
             set_context_key: Rc::new(|_| {}),
             link_opener_delegate: Rc::new(|_| {}),
             styles: IQuickInputStyles::default(),
+            hover_delegate: None,
+            is_dark_theme: Rc::new(|| true),
         },
         layout_service,
         context_key_service,

@@ -4316,7 +4316,7 @@ fn row_badges(badges: &[ActionListBadge]) -> Vec<RowBadge> {
 }
 
 /// `asCssVariable(id)`.
-fn as_css_variable(id: &str) -> String {
+pub(crate) fn as_css_variable(id: &str) -> String {
     format!("var(--vscode-{})", id.replace('.', "-"))
 }
 
