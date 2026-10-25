@@ -856,6 +856,19 @@ editor_emitters! {
     begin_update, on_begin_update, (), direct, "`onBeginUpdate`.";
     end_update, on_end_update, (), direct, "`onEndUpdate`.";
     before_execute_edit, on_before_execute_edit, BeforeExecuteEditEvent, direct, "`onBeforeExecuteEdit`.";
+    key_down, on_key_down, je_platform::keybinding::keybinding::KeyboardEvent, direct, "`onKeyDown`: quem tem a `View` (ou o host nativo que a substitui) entrega as teclas por `fire_key_down`.";
+}
+
+impl CodeEditorWidget {
+    /// Entrega uma tecla pressionada aos ouvintes de `onKeyDown` (o `View` do original dispara o evento).
+    pub fn fire_key_down(&self, event: je_platform::keybinding::keybinding::KeyboardEvent) {
+        self.emitters.key_down.fire(event);
+    }
+
+    /// `_onKeyDown._size`: quantos ouvintes de `onKeyDown` estão registrados (os testes medem vazamento por aqui).
+    pub fn key_down_listener_count(&self) -> usize {
+        self.emitters.key_down.size_for_testing()
+    }
 }
 
 impl CodeEditorWidget {
