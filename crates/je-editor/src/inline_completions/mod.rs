@@ -11,8 +11,11 @@
 //! - fatia 1 (pronta): `text_model_value_reference`, `typing_speed`, `provide_inline_completions` (consulta aos
 //!   provedores, `InlineSuggestData` e `InlineSuggestionList`) e `inline_suggestion_item` (`InlineCompletionItem`,
 //!   `InlineEditItem`, identidade e dica);
-//! - fatia 2: `inlineCompletionsSource` (fila de requisições, debounce e `InlineCompletionsState` sobre
-//!   `provide_inline_completions`);
+//! - fatia 2 (pronta): `inline_completions_source` (fila de requisições, debounce, `InlineCompletionsState` e telemetria
+//!   de resposta vazia sobre `provide_inline_completions`), mais o `wait` do `utils`. O `RenameSymbolProcessor`, o
+//!   `StructuredLogger` do `logFetch` e o `DataChannelForwardingTelemetryService` ainda não têm porte: entram como traits
+//!   injetados (`InlineCompletionsRenameProcessor`, `InlineCompletionsFetchLogger`, `InlineCompletionsRequestTelemetry`)
+//!   no `InlineCompletionsSourceServices`; os portes reais fecham essas pontas;
 //! - fatia 3: `inlineCompletionsModel` (estado observável, aceitar, aceitar parcial, saltar, rejeitar, sugestão
 //!   selecionada) sobre a fonte e os itens;
 //! - fatia 4: o controller (`inlineCompletionsController`) com os utilitários de teste (`GhostTextContext`,
@@ -25,6 +28,7 @@ pub mod ghost_text;
 pub mod graph;
 pub mod inline_completion_is_visible;
 pub mod inline_completion_view_data;
+pub mod inline_completions_source;
 pub mod inline_suggest_alternative_action;
 pub mod inline_suggestion_item;
 pub mod long_distance_hint;

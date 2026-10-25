@@ -4,7 +4,16 @@
 //! Notas de tradução:
 //! - `ErrorResult<T = void>` guarda `error: T` e `message?`; `ErrorResult.is(obj)` é a escolha de variante de um
 //!   `Result<_, ErrorResult<T>>`, então não há função `is`;
-//! - `getReadonlyEmptyArray` devolve uma fatia vazia compartilhada, que em Rust é `&[]`.
+//! - `getReadonlyEmptyArray` devolve uma fatia vazia compartilhada, que em Rust é `&[]`;
+//! - `wait(ms, token?)` é uma [`Promise`] que resolve no tempo ou no cancelamento do token (nunca rejeita).
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use je_base::cancellation::CancellationToken;
+use je_base::lifecycle::{DisposableRef, IDisposable};
+use je_base::promise::Promise;
+use je_base::runtime;
 
 /// `ErrorResult<T>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,4 +51,42 @@ impl<T: std::fmt::Debug> ErrorResult<T> {
 /// `getReadonlyEmptyArray()`.
 pub fn get_readonly_empty_array<T>() -> &'static [T] {
     &[]
+}
+
+/// `wait(ms, cancellationToken?)`: resolve depois de `ms` milissegundos, ou assim que o token cancelar (sem rejeitar,
+/// diferente de `timeout` de `async`).
+pub fn wait(ms: u64, cancellation_token: Option<&CancellationToken>) -> Promise<()> {
+    let token = cancellation_token.cloned();
+    Promise::with_executor(move |resolver| {
+        let disposable: Rc<RefCell<Option<DisposableRef>>> = Rc::default();
+        let handle = runtime::set_timeout(
+            {
+                let (disposable, resolver) = (Rc::clone(&disposable), resolver.clone());
+                move || {
+                    dispose_slot(&disposable);
+                    resolver.resolve(());
+                }
+            },
+            ms,
+        );
+        if let Some(token) = token {
+            let listener = token.on_cancellation_requested().listen({
+                let disposable = Rc::clone(&disposable);
+                move |_| {
+                    runtime::clear_timeout(handle);
+                    dispose_slot(&disposable);
+                    resolver.resolve(());
+                }
+            });
+            *disposable.borrow_mut() = Some(listener);
+        }
+    })
+}
+
+/// `if (d) { d.dispose(); }`.
+fn dispose_slot(slot: &Rc<RefCell<Option<DisposableRef>>>) {
+    let current = slot.borrow_mut().take();
+    if let Some(current) = current {
+        current.dispose();
+    }
 }
