@@ -4281,6 +4281,7 @@ version = "0.0.0"
 dependencies = [
  "je-base",
  "je-codicons",
+ "je-platform",
  "je-render",
  "je-text",
  "je-theme",
