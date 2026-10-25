@@ -30,6 +30,7 @@ pub mod user_data_sync_store_service;
 
 pub mod abstract_json_synchronizer;
 pub mod keybindings_sync;
+pub mod mcp_sync;
 pub mod tasks_sync;
 
 pub mod global_state_sync;
