@@ -68,3 +68,7 @@ pub mod modern_ui;
 pub mod workspaces;
 // Reinício por configuração (`contrib/relauncher`): o `SettingsChangeRelauncher`, que pergunta se reinicia quando uma configuração que só vale após o reinício muda.
 pub mod relauncher;
+// Abridor de pastas (`contrib/opener`): o `WorkbenchOpenerContribution`, que revela pastas do workspace e abre pastas locais no sistema nas Sessions.
+pub mod opener;
+// Telemetria de configuração (`contrib/telemetry`): o `ConfigurationTelemetryContribution`, que reporta o valor explícito de configurações escolhidas.
+pub mod telemetry;
