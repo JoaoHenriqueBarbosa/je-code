@@ -56,6 +56,9 @@ def listed_cases(path):
     if not target.is_dir():
         return None
     stem = path.stem
+    # O binário se chama `<nome>-<hash>`: com o mesmo nome de teste em dois crates não há como saber qual é qual
+    if sum(1 for _ in ROOT.glob(f'crates/*/tests/{stem}.rs')) > 1:
+        return None
     binaries = [b for b in target.glob(f'{stem}-*') if b.is_file() and os.access(b, os.X_OK) and b.suffix == '']
     if not binaries:
         return None

@@ -4,8 +4,8 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 
 | Camada | Arquivos de teste | Casos do oráculo | Arquivos portados | Casos portados | % |
 | --- | --- | --- | --- | --- | --- |
-| `base` | 150 | 2278 | 131 | 2045 | 89.77 |
-| `platform` | 192 | 2806 | 122 | 2146 | 76.48 |
+| `base` | 150 | 2278 | 131 | 2084 | 91.48 |
+| `platform` | 192 | 2806 | 122 | 2261 | 80.58 |
 | `editor` | 182 | 3144 | 149 | 2980 | 94.78 |
 | `workbench/services` | 137 | 2491 | 109 | 2209 | 88.68 |
 | `workbench/api` | 94 | 965 | 77 | 747 | 77.41 |
@@ -14,7 +14,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `server` | 8 | 75 | 4 | 24 | 32.00 |
 | `code` | 5 | 15 | 1 | 4 | 26.67 |
 | `extensions` | 161 | 1360 | 0 | 0 | 0.00 |
-| **total** | | 18391 | | 12996 | 70.66 |
+| **total** | | 18391 | | 13150 | 71.50 |
 
 ## Arquivos portados
 
@@ -25,7 +25,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/base/parts/ipc/test/node/ipc.net.test.ts` | 23 | `crates/je-base/tests/ipc_net.rs` | 11 |
 | `src/vs/base/parts/request/test/common/requestImpl.test.ts` | 3 | `crates/je-base/tests/request_impl.rs` | 3 |
 | `src/vs/base/test/browser/comparers.test.ts` | 10 | `crates/je-base/tests/comparers.rs` | 10 |
-| `src/vs/base/test/browser/dom.test.ts` | 41 | `crates/je-base/tests/dom.rs` | 1 |
+| `src/vs/base/test/browser/dom.test.ts` | 41 | `crates/je-base/tests/dom.rs` | 40 |
 | `src/vs/base/test/browser/domSanitize.test.ts` | 29 | `crates/je-base/tests/dom_sanitize.rs` | 29 |
 | `src/vs/base/test/browser/formattedTextRenderer.test.ts` | 9 | `crates/je-base/tests/formatted_text_renderer.rs` | 9 |
 | `src/vs/base/test/browser/hash.test.ts` | 11 | `crates/je-base/tests/hash_browser.rs` | 11 |
@@ -159,12 +159,12 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/assignment/test/common/assignment.test.ts` | 1 | `crates/je-platform/tests/assignment.rs` | 1 |
 | `src/vs/platform/browserView/test/common/browserHistory.test.ts` | 26 | `crates/je-platform/tests/browser_history.rs` | 26 |
 | `src/vs/platform/browserView/test/common/browserPermissions.test.ts` | 10 | `crates/je-platform/tests/browser_permissions.rs` | 10 |
-| `src/vs/platform/browserView/test/common/browserView.test.ts` | 6 | `crates/je-platform/tests/browser_view.rs` | 2 |
+| `src/vs/platform/browserView/test/common/browserView.test.ts` | 6 | `crates/je-platform/tests/browser_view.rs` | 6 |
 | `src/vs/platform/browserView/test/common/browserViewGroup.test.ts` | 2 | `crates/je-platform/tests/browser_view_group.rs` | 2 |
 | `src/vs/platform/browserView/test/common/cssHelpers.test.ts` | 29 | `crates/je-platform/tests/css_helpers.rs` | 29 |
 | `src/vs/platform/commands/test/common/commands.test.ts` | 4 | `crates/je-platform/tests/commands.rs` | 4 |
 | `src/vs/platform/configuration/test/common/configuration.test.ts` | 21 | `crates/je-platform/tests/configuration.rs` | 21 |
-| `src/vs/platform/configuration/test/common/configurationModels.test.ts` | 94 | `crates/je-platform/tests/configuration_models.rs` | 7 |
+| `src/vs/platform/configuration/test/common/configurationModels.test.ts` | 94 | `crates/je-platform/tests/configuration_models.rs` | 94 |
 | `src/vs/platform/configuration/test/common/configurationRegistry.test.ts` | 22 | `crates/je-platform/tests/configuration_registry.rs` | 22 |
 | `src/vs/platform/configuration/test/common/configurationService.test.ts` | 17 | `crates/je-platform/tests/configuration_service.rs` | 17 |
 | `src/vs/platform/configuration/test/common/configurationVariables.test.ts` | 7 | `crates/je-platform/tests/configuration_variables.rs` | 7 |
@@ -186,7 +186,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/extensionManagement/test/node/extensionDownloader.test.ts` | 7 | `crates/je-extensions/tests/extension_downloader.rs` | 7 |
 | `src/vs/platform/extensionManagement/test/node/extensionsScannerService.test.ts` | 36 | `crates/je-extensions/tests/extensions_scanner_service.rs` | 36 |
 | `src/vs/platform/extensions/test/common/extensionValidator.test.ts` | 6 | `crates/je-extensions/tests/extension_validator.rs` | 6 |
-| `src/vs/platform/extensions/test/common/extensions.test.ts` | 7 | `crates/je-extensions/tests/extensions.rs` | 5 |
+| `src/vs/platform/extensions/test/common/extensions.test.ts` | 7 | `crates/je-extensions/tests/extensions.rs` | 7 |
 | `src/vs/platform/externalTerminal/test/node/externalTerminalService.test.ts` | 11 | `crates/je-platform/tests/external_terminal_service.rs` | 11 |
 | `src/vs/platform/files/test/browser/fileService.test.ts` | 16 | `crates/je-platform/tests/file_service.rs` | 16 |
 | `src/vs/platform/files/test/browser/inmemoryFileService.test.ts` | 20 | `crates/je-platform/tests/in_memory_file_service.rs` | 20 |
@@ -244,7 +244,7 @@ Gerado por `scripts/conformance.py`. Oráculo: testes mocha do VS Code 1.143.1; 
 | `src/vs/platform/update/test/electron-main/updateRelaunchArguments.test.ts` | 10 | `crates/je-platform/tests/update_relaunch_arguments.rs` | 10 |
 | `src/vs/platform/update/test/electron-main/win32UpdateType.test.ts` | 2 | `crates/je-platform/tests/win32_update_type.rs` | 2 |
 | `src/vs/platform/uriIdentity/test/common/uriIdentityService.test.ts` | 7 | `crates/je-platform/tests/uri_identity_service.rs` | 7 |
-| `src/vs/platform/url/test/common/trustedDomains.test.ts` | 33 | `crates/je-platform/tests/trusted_domains.rs` | 11 |
+| `src/vs/platform/url/test/common/trustedDomains.test.ts` | 33 | `crates/je-platform/tests/trusted_domains.rs` | 33 |
 | `src/vs/platform/url/test/common/urlGlob.test.ts` | 31 | `crates/je-platform/tests/url_glob.rs` | 31 |
 | `src/vs/platform/url/test/common/urlPathNormalization.test.ts` | 20 | `crates/je-platform/tests/url_path_normalization.rs` | 20 |
 | `src/vs/platform/userData/test/browser/fileUserDataProvider.test.ts` | 36 | `crates/je-platform/tests/file_user_data_provider.rs` | 36 |
