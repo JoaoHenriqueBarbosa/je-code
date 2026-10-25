@@ -53,6 +53,7 @@ use je_platform::notification::{
 };
 use je_platform::resources::{join_path, uri_file};
 use je_platform::workspace::I_WORKSPACE_CONTEXT_SERVICE;
+use je_workbench::api::common::ext_host_values::ApiValue;
 use je_workbench::common::editor::{EditorIdentifier, EditorInputOrUntyped, EditorInputRef, EditorInputWithOptions, EditorsOrder, IEditorPane, UntypedEditorInput};
 use je_workbench::contrib::files::browser_files::{EditableItem, ExplorerBulkEditOptions, ExplorerReveal, I_EXPLORER_SERVICE, IExplorerService};
 use je_workbench::contrib::files::explorer_model::ExplorerItem;
