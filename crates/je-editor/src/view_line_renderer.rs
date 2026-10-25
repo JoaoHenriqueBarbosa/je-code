@@ -47,6 +47,20 @@ pub enum RenderWhitespace {
     All = 4,
 }
 
+impl RenderWhitespace {
+    /// O valor de `editor.renderWhitespace` (`'none' | 'boundary' | 'selection' | 'trailing' | 'all'`); qualquer
+    /// outro valor vale `none`.
+    pub fn from_option(value: &str) -> Self {
+        match value {
+            "all" => RenderWhitespace::All,
+            "boundary" => RenderWhitespace::Boundary,
+            "selection" => RenderWhitespace::Selection,
+            "trailing" => RenderWhitespace::Trailing,
+            _ => RenderWhitespace::None,
+        }
+    }
+}
+
 /// `ForeignElementType` (enum constante no original, usado como bits).
 pub mod foreign_element_type {
     pub const NONE: i32 = 0;
@@ -122,13 +136,7 @@ impl RenderLineInput {
         let mut line_decorations = options.line_decorations;
         line_decorations.sort_by(LineDecoration::compare);
 
-        let render_whitespace = match options.render_whitespace.as_str() {
-            "all" => RenderWhitespace::All,
-            "boundary" => RenderWhitespace::Boundary,
-            "selection" => RenderWhitespace::Selection,
-            "trailing" => RenderWhitespace::Trailing,
-            _ => RenderWhitespace::None,
-        };
+        let render_whitespace = RenderWhitespace::from_option(&options.render_whitespace);
 
         // O comparador do original devolve 1 também para começos iguais; as seleções não se sobrepõem, então
         // começos iguais só ocorrem entre intervalos vazios e a ordem estável basta.
