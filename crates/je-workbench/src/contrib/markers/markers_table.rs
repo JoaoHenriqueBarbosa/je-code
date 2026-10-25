@@ -64,7 +64,7 @@ use super::markers_tree_viewer::{
     CODICON_SIZE, CodeItem, MarkersTreeServices, MarkersViewModel, QuickFixItemSlot, ancestor_has_class, code_value, highlights, listen_show_quick_fixes, matches_severity, place,
     quick_fix_view_item_provider, relative_uri_label, render_code, row_selected_or_focused, set_severity_icon, setup_mouse_hover, source_and_code_matches, units,
 };
-use super::markers_view::{IProblemsWidget, ProblemsContextMenuEvent, ProblemsElement, ProblemsWidgetEvent};
+use super::markers_view::{IProblemsWidget, ProblemsContextMenuEvent, ProblemsElement, ProblemsWidgetEvent, is_container_visible, layout_container, toggle_container_visibility};
 use super::messages::Messages;
 
 /// O elemento da tabela (`MarkerTableItem`).
@@ -749,7 +749,7 @@ impl MarkersTable {
 
     /// `isVisible()`.
     fn is_visible(&self) -> bool {
-        !self.ui.tree().has_class(self.container, "hidden")
+        is_container_visible(&self.ui, self.container)
     }
 
     /// `findMarkerIndex(marker)`: o índice da linha do marcador (comparado pelo marcador cru), ou o `Invalid index -1` que a
@@ -846,12 +846,7 @@ impl IProblemsWidget for MarkersTable {
     }
 
     fn layout(&self, height: f64, width: f64) {
-        {
-            let mut tree = self.ui.tree_mut();
-            let bounds = tree.bounds(self.container);
-            tree.set_fill(self.container, true, false);
-            tree.set_bounds(self.container, Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + height));
-        }
+        layout_container(&self.ui, self.container, height);
         self.table.layout(Some(height), Some(width));
     }
 
@@ -975,10 +970,7 @@ impl IProblemsWidget for MarkersTable {
     }
 
     fn toggle_visibility(&self, hide: bool) {
-        let mut tree = self.ui.tree_mut();
-        tree.toggle_class(self.container, "hidden", hide);
-        // `.markers-panel .markers-panel-container .hidden { display: none }`
-        tree.style_mut(self.container).visible = !hide;
+        toggle_container_visibility(&self.ui, self.container, hide);
     }
 
     fn update(&self, resource_markers: &[Rc<ResourceMarkers>]) {

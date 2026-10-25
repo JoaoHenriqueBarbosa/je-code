@@ -1,7 +1,7 @@
 //! Porte parcial de `src/vs/workbench/browser/dnd.ts`: a região "Composites DND" (`CompositeDragAndDropData`,
 //! `DraggedCompositeIdentifier`, `DraggedViewIdentifier`, `ICompositeDragAndDropObserverCallbacks` e o
 //! `CompositeDragAndDropObserver`), com o que ela lê de `base/browser/dom.ts` (`DragAndDropObserver`) e de
-//! `platform/dnd/browser/dnd.ts` (`LocalSelectionTransfer`).
+//! `platform/dnd/browser/dnd.ts` (`LocalSelectionTransfer`), e o `ResourceListDnDHandler`.
 //!
 //! Divergências:
 //! - **DOM vira estado nativo.** O `HTMLElement` é o [`ViewElement`], e o que o original faz com o DOM (os ouvintes
@@ -17,16 +17,30 @@
 //!   com `markAsSingleton`.
 //! - **`IDraggedCompositeData.eventData`** é o `Rc<DragEvent>` do evento, para a identidade de `preventDefault` valer nos
 //!   eventos que o observador reemite (`onDragStart` e `onDragEnd`).
+//! - **`ResourceListDnDHandler`.** Fica no fim do arquivo. Usa o [`DragEvent`](je_widgets::dnd::DragEvent) e o
+//!   `IDragAndDropData` de `je-widgets` (os que as listas e as árvores entregam), importados com os apelidos `WidgetDragEvent` e
+//!   `WidgetDragAndDropData` porque este arquivo tem os seus próprios `DragEvent` e `IDragAndDropData` (os do observador de
+//!   composites). O `@IInstantiationService` com o `invokeFunction(accessor => fillEditorsDragData(accessor, resources,
+//!   originalEvent))` é o [`FillEditorsDragData`] injetado pelo chamador: `fillEditorsDragData` lê o serviço de arquivos de
+//!   texto, o de editores, o de arquivos, o de rótulos e o registro de contribuições de arrasto, e seu porte é de quem tem
+//!   esses serviços. O `onWillDragElements` protegido que as subclasses sobrescrevem é o
+//!   [`ResourceListDnDHandler::with_will_drag_elements`]. O resultado de `onDragOver` (`boolean | ITreeDragOverReaction` na
+//!   árvore, `boolean | IListDragOverReaction` na lista) é o parâmetro `R`, que só precisa construir o `false`.
 //! - Fica de fora o resto de `dnd.ts` (`ResourcesDropHandler`, `fillEditorsDragData`, `extractTreeDropData`,
-//!   `ResourceListDnDHandler`, `toggleDropEffect`, os alvos de entrada de texto e o rastreador de janela arrastada), que
+//!   `toggleDropEffect`, os alvos de entrada de texto e o rastreador de janela arrastada), que
 //!   dependem de `DataTransfer`, do serviço de arquivos e das janelas.
 
 use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 use je_base::event::Emitter;
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, mark_as_singleton};
+use je_base::uri::URI;
 use je_platform::contextview::view_element::ViewElement;
+use je_platform::resources::ext_uri;
+use je_widgets::dnd::{DragEvent as WidgetDragEvent, IDragAndDropData as WidgetDragAndDropData};
+use je_widgets::list::list_dnd::{ElementsDragAndDropData, IListDragAndDrop, ListDragOverResult, ListViewTargetSector};
 
 // region: base/browser/dom.ts e platform/dnd/browser/dnd.ts
 
@@ -551,6 +565,83 @@ impl IDisposable for CompositeDragAndDropObserver {
     fn dispose(&self) {
         self.base.dispose();
     }
+}
+
+// endregion
+
+// region: ResourceListDnDHandler
+
+/// `instantiationService.invokeFunction(accessor => fillEditorsDragData(accessor, resources, originalEvent))`: grava os
+/// recursos no `dataTransfer` do arrasto (ver as divergências do módulo).
+pub type FillEditorsDragData = Rc<dyn Fn(&[URI], &WidgetDragEvent)>;
+
+/// `onWillDragElements(elements, originalEvent)`.
+pub type WillDragElements<T> = Rc<dyn Fn(&[T], &WidgetDragEvent)>;
+
+/// `ResourceListDnDHandler<T>`: o arrastar e soltar de uma lista ou árvore cujos elementos mapeiam para um recurso. Só
+/// arrasta (o `onDragOver` recusa e o `drop` não faz nada). `R` é o tipo do resultado de `onDragOver` (ver as divergências do
+/// módulo).
+pub struct ResourceListDnDHandler<T, R = ListDragOverResult> {
+    to_resource: Rc<dyn Fn(&T) -> Option<URI>>,
+    fill_editors_drag_data: FillEditorsDragData,
+    on_will_drag_elements: Option<WillDragElements<T>>,
+    result: PhantomData<fn() -> R>,
+}
+
+impl<T, R> ResourceListDnDHandler<T, R> {
+    /// `new ResourceListDnDHandler(toResource, instantiationService)`.
+    pub fn new(to_resource: Rc<dyn Fn(&T) -> Option<URI>>, fill_editors_drag_data: FillEditorsDragData) -> Self {
+        Self { to_resource, fill_editors_drag_data, on_will_drag_elements: None, result: PhantomData }
+    }
+
+    /// A sobrescrita do `onWillDragElements` protegido, que a subclasse faz.
+    pub fn with_will_drag_elements(mut self, on_will_drag_elements: WillDragElements<T>) -> Self {
+        self.on_will_drag_elements = Some(on_will_drag_elements);
+        self
+    }
+}
+
+impl<T: Clone + 'static, R: From<bool>> IListDragAndDrop<T, R> for ResourceListDnDHandler<T, R> {
+    fn get_drag_uri(&self, element: &T) -> Option<String> {
+        (self.to_resource)(element).map(|resource| resource.to_string(false).to_string_lossy())
+    }
+
+    fn get_drag_label(&self, elements: &[T], _original_event: &WidgetDragEvent) -> Option<String> {
+        let resources: Vec<URI> = elements.iter().filter_map(|element| (self.to_resource)(element)).collect();
+        match resources.as_slice() {
+            [] => None,
+            [resource] => Some(ext_uri().basename(resource, None)),
+            _ => Some(resources.len().to_string()),
+        }
+    }
+
+    fn on_drag_start(&self, data: &Rc<dyn WidgetDragAndDropData>, original_event: &WidgetDragEvent) {
+        let Some(data) = data.as_any().downcast_ref::<ElementsDragAndDropData<T>>() else {
+            return;
+        };
+        let elements = &data.elements;
+        let resources: Vec<URI> = elements.iter().filter_map(|element| (self.to_resource)(element)).collect();
+        if let Some(on_will_drag_elements) = &self.on_will_drag_elements {
+            on_will_drag_elements(elements, original_event);
+        }
+        if !resources.is_empty() {
+            // Apply some datatransfer types to allow for dragging the element outside of the application
+            (self.fill_editors_drag_data)(&resources, original_event);
+        }
+    }
+
+    fn on_drag_over(
+        &self,
+        _data: &Rc<dyn WidgetDragAndDropData>,
+        _target_element: Option<&T>,
+        _target_index: Option<usize>,
+        _target_sector: Option<ListViewTargetSector>,
+        _original_event: &WidgetDragEvent,
+    ) -> R {
+        R::from(false)
+    }
+
+    fn drop(&self, _data: &Rc<dyn WidgetDragAndDropData>, _target_element: Option<&T>, _target_index: Option<usize>, _target_sector: Option<ListViewTargetSector>, _original_event: &WidgetDragEvent) {}
 }
 
 // endregion
