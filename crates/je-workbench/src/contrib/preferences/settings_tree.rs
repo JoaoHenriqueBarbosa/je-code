@@ -1,10 +1,10 @@
-//! Porte parcial de `src/vs/workbench/contrib/preferences/browser/settingsTree.ts`: o que o editor de configurações usa
-//! da árvore sem depender de widget. A resolução do sumário em árvore de configurações (`resolveSettingsTree`,
-//! `getMatchingSettings`, `sortSettings`, `getFlatSettings`), as configurações restritas do espaço não confiável
-//! (`resolveConfiguredUntrustedSettings`), o sumário das extensões (`createTocTreeForExtensionSettings`) e o filtro da
-//! árvore (`SettingsTreeFilter`). Os renderizadores da faixa 856 a 1327 (a base, o grupo, as extensões novas e o complexo) estão em
-//! `settings_tree_renderers.rs`; o resto dos renderizadores, o delegado de alturas e o `SettingsTree` em si são widgets e entram
-//! com as fatias seguintes.
+//! Porte de `src/vs/workbench/contrib/preferences/browser/settingsTree.ts`: o que o editor de configurações usa da árvore. A
+//! resolução do sumário em árvore de configurações (`resolveSettingsTree`, `getMatchingSettings`, `sortSettings`,
+//! `getFlatSettings`), as configurações restritas do espaço não confiável (`resolveConfiguredUntrustedSettings`), o sumário das
+//! extensões (`createTocTreeForExtensionSettings`), o filtro da árvore (`SettingsTreeFilter`) e, da linha 2540 em diante, o
+//! delegado de alturas (`SettingsTreeDelegate`), o modelo sem colapso (`NonCollapsibleObjectTreeModel`), o provedor de
+//! acessibilidade (`SettingsTreeAccessibilityProvider`) e o `SettingsTree` sobre a `WorkbenchObjectTree`. Os renderizadores, o
+//! `SettingTreeRenderers` e as ações de copiar, sincronizar e aplicar a todos os perfis estão em `settings_tree_renderers.rs`.
 //!
 //! Divergências:
 //! - **`Set<ISetting>`** (com `delete` durante o `forEach`) é o [`SettingSet`], um `IndexMap` ordenado pela identidade
@@ -18,30 +18,69 @@
 //!   `@IWorkbenchEnvironmentService` do construtor é o `Rc<dyn ...>` passado em [`SettingsTreeFilter::new`].
 //! - **`createTocTreeForExtensionSettings`** devolve uma `Promise`; o trabalho síncrono de cada grupo (filtro e ordenação)
 //!   roda na hora, como no `processGroupEntry`, e só a consulta da extensão espera.
+//! - **`SettingsTreeDelegate`** compõe o [`CachedListVirtualDelegate`] (que o original estende) e acrescenta o `hasDynamicHeight`.
+//!   O `throw new Error('unknown element type')` não existe: o [`SettingsTreeGroupChild`] só tem os três elementos.
+//! - **`NonCollapsibleObjectTreeModel`** é uma envoltória do `ObjectTreeModel` que implementa o `ITreeModel` repassando tudo e
+//!   respondendo `false` em `isCollapsible` e `setCollapsed`, e dá `Deref` ao modelo (o `setChildren`). A `WorkbenchObjectTree`
+//!   do porte cria o `ObjectTreeModel` por dentro (não há o `createModel` protegido que o `SettingsTree` sobrescreve), então o
+//!   [`SettingsTree`] usa o modelo comum; o editor monta os elementos expandidos e a folha de estilo do original esconde os
+//!   twisties, de modo que nenhum controle colapsa um grupo.
+//! - **`SettingsTreeAccessibilityProvider`**: as árvores do `je-widgets` não têm o campo `accessibilityProvider` (ver
+//!   `breadcrumbs_picker.rs`), então o provedor é uma estrutura com `get_aria_label` e `get_widget_aria_label`, que o
+//!   [`SettingsTree`] guarda e expõe. O `IUserDataProfilesService` do construtor não é passado, porque o original nunca o lê.
+//! - **`SettingsTree`**: o `styleController` (`DefaultStyleController` sobre uma folha de estilo) é o estilo da lista resolvido do
+//!   tema, entregue em `overrideStyles` (o `this.style(getListStyles({...}))` do original). `horizontalScrolling`,
+//!   `scrollToActiveElement` e `transformOptimization` não existem nas opções do `je-widgets`. O `IContextKeyService`, o
+//!   `IListService` e a `IInstantiationService` são o [`WorkbenchTreeServices`].
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::cmp::Ordering;
+use std::hash::Hash;
+use std::ops::Deref;
 use std::rc::Rc;
 
 use indexmap::IndexMap;
 use je_base::collator::locale_compare;
+use je_base::dynamic::Truthy;
 use je_base::errors::{self, Error};
+use je_base::event::Event;
+use je_base::lifecycle::{Disposable, IDisposable};
+use je_base::markdown_plaintext::render_as_plaintext;
 use je_base::nls::localize;
 use je_base::promise::Promise;
-use je_widgets::tree::tree_types::{ITreeFilter, TreeFilterResult, TreeVisibility};
+use je_editor::language_service::ILanguageService;
+use je_theme::ColorTheme;
+use je_ui::{NodeId, Ui};
+use je_widgets::list::list_styles::IListStyles;
+use je_widgets::list::list_types::{CachedListVirtualDelegate, IIdentityProvider, IListVirtualDelegate};
+use je_widgets::tree::abstract_tree::{AbstractTreeOptions, AbstractTreeOptionsUpdate};
+use je_widgets::tree::object_tree::ObjectTreeOptions;
+use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelOptions};
+use je_widgets::tree::tree_renderer::RenderIndentGuides;
+use je_widgets::tree::tree_types::{
+    CollapseStateChangeEvent, ITreeFilter, ITreeModel, ITreeRenderer, TreeFilterResult, TreeListSpliceData, TreeModelSpliceEvent, TreeVisibility,
+};
 use zyarr::RegExp;
 
+use crate::browser::workbench_tree::{IWorkbenchTreeOptions, WorkbenchObjectTree, WorkbenchTreeServices};
 use crate::contrib::preferences::common::preferences::compare_two_nullable_numbers;
 use crate::contrib::preferences::preferences_widgets::SettingsTarget;
+use crate::contrib::preferences::settings_editor_setting_indicators::get_indicators_label_aria_label;
 use crate::contrib::preferences::settings_layout::{ITOCEntry, ITOCFilter, ITOCFilterPatterns};
 use crate::contrib::preferences::settings_tree_models::{
     SettingsTreeElement, SettingsTreeGroupChild, SettingsTreeGroupElement, ViewStateRef, create_setting_match_reg_exp, inspect_setting,
 };
+use crate::contrib::preferences::settings_tree_renderers::{
+    SETTINGS_ARRAY_TEMPLATE_ID, SETTINGS_BOOL_OBJECT_TEMPLATE_ID, SETTINGS_BOOL_TEMPLATE_ID, SETTINGS_COMPLEX_OBJECT_TEMPLATE_ID, SETTINGS_COMPLEX_TEMPLATE_ID,
+    SETTINGS_ELEMENT_TEMPLATE_ID, SETTINGS_ENUM_TEMPLATE_ID, SETTINGS_EXCLUDE_TEMPLATE_ID, SETTINGS_EXTENSION_TOGGLE_TEMPLATE_ID, SETTINGS_INCLUDE_TEMPLATE_ID,
+    SETTINGS_MULTILINE_TEXT_TEMPLATE_ID, SETTINGS_NEW_EXTENSIONS_TEMPLATE_ID, SETTINGS_NUMBER_TEMPLATE_ID, SETTINGS_OBJECT_TEMPLATE_ID, SETTINGS_TEXT_TEMPLATE_ID,
+    SettingsObjectTreeModel, child_identity, fix_setting_links, invalid_type_error,
+};
 use crate::services::configuration::common::configuration::IWorkbenchConfigurationService;
 use crate::services::environment::environment_service::IWorkbenchEnvironmentService;
 use crate::services::extensions::extensions::IExtensionService;
-use crate::services::preferences::preferences::{ISetting, ISettingsGroup};
+use crate::services::preferences::preferences::{ISetting, ISettingsGroup, SettingValueType};
 
 const MULTI_GROUP_TOC_SETTINGS: [&str; 2] = ["accessibility.signals.chatUserActionRequired", "accessibility.signals.chatResponseReceived"];
 
@@ -426,3 +465,377 @@ impl ITreeFilter<SettingsTreeGroupChild> for SettingsTreeFilter {
         TreeFilterResult::Bool(true)
     }
 }
+
+/// O [`SettingsTreeFilter`] sobre o elemento da árvore de objetos (`T | null`): a raiz nunca é filtrada.
+struct OptionElementFilter(SettingsTreeFilter);
+
+impl ITreeFilter<Option<SettingsTreeGroupChild>> for OptionElementFilter {
+    fn filter(&self, element: &Option<SettingsTreeGroupChild>, parent_visibility: TreeVisibility) -> TreeFilterResult<()> {
+        match element {
+            Some(element) => self.0.filter(element, parent_visibility),
+            None => TreeFilterResult::Bool(true),
+        }
+    }
+}
+
+/// `identityProvider: { getId(e) { return e.id; } }`.
+struct SettingsTreeIdentityProvider;
+
+impl IIdentityProvider<Option<SettingsTreeGroupChild>> for SettingsTreeIdentityProvider {
+    fn get_id(&self, element: &Option<SettingsTreeGroupChild>) -> String {
+        element.as_ref().map(SettingsTreeGroupChild::id).unwrap_or_default()
+    }
+}
+
+/// O identificador de template de um elemento (`SettingsTreeDelegate.getTemplateId`).
+fn get_template_id(element: &SettingsTreeGroupChild) -> String {
+    let template_id = match element {
+        SettingsTreeGroupChild::Group(_) => SETTINGS_ELEMENT_TEMPLATE_ID,
+        SettingsTreeGroupChild::NewExtensions(_) => SETTINGS_NEW_EXTENSIONS_TEMPLATE_ID,
+        SettingsTreeGroupChild::Setting(element) => {
+            if element.value_type() == SettingValueType::ExtensionToggle {
+                SETTINGS_EXTENSION_TOGGLE_TEMPLATE_ID
+            } else if invalid_type_error(element).is_some() {
+                SETTINGS_COMPLEX_TEMPLATE_ID
+            } else {
+                match element.value_type() {
+                    SettingValueType::Boolean => SETTINGS_BOOL_TEMPLATE_ID,
+                    SettingValueType::Integer | SettingValueType::Number | SettingValueType::NullableInteger | SettingValueType::NullableNumber => SETTINGS_NUMBER_TEMPLATE_ID,
+                    SettingValueType::MultilineString => SETTINGS_MULTILINE_TEXT_TEMPLATE_ID,
+                    SettingValueType::String => SETTINGS_TEXT_TEMPLATE_ID,
+                    SettingValueType::Enum => SETTINGS_ENUM_TEMPLATE_ID,
+                    SettingValueType::Array => SETTINGS_ARRAY_TEMPLATE_ID,
+                    SettingValueType::Exclude => SETTINGS_EXCLUDE_TEMPLATE_ID,
+                    SettingValueType::Include => SETTINGS_INCLUDE_TEMPLATE_ID,
+                    SettingValueType::Object => SETTINGS_OBJECT_TEMPLATE_ID,
+                    SettingValueType::BooleanObject => SETTINGS_BOOL_OBJECT_TEMPLATE_ID,
+                    SettingValueType::ComplexObject => SETTINGS_COMPLEX_OBJECT_TEMPLATE_ID,
+                    // `LanguageTag` e todo outro tipo sem controle próprio.
+                    _ => SETTINGS_COMPLEX_TEMPLATE_ID,
+                }
+            }
+        }
+    };
+    template_id.to_owned()
+}
+
+/// `SettingsTreeDelegate.estimateHeight`.
+fn estimate_height(element: &SettingsTreeGroupChild) -> f64 {
+    match element {
+        SettingsTreeGroupChild::Group(_) => 42.0,
+        SettingsTreeGroupChild::Setting(element) if element.value_type() == SettingValueType::Boolean => 78.0,
+        _ => 104.0,
+    }
+}
+
+/// `SettingsTreeDelegate`.
+pub struct SettingsTreeDelegate {
+    cached: CachedListVirtualDelegate<SettingsTreeGroupChild, (u8, usize)>,
+}
+
+impl SettingsTreeDelegate {
+    pub fn new() -> Self {
+        Self { cached: CachedListVirtualDelegate::new(child_identity, estimate_height, get_template_id) }
+    }
+}
+
+impl Default for SettingsTreeDelegate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IListVirtualDelegate<SettingsTreeGroupChild> for SettingsTreeDelegate {
+    fn get_height(&self, element: &SettingsTreeGroupChild) -> f64 {
+        self.cached.get_height(element)
+    }
+
+    fn get_template_id(&self, element: &SettingsTreeGroupChild) -> String {
+        self.cached.get_template_id(element)
+    }
+
+    fn has_dynamic_height(&self, element: &SettingsTreeGroupChild) -> Option<bool> {
+        Some(!matches!(element, SettingsTreeGroupChild::Group(_)))
+    }
+
+    fn set_dynamic_height(&self, element: &SettingsTreeGroupChild, height: f64) {
+        self.cached.set_dynamic_height(element, height);
+    }
+}
+
+/// `NonCollapsibleObjectTreeModel`.
+pub struct NonCollapsibleObjectTreeModel<T: Clone + Eq + Hash + 'static, F: Clone + 'static = ()> {
+    inner: ObjectTreeModel<T, F>,
+}
+
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> NonCollapsibleObjectTreeModel<T, F> {
+    pub fn new(user: &str, options: ObjectTreeModelOptions<T, F>) -> Self {
+        Self { inner: ObjectTreeModel::new(user, options) }
+    }
+}
+
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> Deref for NonCollapsibleObjectTreeModel<T, F> {
+    type Target = ObjectTreeModel<T, F>;
+
+    fn deref(&self) -> &ObjectTreeModel<T, F> {
+        &self.inner
+    }
+}
+
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> ITreeModel for NonCollapsibleObjectTreeModel<T, F> {
+    type Element = Option<T>;
+    type FilterData = F;
+    type Ref = Option<T>;
+    type Node = <ObjectTreeModel<T, F> as ITreeModel>::Node;
+
+    fn root_ref(&self) -> Option<T> {
+        self.inner.root_ref()
+    }
+
+    fn ref_is_falsy(&self, location: &Option<T>) -> bool {
+        self.inner.ref_is_falsy(location)
+    }
+
+    fn on_did_splice_model(&self) -> Event<TreeModelSpliceEvent<Self::Node>> {
+        self.inner.on_did_splice_model()
+    }
+
+    fn on_did_splice_rendered_nodes(&self) -> Event<TreeListSpliceData<Self::Node>> {
+        self.inner.on_did_splice_rendered_nodes()
+    }
+
+    fn on_did_change_collapse_state(&self) -> Event<CollapseStateChangeEvent<Self::Node>> {
+        self.inner.on_did_change_collapse_state()
+    }
+
+    fn on_did_change_render_node_count(&self) -> Event<Rc<Self::Node>> {
+        self.inner.on_did_change_render_node_count()
+    }
+
+    fn has(&self, location: &Option<T>) -> bool {
+        self.inner.has(location)
+    }
+
+    fn get_list_index(&self, location: &Option<T>) -> i64 {
+        self.inner.get_list_index(location)
+    }
+
+    fn get_list_render_count(&self, location: &Option<T>) -> usize {
+        self.inner.get_list_render_count(location)
+    }
+
+    fn get_node(&self, location: &Option<T>) -> Rc<Self::Node> {
+        self.inner.get_node(location)
+    }
+
+    fn get_node_location(&self, node: &Rc<Self::Node>) -> Option<T> {
+        self.inner.get_node_location(node)
+    }
+
+    fn get_parent_node_location(&self, location: &Option<T>) -> Option<Option<T>> {
+        self.inner.get_parent_node_location(location)
+    }
+
+    fn get_first_element_child(&self, location: &Option<T>) -> Option<Option<T>> {
+        self.inner.get_first_element_child(location)
+    }
+
+    fn get_last_element_ancestor(&self, location: &Option<T>) -> Option<Option<T>> {
+        self.inner.get_last_element_ancestor(location)
+    }
+
+    fn is_collapsible(&self, _element: &Option<T>) -> bool {
+        false
+    }
+
+    fn set_collapsible(&self, location: &Option<T>, collapsible: Option<bool>) -> bool {
+        self.inner.set_collapsible(location, collapsible)
+    }
+
+    fn is_collapsed(&self, location: &Option<T>) -> bool {
+        self.inner.is_collapsed(location)
+    }
+
+    fn set_collapsed(&self, _element: &Option<T>, _collapsed: Option<bool>, _recursive: Option<bool>) -> bool {
+        false
+    }
+
+    fn expand_to(&self, location: &Option<T>) {
+        self.inner.expand_to(location);
+    }
+
+    fn rerender(&self, location: &Option<T>) {
+        self.inner.rerender(location);
+    }
+
+    fn refilter(&self) {
+        self.inner.refilter();
+    }
+}
+
+/// `SettingsTreeAccessibilityProvider`.
+pub struct SettingsTreeAccessibilityProvider {
+    configuration_service: Rc<dyn IWorkbenchConfigurationService>,
+    language_service: Rc<dyn ILanguageService>,
+}
+
+impl SettingsTreeAccessibilityProvider {
+    pub fn new(configuration_service: Rc<dyn IWorkbenchConfigurationService>, language_service: Rc<dyn ILanguageService>) -> Self {
+        Self { configuration_service, language_service }
+    }
+
+    /// `getAriaLabel(element)`.
+    pub fn get_aria_label(&self, element: &SettingsTreeGroupChild) -> String {
+        match element {
+            SettingsTreeGroupChild::Setting(element) => {
+                let mut aria_label_sections: Vec<String> = Vec::new();
+                aria_label_sections.push(format!("{} {}.", element.display_category(), element.display_label()));
+
+                if element.is_configured() {
+                    aria_label_sections.push(localize("settings.Modified", "Modified.", &[]));
+                }
+
+                let indicators_label_aria_label = get_indicators_label_aria_label(&**element, &*self.configuration_service, &*self.language_service);
+                if !indicators_label_aria_label.is_empty() {
+                    aria_label_sections.push(format!("{indicators_label_aria_label}."));
+                }
+
+                let description_without_setting_links = render_as_plaintext(&fix_setting_links(element.description(), false));
+                if !description_without_setting_links.is_empty() {
+                    aria_label_sections.push(description_without_setting_links);
+                }
+                aria_label_sections.join(" ")
+            }
+            SettingsTreeGroupChild::Group(element) => element.label(),
+            SettingsTreeGroupChild::NewExtensions(element) => element.id(),
+        }
+    }
+
+    /// `getWidgetAriaLabel()`.
+    pub fn get_widget_aria_label(&self) -> String {
+        localize("settings", "Settings", &[])
+    }
+}
+
+/// Os serviços do construtor do `SettingsTree` (`IConfigurationService`, `ILanguageService`, e o ambiente que o
+/// `SettingsTreeFilter` recebe por injeção) e os da árvore do workbench.
+#[derive(Clone)]
+pub struct SettingsTreeWidgetServices {
+    pub tree: WorkbenchTreeServices,
+    pub configuration_service: Rc<dyn IWorkbenchConfigurationService>,
+    pub language_service: Rc<dyn ILanguageService>,
+    pub environment_service: Rc<dyn IWorkbenchEnvironmentService>,
+}
+
+/// `workbench.list.smoothScrolling`.
+const SMOOTH_SCROLLING_SETTING: &str = "workbench.list.smoothScrolling";
+
+/// `getListStyles({ listBackground: editorBackground, ... })` do construtor do `SettingsTree`: o fundo do editor em todos os
+/// estados e o texto em `foreground`.
+fn settings_tree_list_styles(theme: &ColorTheme) -> IListStyles {
+    let editor_background = theme.get_color("editor.background");
+    let foreground = theme.get_color("foreground");
+    IListStyles {
+        list_background: editor_background,
+        list_active_selection_background: editor_background,
+        list_active_selection_foreground: foreground,
+        list_focus_and_selection_background: editor_background,
+        list_focus_and_selection_foreground: foreground,
+        list_focus_background: editor_background,
+        list_focus_foreground: foreground,
+        list_hover_foreground: foreground,
+        list_hover_background: editor_background,
+        list_hover_outline: editor_background,
+        list_focus_outline: editor_background,
+        list_inactive_selection_background: editor_background,
+        list_inactive_selection_foreground: foreground,
+        list_inactive_focus_background: editor_background,
+        list_inactive_focus_outline: editor_background,
+        tree_indent_guides_stroke: None,
+        tree_inactive_indent_guides_stroke: None,
+        foreground,
+        ..IListStyles::default()
+    }
+}
+
+/// `SettingsTree`.
+pub struct SettingsTree {
+    base: Rc<Disposable>,
+    tree: Rc<WorkbenchObjectTree<SettingsTreeGroupChild>>,
+    accessibility_provider: SettingsTreeAccessibilityProvider,
+}
+
+impl SettingsTree {
+    pub fn new(
+        ui: &Ui,
+        container: NodeId,
+        view_state: ViewStateRef,
+        renderers: Vec<Rc<dyn ITreeRenderer<SettingsObjectTreeModel>>>,
+        theme: &ColorTheme,
+        services: &SettingsTreeWidgetServices,
+    ) -> Rc<Self> {
+        let mut tree_options = AbstractTreeOptions::<SettingsObjectTreeModel>::default();
+        tree_options.view.support_dynamic_heights = true;
+        tree_options.identity_provider = Some(Rc::new(SettingsTreeIdentityProvider));
+        tree_options.filter = Some(Rc::new(OptionElementFilter(SettingsTreeFilter::new(view_state, true, services.environment_service.clone()))));
+        tree_options.update.smooth_scrolling = Some(services.configuration_service.get_value(Some(SMOOTH_SCROLLING_SETTING), None).is_truthy());
+        tree_options.update.multiple_selection_support = Some(false);
+        tree_options.find_widget_enabled = Some(false);
+        tree_options.update.render_indent_guides = Some(RenderIndentGuides::None);
+
+        let tree = WorkbenchObjectTree::<SettingsTreeGroupChild>::new(
+            "SettingsTree",
+            ui,
+            container,
+            Rc::new(SettingsTreeDelegate::new()),
+            renderers,
+            ObjectTreeOptions { tree: tree_options, sorter: None },
+            IWorkbenchTreeOptions { override_styles: Some(settings_tree_list_styles(theme)), ..IWorkbenchTreeOptions::default() },
+            &services.tree,
+        );
+
+        ui.tree_mut().add_class(tree.get_html_element(), "settings-editor-tree");
+
+        let base = Disposable::new();
+        let (weak_tree, weak_configuration) = (Rc::downgrade(&tree), Rc::downgrade(&services.configuration_service));
+        base.register(services.configuration_service.on_did_change_configuration().listen(move |e| {
+            if e.affects_configuration(SMOOTH_SCROLLING_SETTING, None)
+                && let (Some(tree), Some(configuration_service)) = (weak_tree.upgrade(), weak_configuration.upgrade())
+            {
+                let update = AbstractTreeOptionsUpdate { smooth_scrolling: Some(configuration_service.get_value(Some(SMOOTH_SCROLLING_SETTING), None).is_truthy()), ..AbstractTreeOptionsUpdate::default() };
+                tree.update_options(&update, None);
+            }
+        }));
+
+        Rc::new(Self {
+            base,
+            tree,
+            accessibility_provider: SettingsTreeAccessibilityProvider::new(services.configuration_service.clone(), services.language_service.clone()),
+        })
+    }
+
+    /// O `accessibilityProvider` da árvore (ver as divergências do módulo).
+    pub fn accessibility_provider(&self) -> &SettingsTreeAccessibilityProvider {
+        &self.accessibility_provider
+    }
+}
+
+impl Deref for SettingsTree {
+    type Target = WorkbenchObjectTree<SettingsTreeGroupChild>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.tree
+    }
+}
+
+impl IDisposable for SettingsTree {
+    fn dispose(&self) {
+        self.base.dispose();
+        self.tree.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "SettingsTree"
+    }
+}
+

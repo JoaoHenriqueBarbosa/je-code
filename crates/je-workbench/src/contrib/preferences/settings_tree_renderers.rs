@@ -10,11 +10,13 @@
 //! tipos de template, os eventos (`ISettingChangeEvent`, `ISettingLinkClickEvent`, `HeightChangeParams`) e os identificadores de
 //! template (`SETTINGS_*_TEMPLATE_ID`, linhas 792 a 806).
 //!
-//! Ficam para a fatia seguinte (a parte de `settingsTree.ts` que vem depois da linha 2208): o `SettingTreeRenderers`, o delegado
-//! de alturas, o provedor de acessibilidade (o `getAriaLabel` da linha, linhas 2640 a 2665) e o `SettingsTree`. Os serviços que só
-//! esses renderizadores leem (`IExtensionsWorkbenchService`, `IExtensionService`, `IProductService`) entram no
-//! [`SettingRendererServices`] com a fatia que os usa; o `ITelemetryService` entrou com a fatia 3 (o toggle de extensão registra
-//! `ManageExtensionClick` e `DismissExtensionClick`).
+//! A fatia 4 (a parte de `settingsTree.ts` que vem depois da linha 2208) está no fim deste módulo: o [`SettingTreeRenderers`]
+//! (linhas 2209 a 2363, que monta todos os renderizadores acima e preenche o `accessibility_host` e o `telemetry_service` do
+//! [`SettingRendererServices`] a partir do [`SettingTreeRenderersServices`]) e as ações de copiar, sincronizar e aplicar a todos os
+//! perfis (linhas 2752 a 2899). O delegado de alturas, o provedor de acessibilidade, o modelo sem colapso e o `SettingsTree` estão
+//! em `settings_tree.rs`. Os serviços que só esses renderizadores leem (`IExtensionsWorkbenchService`, `IExtensionService`)
+//! entram no [`SettingRendererServices`] com a fatia que os usa; o `ITelemetryService` entrou com a fatia 3 (o toggle de extensão
+//! registra `ManageExtensionClick` e `DismissExtensionClick`).
 //!
 //! De fora da faixa, porque o template da faixa os chama: `cleanRenderedMarkdown` (em `settings_markdown_view`),
 //! `fixSettingLinks` (linhas 2426 a 2435, [`fix_setting_links`]; não é o homônimo de `preferences_models.rs`, que é o de
@@ -142,21 +144,27 @@ use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
 use je_base::JsString;
-use je_base::actions::ActionRef;
+use je_base::actions::{Action, ActionRef, IAction, Separator};
+use je_base::async_::async_fn;
 use je_base::collator::locale_compare;
-use je_base::dynamic::{Dynamic, ObjectRef, Truthy, number_to_js_string};
+use je_base::dynamic::{Dynamic, ObjectRef, Truthy, json_stringify_indented, number_to_js_string};
 use je_base::errors::{self, Error, on_unexpected_error};
-use je_base::event::{Emitter, Event as BaseEvent};
+use je_base::event::{Emitter, Event as BaseEvent, any as any_event};
 use je_base::html_content::{IMarkdownString, IsTrusted};
 use je_base::key_codes::KeyCode;
-use je_base::lifecycle::{Disposable, DisposableStore, IDisposable, to_disposable};
+use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, plain_disposable, to_disposable};
 use je_base::markdown::{MarkdownRenderOptions, render_markdown};
 use je_base::nls::localize;
+use je_base::promise::{MaybePromise, Promise};
 use je_base::themables::ThemeIcon;
+use je_base::uri::{URI, UriComponents};
 use je_editor::language_service::ILanguageService;
+use je_editor::services::clipboard_service::IClipboardService;
 use je_platform::accessibility::accessibility_service::IAccessibilityHost;
 use je_platform::commands::commands::ICommandService;
-use je_platform::configuration::get_language_tag_setting_plain_key;
+use je_platform::configuration::{ConfigurationOverrides, ConfigurationTarget, get_language_tag_setting_plain_key};
+use je_platform::contextview::context_view::IContextViewService;
+use je_platform::product::IProductService;
 use je_platform::configuration::registry::{ConfigurationDefaultSource, ConfigurationDefaultValueSource, ConfigurationScope};
 use je_platform::js::{parse_float, to_number};
 use je_platform::keybinding::keybinding::IKeybindingService;
@@ -170,7 +178,7 @@ use je_render::kurbo::Rect;
 use je_theme::ColorTheme;
 use je_ui::{Border, Content, Cursor, EventKind, NodeId, Role, Tree, Ui};
 use je_widgets::button::{Button, ButtonLabel, ButtonOptions, ButtonStyles, ButtonTitle, IButton};
-use je_widgets::context_view_api::IContextMenuProvider;
+use je_widgets::context_view_api::{Anchor, IContextMenuDelegate, IContextMenuEvent, IContextMenuProvider};
 use je_widgets::dom::{FocusTracker, StandardKeyboardEvent, clear_node, create_detached_el, create_el};
 use je_widgets::highlighted_label::HighlightedLabelStyles;
 use je_widgets::hover_api::{HoverContent, HoverTarget, IHoverOptions};
@@ -199,7 +207,7 @@ use crate::contrib::preferences::settings_widgets::{
     ListSetValueOptions, ListSettingWidget, ListSettingWidgetOptions, ObjectEnumData, ObjectEnumOption, ObjectKey, ObjectKeySuggester, ObjectSetValueOptions,
     ObjectSettingCheckboxWidget, ObjectSettingDropdownWidget, ObjectValue, ObjectValueSuggester, SettingListEvent, SettingsWidgetServices,
 };
-use crate::services::configuration::common::configuration::{APPLY_ALL_PROFILES_SETTING, IWorkbenchConfigurationService};
+use crate::services::configuration::common::configuration::{APPLICATION_SCOPES, APPLY_ALL_PROFILES_SETTING, IWorkbenchConfigurationService};
 use crate::services::preferences::preferences::{ISetting, SettingSchemaType, SettingValueType};
 use crate::services::preferences::preferences_models::escape_invisible_chars;
 use crate::services::preferences::preferences_validation::get_invalid_type_error;
@@ -419,7 +427,7 @@ pub struct IGroupTitleTemplate {
 // ---- o elemento da árvore ----------------------------------------------------------------------------------------------------
 
 /// A identidade de um filho de grupo (o `===` do original): a variante e o endereço do `Rc`.
-fn child_identity(child: &SettingsTreeGroupChild) -> (u8, usize) {
+pub(crate) fn child_identity(child: &SettingsTreeGroupChild) -> (u8, usize) {
     match child {
         SettingsTreeGroupChild::Group(element) => (0, Rc::as_ptr(element) as usize),
         SettingsTreeGroupChild::Setting(element) => (1, Rc::as_ptr(element) as usize),
@@ -649,7 +657,7 @@ fn plain_language_key(key: &str) -> String {
 }
 
 /// `renderValidations` do `SettingComplexRenderer` (linhas 1275 a 1284), a parte de [`Dynamic`] do tipo.
-fn invalid_type_error(element: &SettingsTreeSettingElement) -> Option<String> {
+pub(crate) fn invalid_type_error(element: &SettingsTreeSettingElement) -> Option<String> {
     if !element.is_configured() {
         return None;
     }
@@ -950,7 +958,7 @@ impl AbstractSettingRenderer {
     }
 
     /// `getIgnoredSettings(getDefaultIgnoredSettings(), this._configService)`.
-    fn read_ignored_settings(configuration_service: &dyn IWorkbenchConfigurationService) -> Vec<String> {
+    pub(crate) fn read_ignored_settings(configuration_service: &dyn IWorkbenchConfigurationService) -> Vec<String> {
         let defaults = get_default_ignored_settings(false);
         get_ignored_settings(&defaults, configuration_service, None).iter().map(JsString::to_string_lossy).collect()
     }
@@ -3952,4 +3960,589 @@ impl ITreeRenderer<SettingsObjectTreeModel> for SettingsExtensionToggleRenderer 
             self.base.dispose_template(&template.common);
         }
     }
+}
+
+// ---- SettingTreeRenderers (linhas 2209 a 2363) ----------------------------------------------------------------------------------
+
+/// Os serviços do construtor do `SettingTreeRenderers` (`IInstantiationService`, `IContextMenuService`, `IContextViewService` e
+/// `IUserDataSyncEnablementService`) e os que as ações de cópia criam por injeção (`IClipboardService`, `IProductService`). O
+/// `IInstantiationService.createInstance` é a chamada direta ao construtor, e o `IContextMenuService` é o `context_menu_provider` do
+/// [`SettingRendererServices`], o mesmo que o `ToolBar` recebe. O `IUserDataSyncEnablementService` também está no
+/// [`SettingRendererServices`].
+#[derive(Clone)]
+pub struct SettingTreeRenderersServices {
+    pub renderer: SettingRendererServices,
+    pub context_view_service: Rc<dyn IContextViewService>,
+    pub clipboard_service: Rc<dyn IClipboardService>,
+    pub product_service: Rc<dyn IProductService>,
+}
+
+/// Os eventos dos renderizadores de configuração, para o `Event.any(...settingRenderers.map(r => r.onX))` do original.
+#[derive(Default)]
+struct RendererEvents {
+    click_override_element: Vec<BaseEvent<ISettingOverrideClickEvent>>,
+    change_setting: Vec<BaseEvent<ISettingChangeEvent>>,
+    open_settings: Vec<BaseEvent<String>>,
+    click_setting_link: Vec<BaseEvent<ISettingLinkClickEvent>>,
+    focus_setting: Vec<BaseEvent<Rc<SettingsTreeSettingElement>>>,
+    change_setting_height: Vec<BaseEvent<HeightChangeParams>>,
+    apply_filter: Vec<BaseEvent<String>>,
+}
+
+impl RendererEvents {
+    fn collect(&mut self, renderer: &AbstractSettingRenderer) {
+        self.click_override_element.push(renderer.on_did_click_override_element());
+        self.change_setting.push(renderer.on_did_change_setting());
+        self.open_settings.push(renderer.on_did_open_settings());
+        self.click_setting_link.push(renderer.on_did_click_setting_link());
+        self.focus_setting.push(renderer.on_did_focus_setting());
+        self.change_setting_height.push(renderer.on_did_change_setting_height());
+        self.apply_filter.push(renderer.on_apply_filter());
+    }
+}
+
+/// O elemento de configuração que uma ação recebe como contexto (`context instanceof SettingsTreeSettingElement`).
+fn settings_element_of(context: &Dynamic) -> Option<Rc<SettingsTreeSettingElement>> {
+    match context {
+        Dynamic::Object(object) => object.host::<SettingsTreeSettingElement>(),
+        _ => None,
+    }
+}
+
+/// Todos os membros de `SettingValueType`, para achar o que tem o nome do tipo do esquema.
+const SETTING_VALUE_TYPES: [SettingValueType; 18] = [
+    SettingValueType::Null,
+    SettingValueType::Enum,
+    SettingValueType::String,
+    SettingValueType::MultilineString,
+    SettingValueType::Integer,
+    SettingValueType::Number,
+    SettingValueType::Boolean,
+    SettingValueType::Array,
+    SettingValueType::Exclude,
+    SettingValueType::Include,
+    SettingValueType::Complex,
+    SettingValueType::NullableInteger,
+    SettingValueType::NullableNumber,
+    SettingValueType::Object,
+    SettingValueType::BooleanObject,
+    SettingValueType::LanguageTag,
+    SettingValueType::ExtensionToggle,
+    SettingValueType::ComplexObject,
+];
+
+/// `context.setting.type as SettingValueType` (o reset manual passa o tipo do esquema como tipo do valor). O nome que não é de
+/// nenhum membro (ou a ausência de tipo) vira `Complex`, o tipo que o editor trata como o de qualquer valor sem controle próprio.
+fn setting_change_type(setting: &ISetting) -> SettingChangeType {
+    let from_name = |name: &str| SETTING_VALUE_TYPES.iter().copied().find(|value_type| value_type.as_str() == name).unwrap_or(SettingValueType::Complex);
+    match &setting.r#type {
+        Some(SettingSchemaType::Single(name)) => SettingChangeType::Single(from_name(name)),
+        Some(SettingSchemaType::List(names)) => SettingChangeType::Many(names.iter().map(|name| from_name(name)).collect()),
+        None => SettingChangeType::Single(SettingValueType::Complex),
+    }
+}
+
+/// O delegado do menu de contexto de `showContextMenu`: ancorado na barra de ferramentas, com o elemento como contexto das ações.
+struct SettingContextMenuDelegate {
+    anchor: NodeId,
+    actions: Vec<ActionRef>,
+    context: Dynamic,
+}
+
+impl IContextMenuDelegate for SettingContextMenuDelegate {
+    fn get_anchor(&self) -> Anchor {
+        Anchor::Node(self.anchor)
+    }
+
+    fn get_actions(&self) -> Vec<ActionRef> {
+        self.actions.clone()
+    }
+
+    fn get_actions_context(&self, _event: Option<&IContextMenuEvent>) -> Option<Dynamic> {
+        Some(self.context.clone())
+    }
+}
+
+/// `action.dispose()` das ações que são uma `Action` (`isDisposable(action)`).
+fn dispose_actions(actions: &[ActionRef]) {
+    for action in actions {
+        if let Some(base) = action.as_base_action() {
+            base.dispose();
+        }
+    }
+}
+
+/// `SettingTreeRenderers`.
+pub struct SettingTreeRenderers {
+    base: Rc<Disposable>,
+    services: SettingTreeRenderersServices,
+    setting_actions: Vec<ActionRef>,
+    pub on_did_click_override_element: BaseEvent<ISettingOverrideClickEvent>,
+    pub on_did_change_setting: BaseEvent<ISettingChangeEvent>,
+    pub on_did_dismiss_extension_setting: BaseEvent<String>,
+    pub on_did_open_settings: BaseEvent<String>,
+    pub on_did_click_setting_link: BaseEvent<ISettingLinkClickEvent>,
+    pub on_did_focus_setting: BaseEvent<Rc<SettingsTreeSettingElement>>,
+    pub on_did_change_setting_height: BaseEvent<HeightChangeParams>,
+    pub on_apply_filter: BaseEvent<String>,
+    pub all_renderers: Vec<Rc<dyn ITreeRenderer<SettingsObjectTreeModel>>>,
+}
+
+impl SettingTreeRenderers {
+    pub fn new(services: SettingTreeRenderersServices) -> Rc<Self> {
+        let base = Disposable::new();
+        let own_change_setting = registered_emitter::<ISettingChangeEvent>(&base);
+
+        let setting_actions = Self::create_setting_actions(&services, &own_change_setting);
+        {
+            let actions = setting_actions.clone();
+            base.register(plain_disposable(move || dispose_actions(&actions)));
+        }
+
+        let action_factory: DisposableActionFactory = {
+            let (configuration_service, user_data_sync_enablement_service) =
+                (services.renderer.configuration_service.clone(), services.renderer.user_data_sync_enablement_service.clone());
+            Rc::new(move |setting: &ISetting, setting_target: &SettingsTarget| {
+                Self::get_actions_for_setting(&configuration_service, &*user_data_sync_enablement_service, setting, setting_target)
+            })
+        };
+        let empty_action_factory: DisposableActionFactory = Rc::new(|_: &ISetting, _: &SettingsTarget| Vec::new());
+
+        let mut events = RendererEvents::default();
+        let mut renderers: Vec<Rc<dyn ITreeRenderer<SettingsObjectTreeModel>>> = Vec::new();
+        // Os renderizadores são descartados depois das ações, como no `dispose` do original.
+        let mut disposers: Vec<DisposableRef> = Vec::new();
+        macro_rules! add_setting_renderer {
+            ($renderer:expr) => {{
+                let renderer = $renderer;
+                events.collect(&renderer);
+                renderers.push(renderer.clone());
+                disposers.push(plain_disposable(move || renderer.dispose()));
+            }};
+        }
+
+        let renderer_services = services.renderer.clone();
+        add_setting_renderer!(SettingBoolRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingNumberRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingArrayRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingComplexRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingComplexObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingTextRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingMultilineTextRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingExcludeRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingIncludeRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingEnumRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+        add_setting_renderer!(SettingBoolObjectRenderer::new(renderer_services.clone(), setting_actions.clone(), action_factory.clone()));
+
+        let extension_renderer = SettingsExtensionToggleRenderer::new(renderer_services.clone(), Vec::new(), empty_action_factory);
+        add_setting_renderer!(extension_renderer.clone());
+
+        // Os dois últimos não são `AbstractSettingRenderer` e não têm o que descartar.
+        renderers.push(Rc::new(SettingGroupRenderer::new(services.renderer.widgets.ui.clone(), services.renderer.styles.clone())));
+        renderers.push(Rc::new(SettingNewExtensionsRenderer::new(
+            services.renderer.widgets.ui.clone(),
+            services.renderer.command_service.clone(),
+            services.renderer.widgets.styles.button.clone(),
+        )));
+
+        for disposer in disposers {
+            base.register(disposer);
+        }
+
+        let mut change_setting = events.change_setting;
+        change_setting.push(own_change_setting.event());
+
+        Rc::new(Self {
+            base,
+            services,
+            setting_actions,
+            on_did_click_override_element: any_event(events.click_override_element),
+            on_did_change_setting: any_event(change_setting),
+            on_did_dismiss_extension_setting: extension_renderer.on_did_dismiss_extension_setting(),
+            on_did_open_settings: any_event(events.open_settings),
+            on_did_click_setting_link: any_event(events.click_setting_link),
+            on_did_focus_setting: any_event(events.focus_setting),
+            on_did_change_setting_height: any_event(events.change_setting_height),
+            on_apply_filter: any_event(events.apply_filter),
+            all_renderers: renderers,
+        })
+    }
+
+    /// As ações do menu de cada configuração: reiniciar, o separador e as três de copiar.
+    fn create_setting_actions(services: &SettingTreeRenderersServices, on_did_change_setting: &Rc<Emitter<ISettingChangeEvent>>) -> Vec<ActionRef> {
+        let emitter = on_did_change_setting.clone();
+        let reset_setting: ActionRef = Action::new(
+            "settings.resetSetting",
+            &localize("resetSettingLabel", "Reset Setting", &[]),
+            "",
+            true,
+            Some(Rc::new(move |context: Dynamic| {
+                if let Some(element) = settings_element_of(&context)
+                    && !element.is_untrusted()
+                {
+                    emitter.fire(ISettingChangeEvent {
+                        key: element.setting.key.clone(),
+                        value: Dynamic::Undefined,
+                        r#type: setting_change_type(&element.setting),
+                        manual_reset: true,
+                        scope: element.setting.scope,
+                    });
+                }
+                MaybePromise::Value(Dynamic::Undefined)
+            })),
+        );
+        let actions: Vec<ActionRef> = vec![
+            reset_setting,
+            Separator::new(),
+            copy_setting_id_action(services.clipboard_service.clone()),
+            copy_setting_as_json_action(services.clipboard_service.clone()),
+            copy_setting_as_url_action(services.clipboard_service.clone(), services.product_service.clone()),
+        ];
+        actions
+    }
+
+    /// `getActionsForSetting(setting, settingTarget)`.
+    fn get_actions_for_setting(
+        configuration_service: &Rc<dyn IWorkbenchConfigurationService>,
+        user_data_sync_enablement_service: &dyn IUserDataSyncEnablementService,
+        setting: &ISetting,
+        setting_target: &SettingsTarget,
+    ) -> Vec<ActionRef> {
+        let mut actions: Vec<ActionRef> = Vec::new();
+        if !setting.scope.is_some_and(|scope| APPLICATION_SCOPES.contains(&scope)) && *setting_target == SettingsTarget::UserLocal {
+            actions.push(apply_setting_to_all_profiles_action(configuration_service.clone(), setting.key.clone()));
+        }
+        if user_data_sync_enablement_service.is_enabled() && !setting.disallow_sync_ignore.unwrap_or(false) {
+            actions.push(sync_setting_action(configuration_service.clone(), setting.key.clone()));
+        }
+        if !actions.is_empty() {
+            actions.insert(0, Separator::new());
+        }
+        actions
+    }
+
+    pub fn cancel_suggesters(&self) {
+        self.services.context_view_service.hide_context_view(None);
+    }
+
+    /// `showContextMenu(element, settingDOMElement)`.
+    pub fn show_context_menu(&self, element: &Rc<SettingsTreeSettingElement>, setting_dom_element: NodeId) {
+        let ui = &self.services.renderer.widgets.ui;
+        let toolbar_element = {
+            let tree = ui.tree();
+            tree.subtree(setting_dom_element).into_iter().find(|node| *node != setting_dom_element && tree.has_class(*node, "monaco-toolbar"))
+        };
+        if let Some(toolbar_element) = toolbar_element {
+            self.services.renderer.context_menu_provider.show_context_menu(Rc::new(SettingContextMenuDelegate {
+                anchor: toolbar_element,
+                actions: self.setting_actions.clone(),
+                context: Dynamic::from(ObjectRef::with_host(element.clone())),
+            }));
+        }
+    }
+
+    /// `getSettingDOMElementForDOMElement(domElement)`: o `.setting-item-contents` do nó ou de um antepassado dele.
+    pub fn get_setting_dom_element_for_dom_element(&self, dom_element: NodeId) -> Option<NodeId> {
+        let tree = self.services.renderer.widgets.ui.tree();
+        std::iter::successors(Some(dom_element), |node| tree.parent(*node)).find(|node| tree.has_class(*node, AbstractSettingRenderer::CONTENTS_CLASS))
+    }
+
+    /// `getDOMElementsForSettingKey(treeContainer, key)`.
+    pub fn get_dom_elements_for_setting_key(&self, tree_container: NodeId, key: &str) -> Vec<NodeId> {
+        let tree = self.services.renderer.widgets.ui.tree();
+        tree.subtree(tree_container).into_iter().filter(|node| *node != tree_container && tree.attribute(*node, AbstractSettingRenderer::SETTING_KEY_ATTR) == Some(key)).collect()
+    }
+
+    /// `getKeyForDOMElementInSetting(element)`.
+    pub fn get_key_for_dom_element_in_setting(&self, element: NodeId) -> Option<String> {
+        self.get_attribute_for_dom_element_in_setting(element, AbstractSettingRenderer::SETTING_KEY_ATTR)
+    }
+
+    /// `getIdForDOMElementInSetting(element)`.
+    pub fn get_id_for_dom_element_in_setting(&self, element: NodeId) -> Option<String> {
+        self.get_attribute_for_dom_element_in_setting(element, AbstractSettingRenderer::SETTING_ID_ATTR)
+    }
+
+    fn get_attribute_for_dom_element_in_setting(&self, element: NodeId, attribute: &str) -> Option<String> {
+        let setting_element = self.get_setting_dom_element_for_dom_element(element)?;
+        self.services.renderer.widgets.ui.tree().attribute(setting_element, attribute).map(str::to_owned)
+    }
+}
+
+impl IDisposable for SettingTreeRenderers {
+    fn dispose(&self) {
+        self.base.dispose();
+    }
+
+    fn constructor_name(&self) -> &'static str {
+        "SettingTreeRenderers"
+    }
+}
+
+// ---- ações de copiar, sincronizar e aplicar a todos os perfis (linhas 2752 a 2899) ------------------------------------------
+
+/// `SETTINGS_AUTHORITY` (`workbench/services/preferences/common/preferences.ts`).
+const SETTINGS_AUTHORITY: &str = "settings";
+
+/// Uma `Action` cujo contexto de execução é o elemento da configuração, que escreve algo na área de transferência.
+fn clipboard_action(id: &str, label: String, clipboard_service: Rc<dyn IClipboardService>, text_of: impl Fn(&SettingsTreeSettingElement) -> String + 'static) -> ActionRef {
+    Action::new(
+        id,
+        &label,
+        "",
+        true,
+        Some(Rc::new(move |context: Dynamic| match settings_element_of(&context) {
+            Some(element) => MaybePromise::Promise(clipboard_service.write_text(&text_of(&element)).then(|_| Dynamic::Undefined)),
+            None => MaybePromise::Value(Dynamic::Undefined),
+        })),
+    )
+}
+
+/// `CopySettingIdAction`.
+pub fn copy_setting_id_action(clipboard_service: Rc<dyn IClipboardService>) -> ActionRef {
+    clipboard_action("settings.copySettingId", localize("copySettingIdLabel", "Copy Setting ID", &[]), clipboard_service, |context| context.setting.key.clone())
+}
+
+/// `CopySettingAsJSONAction`.
+pub fn copy_setting_as_json_action(clipboard_service: Rc<dyn IClipboardService>) -> ActionRef {
+    clipboard_action("settings.copySettingAsJSON", localize("copySettingAsJSONLabel", "Copy Setting as JSON", &[]), clipboard_service, |context| {
+        let value = json_stringify_indented(&context.value(), 2).unwrap_or_else(|| "undefined".to_owned());
+        format!("\"{}\": {}", context.setting.key, value)
+    })
+}
+
+/// `CopySettingAsURLAction`.
+pub fn copy_setting_as_url_action(clipboard_service: Rc<dyn IClipboardService>, product_service: Rc<dyn IProductService>) -> ActionRef {
+    clipboard_action("settings.copySettingAsURL", localize("copySettingAsURLLabel", "Copy Setting as URL", &[]), clipboard_service, move |context| {
+        let uri = URI::from(
+            &UriComponents {
+                scheme: Some(JsString::from(product_service.url_protocol())),
+                authority: Some(JsString::from(SETTINGS_AUTHORITY)),
+                path: Some(JsString::from(format!("/{}", context.setting.key))),
+                ..UriComponents::default()
+            },
+            true,
+        );
+        uri.to_string(false).to_string_lossy()
+    })
+}
+
+/// `Array.isArray(value) ? value : []` de um valor de configuração com textos.
+fn string_array(value: &Dynamic) -> Vec<String> {
+    array_items(value).iter().map(js_text).collect()
+}
+
+/// Uma `Action` que acompanha a configuração (o `this._register(Event.filter(configService.onDidChangeConfiguration, ...))` das
+/// ações `SyncSettingAction` e `ApplySettingToAllProfilesAction`, que estendem `Action`). A inscrição é descartada com a ação.
+pub struct ConfigBoundAction {
+    action: Rc<Action>,
+    subscription: RefCell<Option<DisposableRef>>,
+}
+
+impl ConfigBoundAction {
+    /// `update` guarda o `checked` a partir da configuração; `run` é o `run()` da ação, que lê o `checked` dela.
+    fn create(
+        id: &str,
+        label: String,
+        configuration_service: &Rc<dyn IWorkbenchConfigurationService>,
+        watched_key: &'static str,
+        update: Rc<dyn Fn(&Action)>,
+        run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>>,
+    ) -> Rc<Self> {
+        let slot: Rc<RefCell<Weak<Action>>> = Rc::new(RefCell::new(Weak::new()));
+        let callback_slot = slot.clone();
+        let action = Action::new(
+            id,
+            &label,
+            "",
+            true,
+            Some(Rc::new(move |_: Dynamic| {
+                let action = callback_slot.borrow().upgrade();
+                match action {
+                    Some(action) => run(&action),
+                    None => MaybePromise::Value(Dynamic::Undefined),
+                }
+            })),
+        );
+        *slot.borrow_mut() = Rc::downgrade(&action);
+
+        let (listener_slot, listener_update) = (slot, update.clone());
+        let subscription = configuration_service.on_did_change_configuration().listen(move |e| {
+            if e.affects_configuration(watched_key, None) {
+                let action = listener_slot.borrow().upgrade();
+                if let Some(action) = action {
+                    listener_update(&action);
+                }
+            }
+        });
+        update(&action);
+        Rc::new(Self { action, subscription: RefCell::new(Some(subscription)) })
+    }
+}
+
+impl Drop for ConfigBoundAction {
+    fn drop(&mut self) {
+        let subscription = self.subscription.borrow_mut().take();
+        if let Some(subscription) = subscription {
+            subscription.dispose();
+        }
+    }
+}
+
+impl IAction for ConfigBoundAction {
+    fn id(&self) -> String {
+        self.action.id()
+    }
+
+    fn label(&self) -> String {
+        self.action.label()
+    }
+
+    fn set_label(&self, value: String) {
+        self.action.set_label(value);
+    }
+
+    fn tooltip(&self) -> String {
+        self.action.tooltip()
+    }
+
+    fn set_tooltip(&self, value: String) {
+        self.action.set_tooltip(value);
+    }
+
+    fn class(&self) -> Option<String> {
+        self.action.class()
+    }
+
+    fn set_class(&self, value: Option<String>) {
+        self.action.set_class(value);
+    }
+
+    fn enabled(&self) -> bool {
+        self.action.enabled()
+    }
+
+    fn set_enabled(&self, value: bool) {
+        self.action.set_enabled(value);
+    }
+
+    fn checked(&self) -> Option<bool> {
+        self.action.checked()
+    }
+
+    fn set_checked(&self, value: Option<bool>) {
+        self.action.set_checked(value);
+    }
+
+    fn run(&self, args: &[Dynamic]) -> Promise<Dynamic> {
+        self.action.run(args)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_base_action(&self) -> Option<&Action> {
+        Some(&self.action)
+    }
+}
+
+/// `SyncSettingAction`.
+pub fn sync_setting_action(configuration_service: Rc<dyn IWorkbenchConfigurationService>, setting_key: String) -> ActionRef {
+    const IGNORED_SETTINGS: &str = "settingsSync.ignoredSettings";
+
+    let update: Rc<dyn Fn(&Action)> = {
+        let (configuration_service, setting_key) = (configuration_service.clone(), setting_key.clone());
+        Rc::new(move |action: &Action| {
+            let ignored_settings = AbstractSettingRenderer::read_ignored_settings(&*configuration_service);
+            action.set_checked(Some(!ignored_settings.contains(&setting_key)));
+        })
+    };
+    let run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>> = {
+        let (service, setting_key) = (configuration_service.clone(), setting_key);
+        Rc::new(move |action: &Action| {
+            // first remove the current setting completely from ignored settings
+            let mut current_value = string_array(&service.get_value(Some(IGNORED_SETTINGS), None));
+            current_value.retain(|value| *value != setting_key && *value != format!("-{setting_key}"));
+
+            let is_default_ignored = get_default_ignored_settings(false).iter().any(|ignored| ignored.to_string_lossy() == setting_key);
+            let asked_to_sync = !action.checked().unwrap_or(false);
+
+            // If asked to sync, then add only if it is ignored by default
+            if asked_to_sync && is_default_ignored {
+                current_value.push(format!("-{setting_key}"));
+            }
+
+            // If asked not to sync, then add only if it is not ignored by default
+            if !asked_to_sync && !is_default_ignored {
+                current_value.push(setting_key.clone());
+            }
+
+            let value = if current_value.is_empty() { Dynamic::Undefined } else { Dynamic::array(current_value.iter().map(|value| Dynamic::string(value))) };
+            let _ = service.update_value(IGNORED_SETTINGS, value, None, Some(ConfigurationTarget::User));
+
+            MaybePromise::Value(Dynamic::Undefined)
+        })
+    };
+    ConfigBoundAction::create("settings.stopSyncingSetting", localize("stopSyncingSetting", "Sync This Setting", &[]), &configuration_service, IGNORED_SETTINGS, update, run)
+}
+
+/// `ApplySettingToAllProfilesAction`.
+pub fn apply_setting_to_all_profiles_action(configuration_service: Rc<dyn IWorkbenchConfigurationService>, setting_key: String) -> ActionRef {
+    let update: Rc<dyn Fn(&Action)> = {
+        let (configuration_service, setting_key) = (configuration_service.clone(), setting_key.clone());
+        Rc::new(move |action: &Action| {
+            let all_profiles_settings = string_array(&configuration_service.get_value(Some(APPLY_ALL_PROFILES_SETTING), None));
+            action.set_checked(Some(all_profiles_settings.contains(&setting_key)));
+        })
+    };
+    let run: Rc<dyn Fn(&Action) -> MaybePromise<Dynamic>> = {
+        let (service, setting_key) = (configuration_service.clone(), setting_key);
+        Rc::new(move |action: &Action| {
+            let checked = action.checked().unwrap_or(false);
+            let (service, setting_key) = (service.clone(), setting_key.clone());
+            MaybePromise::Promise(async_fn(async move {
+                // first remove the current setting completely from ignored settings
+                let mut value = string_array(&service.get_value(Some(APPLY_ALL_PROFILES_SETTING), None));
+
+                if checked {
+                    if let Some(index) = value.iter().position(|candidate| *candidate == setting_key) {
+                        value.remove(index);
+                    }
+                } else {
+                    value.push(setting_key.clone());
+                }
+
+                let mut new_value: Vec<String> = Vec::new();
+                for candidate in value {
+                    if !new_value.contains(&candidate) {
+                        new_value.push(candidate);
+                    }
+                }
+                let new_value = if new_value.is_empty() { Dynamic::Undefined } else { Dynamic::array(new_value.iter().map(|value| Dynamic::string(value))) };
+
+                let overrides = ConfigurationOverrides::default();
+                let target = Some(ConfigurationTarget::UserLocal);
+                if checked {
+                    let application_value = service.inspect(&setting_key, &overrides).application().map_or(Dynamic::Undefined, |inspected| inspected.value());
+                    service.update_value(&setting_key, application_value, None, target).await?;
+                    service.update_value(APPLY_ALL_PROFILES_SETTING, new_value, None, target).await?;
+                } else {
+                    service.update_value(APPLY_ALL_PROFILES_SETTING, new_value, None, target).await?;
+                    let user_local_value = service.inspect(&setting_key, &overrides).user_local().map_or(Dynamic::Undefined, |inspected| inspected.value());
+                    service.update_value(&setting_key, user_local_value, None, target).await?;
+                }
+                Ok(Dynamic::Undefined)
+            }))
+        })
+    };
+    ConfigBoundAction::create(
+        "settings.applyToAllProfiles",
+        localize("applyToAllProfiles", "Apply Setting to all Profiles", &[]),
+        &configuration_service,
+        APPLY_ALL_PROFILES_SETTING,
+        update,
+        run,
+    )
 }
