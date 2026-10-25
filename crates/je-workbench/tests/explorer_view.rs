@@ -186,16 +186,21 @@ fn assert_context(harness: &ExplorerViewHarness, opened: &RefCell<Vec<Rc<Explore
 }
 
 /// O corpo dos casos assíncronos da suíte `context menu`: o `setup` roda antes e o guarda de vazamento fecha depois.
+///
+/// O guarda é compartilhado (`Rc`) e este fecho guarda a posse dele até o caso terminar: o `teardown` do mocha roda depois
+/// do corpo do teste. Se o caso recebesse o guarda por valor e não o usasse, o `async move` do caso não o capturaria e ele
+/// seria descartado ao devolver o futuro, antes de o corpo rodar, descartando a vista e a árvore (`Invalid index N`).
 fn run_context_menu_case<F, Fut>(case: F)
 where
-    F: FnOnce(LeakGuard, Rc<ExplorerViewHarness>) -> Fut + 'static,
+    F: FnOnce(Rc<LeakGuard>, Rc<ExplorerViewHarness>) -> Fut + 'static,
     Fut: std::future::Future<Output = ()> + 'static,
 {
     run_with_real_timers(async move {
-        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let guard = Rc::new(ensure_no_disposables_are_leaked_in_test_suite());
         let harness = Rc::new(ExplorerViewHarness::new(&guard));
         harness.setup().await;
-        case(guard, harness).await;
+        case(guard.clone(), harness).await;
+        drop(guard);
     });
 }
 
