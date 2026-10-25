@@ -29,8 +29,8 @@ mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
 pub use connected_tabs::{
-    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, StickyTabsBackgroundBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
-    TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, StickyTabsBackgroundBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabActionsFade, TabBorderContainer,
+    TabBorderIndicator, TabElement, TabFillAccentLine, TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
 
 /// O `classList` de um elemento: só o que os seletores consultam.
@@ -242,11 +242,14 @@ impl<'a> ModernUiStyle<'a> {
     /// O valor de uma variável CSS, `--vscode-*` (a cor do tema) ou `--modern-ui-*` das abas (`tabs.css`, linhas 24 a 54).
     /// `None` é a variável indefinida.
     pub fn variable(&self, name: &str) -> Option<Color> {
-        if let Some(color) = self.root_variables.get(name) {
-            return Some(color.clone());
+        // O que o DOM escreveu na raiz e o que os participantes de tema declaram na folha (as customizações legadas
+        // `tab.*`, com `.modern-ui-tabs.monaco-workbench.monaco-workbench`) vencem o padrão de `tabs.css`.
+        if let Some(color) = self.declared(name) {
+            return Some(color);
         }
         if let Some(id) = modern_ui_tab_variable_color_id(name) {
-            return self.has("modern-ui-tabs").then(|| self.color(id)).flatten();
+            // A variável `unfocused-*` é um alias da focada, que o participante também pode ter declarado.
+            return self.has("modern-ui-tabs").then(|| self.declared(&name.replace("-unfocused-", "-")).or_else(|| self.color(id))).flatten();
         }
         color_registry().get_colors().iter().find(|contribution| as_css_variable_name(contribution.id) == name).and_then(|contribution| self.color(contribution.id))
     }
@@ -416,7 +419,8 @@ impl<'a> ModernUiStyle<'a> {
     }
 
     /// `background-color` do `.tab-fill` de uma aba do editor fora do alto contraste (`tabs.css`, linhas 370 a 458). Os
-    /// grupos sem foco usam as variáveis `unfocused-*`, que são aliases das focadas, então o grupo não muda o valor.
+    /// grupos sem foco usam as variáveis `unfocused-*`, aliases das focadas até que uma customização legada (`tab.unfocused*`)
+    /// declare a própria.
     pub fn editor_tab_fill_background(&self, tab: EditorTabState) -> Option<Color> {
         if self.has("modern-ui-tabs") && self.has("modern-ui-connected-editor-tabs") {
             // `connectedEditorTabs.css` (linhas 102 a 143 e 322 a 335) refaz as variáveis de fundo das abas.
@@ -425,14 +429,16 @@ impl<'a> ModernUiStyle<'a> {
         if !self.has("modern-ui-tabs") || self.high_contrast() {
             return None;
         }
-        let id = match (tab.active, tab.selected, tab.hovered) {
-            (true, _, false) => "modernEditorTab.activeBackground",
-            (true, _, true) => "modernEditorTab.activeHoverBackground",
-            (false, true, _) => "tab.selectedBackground",
-            (false, false, true) => "modernEditorTab.hoverBackground",
-            (false, false, false) => "modernEditorTab.inactiveBackground",
+        let state = match (tab.active, tab.selected, tab.hovered) {
+            (true, _, false) => "active-background",
+            (true, _, true) => "active-hover-background",
+            (false, true, _) => return self.color("tab.selectedBackground"),
+            (false, false, true) => "hover-background",
+            (false, false, false) => "inactive-background",
         };
-        self.color(id)
+        // Linhas 377 a 455: o grupo sem foco lê a variável `unfocused-*`, que sem valor próprio é um alias da focada.
+        let group = if tab.group_active { "" } else { "unfocused-" };
+        self.variable(&format!("--modern-ui-editor-tab-{group}{state}"))
     }
 
     /// `color` do `.tab-label` de uma aba do editor (`tabs.css`, linhas 1060 a 1111). A aba inativa usa
@@ -903,6 +909,37 @@ impl<'a> ModernUiStyle<'a> {
     pub fn pane_composite_header_overflow_visible(&self, part: &ClassList) -> bool {
         self.pane_composite_header_footer_border_width(part).is_some()
     }
+
+    /// `.modern-ui.monaco-workbench .part.basepanel > .composite.title` (padding.css, linhas 279 e 283): o título do painel
+    /// cujos filhos `.title-actions` e `.global-actions` as regras abaixo tocam.
+    fn panel_composite_title(&self, part: &ClassList, title: &ClassList) -> bool {
+        self.has("modern-ui") && self.has("monaco-workbench") && part.contains("part") && part.contains("basepanel") && title.contains("composite") && title.contains("title")
+    }
+
+    /// `min-width` do `.title-actions` do título de um painel (padding.css, linhas 279 a 281): `0`, para as ações do título
+    /// encolherem em vez de empurrarem as ações globais. `None` é o `auto` do item flexível sem a regra.
+    pub fn panel_title_actions_min_width(&self, part: &ClassList, title: &ClassList) -> Option<f64> {
+        self.panel_composite_title(part, title).then_some(0.0)
+    }
+
+    /// O `.global-actions` do título de um painel (padding.css, linhas 283 a 287: `position: relative`, `z-index: 1` e
+    /// `flex: 0 0 auto`), que fica acima das ações do título que transbordam e não encolhe. Nenhuma regra lhe dá fundo.
+    pub fn panel_global_actions(&self, part: &ClassList, title: &ClassList) -> PanelGlobalActions {
+        if self.panel_composite_title(part, title) {
+            return PanelGlobalActions { position: "relative", z_index: Some(1), flex_shrink: 0.0, background: Color::transparent_color() };
+        }
+        PanelGlobalActions { position: "static", z_index: None, flex_shrink: 1.0, background: Color::transparent_color() }
+    }
+}
+
+/// O que as regras do Modern UI calculam para o `.global-actions` do título de um painel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanelGlobalActions {
+    pub position: &'static str,
+    /// `None` é o `z-index: auto`.
+    pub z_index: Option<i32>,
+    pub flex_shrink: f64,
+    pub background: Color,
 }
 
 /// O `margin` calculado de uma parte flutuante, em px.
