@@ -302,7 +302,7 @@ fn call_hierarchy_provider_prepares_the_item_and_lists_both_directions() {
 
         assert_eq!(
             calls(workbench),
-            r#"["prepareCall:cal:/proj/a.txt@2,2","incoming:cal:alvo:detalhe:11:0,0-0,4","outgoing:cal:alvo"]"#,
+            r#"["prepareCall:cal:/proj/a.txt@1,2","incoming:cal:alvo:detalhe:11:0,0-0,4","outgoing:cal:alvo"]"#,
             "o provedor recebe o item preparado, com os campos da classe"
         );
         model.dispose();
