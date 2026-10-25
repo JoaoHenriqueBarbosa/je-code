@@ -421,6 +421,10 @@ impl IPaneCompositePartService for StubPaneCompositePartService {
     fn get_last_active_pane_composite_id(&self, _view_container_location: ViewContainerLocation) -> String {
         String::new()
     }
+
+    fn get_progress_indicator(&self, _id: &str, _view_container_location: ViewContainerLocation) -> Option<Rc<dyn je_editor::code_action::platform::IProgressIndicator>> {
+        None
+    }
 }
 
 /// `IQuickDiffModelService` que nunca devolve referência.

@@ -6,9 +6,11 @@
 //! Divergência: `shouldInlineSubmenu` e `useSeparatorsInPrimaryActions` de `fillInActionBarActions` não entram, porque
 //! `getContextMenuActions` e `getFlatContextMenuActions` usam os valores padrão (nunca inline, sem separador no primário).
 
+use std::rc::Rc;
+
 use je_base::actions::{ActionRef, Separator};
 
-use super::actions::{MenuAction, MenuActionGroup};
+use super::actions::{MenuAction, MenuActionGroup, MenuItemAction, SubmenuItemAction};
 
 /// `PrimaryAndSecondaryActions`.
 #[derive(Default)]
@@ -25,25 +27,56 @@ fn menu_action_as_action(action: &MenuAction) -> ActionRef {
     }
 }
 
-/// `fillInActions` com os padrões do original (`shouldInlineSubmenu` sempre falso, sem separador entre os grupos primários).
-/// O alvo é o par primário e secundário; `flat` (o alvo `IAction[]`) junta os dois baldes no secundário.
-fn fill_in_actions(groups: &[MenuActionGroup], is_primary_action: &dyn Fn(&str) -> bool, flat: bool) -> PrimaryAndSecondaryActions {
-    let mut primary: Vec<ActionRef> = Vec::new();
-    let mut secondary: Vec<ActionRef> = Vec::new();
+/// `fillInActions` com os padrões do original (`shouldInlineSubmenu` sempre falso, sem separador entre os grupos primários),
+/// genérico no tipo da entrada: `to_entry` converte uma ação do menu e `separator` cria o separador. O alvo é o par
+/// primário e secundário; `flat` (o alvo `IAction[]`) junta os dois baldes no secundário.
+fn fill_in_entries<T>(
+    groups: &[MenuActionGroup],
+    is_primary_action: &dyn Fn(&str) -> bool,
+    flat: bool,
+    to_entry: &dyn Fn(&MenuAction) -> T,
+    separator: &dyn Fn() -> T,
+) -> (Vec<T>, Vec<T>) {
+    let mut primary: Vec<T> = Vec::new();
+    let mut secondary: Vec<T> = Vec::new();
 
     for (group, actions) in groups {
         let to_primary = is_primary_action(group);
         // Com o alvo achatado, os dois baldes são a mesma lista: o separador entra quando ela já tem algo.
-        let bucket: &mut Vec<ActionRef> = if flat || !to_primary { &mut secondary } else { &mut primary };
+        let bucket: &mut Vec<T> = if flat || !to_primary { &mut secondary } else { &mut primary };
         if !to_primary && !bucket.is_empty() {
-            bucket.push(Separator::new());
+            bucket.push(separator());
         }
         for action in actions {
-            bucket.push(menu_action_as_action(action));
+            bucket.push(to_entry(action));
         }
     }
 
+    (primary, secondary)
+}
+
+/// `fillInActions` sobre `IAction`.
+fn fill_in_actions(groups: &[MenuActionGroup], is_primary_action: &dyn Fn(&str) -> bool, flat: bool) -> PrimaryAndSecondaryActions {
+    let (primary, secondary) = fill_in_entries(groups, is_primary_action, flat, &menu_action_as_action, &|| -> ActionRef { Separator::new() });
     PrimaryAndSecondaryActions { primary, secondary }
+}
+
+/// Uma entrada de `getFlatContextMenuActions` que ainda distingue o que o original distingue com `instanceof`:
+/// `Separator`, `MenuItemAction` e `SubmenuItemAction`.
+#[derive(Clone)]
+pub enum FlatMenuEntry {
+    Separator,
+    Item(Rc<MenuItemAction>),
+    Submenu(Rc<SubmenuItemAction>),
+}
+
+/// `getFlatContextMenuActions(groups, primaryGroup?)` sem perder o tipo de cada entrada.
+pub fn get_flat_context_menu_entries(groups: &[MenuActionGroup], primary_group: Option<&str>) -> Vec<FlatMenuEntry> {
+    let to_entry = |action: &MenuAction| match action {
+        MenuAction::Item(item) => FlatMenuEntry::Item(item.clone()),
+        MenuAction::Submenu(submenu) => FlatMenuEntry::Submenu(submenu.clone()),
+    };
+    fill_in_entries(groups, &primary_group_predicate(primary_group), true, &to_entry, &|| FlatMenuEntry::Separator).1
 }
 
 /// O predicado de `getContextMenuActionsImpl`: o grupo informado, ou `navigation`.
