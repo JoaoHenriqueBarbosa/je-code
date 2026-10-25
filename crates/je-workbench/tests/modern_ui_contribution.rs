@@ -62,14 +62,21 @@
 //! `multi_editor_tabs_control.rs` com as classes da raiz e da aba e os tamanhos do tema; `tab_fill_rect` mede o
 //! `getBoundingClientRect()` do `.tab-fill`), o `pointer-events` e o `z-index` das abas (`tab_actions_pointer_events`,
 //! `tab_z_index`) e a borda do editor (`editor_border_width`, `editor_border_color`): de `preserves upper-row pill gutters
-//! ...` até `reserves the connected terminal shoulder ...`. Em `preserves a single HC frame ...` a linha de base da
-//! geometria do cartão é por densidade, porque o DOM do original deixa os `--vscode-spacing-*` indefinidos (margens nulas) e
-//! a margem nativa usa o espaçamento do tema.
+//! ...` até `reserves the connected terminal shoulder ...`. O DOM do original só define na raiz as variáveis de tamanho que o
+//! caso escreve (`root.style.setProperty`), e o que ele deixa indefinido (os `--vscode-spacing-*` de `preserves a single HC
+//! frame ...`, por exemplo) cai no fallback do CSS ou vale zero; `ModernUiStyle::with_root_sizes` monta a raiz só com essas
+//! variáveis, e os casos conferem o valor literal do oráculo.
 //! Portados com o contorno do `.tab-fill` (`tab_fill_outline_style`), a largura das bordas dos indicadores
 //! (`tab_border_container_border_widths`), as bordas e o conteúdo dos ombros (`connected_edge_border_color`,
 //! `fill_shoulder_content`, `fill_shoulder_box`, `tab_fill_border_color`) e as medidas da fileira
 //! (`tabs_and_actions_padding_top`, `tabs_container_padding_bottom`): de `HC active multi-selection keeps one cap outline ...`
 //! até `keeps the right shoulder curved and the left edge straight at row boundaries`.
+//! Portados com a máscara das abas fixas (`sticky_tabs_background_box`), o raio e o alinhamento das ações
+//! (`tab_actions_border_radii`, `tab_actions_container_justify_content`, `tab_action_geometry`) e as cores dos rótulos
+//! (`editor_tab_label_color`): `extends the connected sticky mask ...`, `centers connected actions ...` e `applies editor tab
+//! foregrounds ...`. `uses the registered modern tab colors` (linha 3459 do oráculo) está portado acima, junto das cores
+//! do tema. Portados com os primeiros planos legíveis e os padrões do participante de tema (`editor_tab_foreground` com
+//! `declared`): `uses readable theme foregrounds ...` e `preserves pill and HC label defaults ...`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -107,6 +114,7 @@ use je_theme::ThemeType;
 use je_theme::color::Color;
 use je_theme::registry::ColorValue::Id;
 use je_theme::registry::{ColorDefaults, ColorTransform, ColorValue, Defaults, color_registry};
+use je_theme::sizes::base_sizes::{CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, SPACING_SIZE20, STROKE_THICKNESS};
 use je_theme::to_rgba8;
 use je_workbench::contrib::files::browser::views::explorer_view::should_preserve_workspace_name_case;
 use je_base::actions::{Action, ActionRef, Separator};
@@ -128,7 +136,7 @@ use je_workbench::contrib::modern_ui::resolved_style::{
     NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderIndicator, TabElement, TabRowPlacement,
     EDITOR_TABS_SCROLLBAR_Z_INDEX, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
-use je_workbench::browser::parts::editor::multi_editor_tabs_control::{BoxRect, StrokeSide, TabBoxContext, TabCssClasses, TabSizingParams, tab_box_style, tab_fill_rect};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{BoxRect, StrokeSide, TabBoxContext, TabCssClasses, TabSizingParams, tab_action_geometry, tab_box_style, tab_fill_rect};
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, LayoutContainerId, LayoutSettings, ModernUiDensity, ModernUiEditorTabStyle,
@@ -608,6 +616,23 @@ fn radii_css(radii: CornerRadii) -> String {
     } else {
         format!("{} {} {} {}", px(top_left), px(top_right), px(bottom_right), px(bottom_left))
     }
+}
+
+/// O `border-radius` computado na forma mais curta do shorthand (como o Chromium serializa): `0px 4px 0px 0px` fica com os
+/// quatro valores e `4px 0px 0px 0px` perde o último, que repete o segundo.
+fn shortest_border_radius(radii: CornerRadii) -> String {
+    let CornerRadii(top_left, top_right, bottom_right, bottom_left) = radii;
+    let mut values = vec![top_left, top_right, bottom_right, bottom_left];
+    if bottom_left == top_right {
+        values.pop();
+        if bottom_right == top_left {
+            values.pop();
+            if top_right == top_left {
+                values.pop();
+            }
+        }
+    }
+    values.into_iter().map(px).collect::<Vec<_>>().join(" ")
 }
 
 #[test]
@@ -2663,11 +2688,12 @@ fn preserves_a_single_hc_frame_in_every_tab_mode_without_changing_the_outer_card
     // A geometria do cartão externo: as margens da parte (o lugar que ela ocupa na grade) e a borda que fica dentro dela
     // (onde começa o conteúdo). O `getBoundingClientRect()` do original lê o mesmo par.
     let geometry = |style: &ModernUiStyle, part: &ClassList| (style.floating_part_margins(part), px(style.editor_border_width(part)));
-    // O original mede a linha de base uma vez por `floating`, com as variáveis de espaçamento da raiz indefinidas (margens
-    // nulas em qualquer densidade). As margens nativas usam o espaçamento do tema e a densidade compacta as zera, então a
-    // linha de base é por densidade: sem tema, sem abas conectadas e sem as abas em modo múltiplo.
-    let baseline = |floating: bool, compact: bool| {
-        let style = ModernUiStyle::new(&themes[0].1, &root_classes(floating, "", false, compact)).with_explicit_colors_only();
+    // O original mede a linha de base uma vez por `floating`. A raiz define só `--vscode-strokeThickness` e
+    // `--vscode-cornerRadius-large`; os `--vscode-spacing-*` ficam indefinidos e as margens valem zero em qualquer densidade,
+    // então a linha de base não depende da densidade, do tema, das abas conectadas nem do modo das abas.
+    let root_sizes = [(STROKE_THICKNESS, 1.0), (CORNER_RADIUS_LARGE, 8.0)];
+    let baseline = |floating: bool| {
+        let style = ModernUiStyle::new(&themes[0].1, &root_classes(floating, "", false, false)).with_explicit_colors_only().with_root_sizes(&root_sizes);
         geometry(&style, &editor_part(false))
     };
 
@@ -2676,7 +2702,7 @@ fn preserves_a_single_hc_frame_in_every_tab_mode_without_changing_the_outer_card
             let high_contrast = theme_id.starts_with("hc-");
             for connected in [false, true] {
                 for compact in [false, true] {
-                    let style = ModernUiStyle::new(theme, &root_classes(floating, theme_id, connected, compact)).with_explicit_colors_only();
+                    let style = ModernUiStyle::new(theme, &root_classes(floating, theme_id, connected, compact)).with_explicit_colors_only().with_root_sizes(&root_sizes);
                     for show_tabs in ["multiple", "single", "none", "multiple"] {
                         let part = editor_part(show_tabs == "multiple");
                         let connected_frame = connected && show_tabs == "multiple";
@@ -2705,7 +2731,7 @@ fn preserves_a_single_hc_frame_in_every_tab_mode_without_changing_the_outer_card
                         assert_eq!(
                             (geometry(&style, &part), border, compact_stroke, group_frame),
                             (
-                                baseline(floating, compact),
+                                baseline(floating),
                                 [px(1.0), px(1.0), expected_border_color.to_owned()],
                                 (floating && compact).then(|| if shared_card { "#00ffff" } else { "#123456" }.to_owned()),
                                 expected_frame.map(str::to_owned),
@@ -3116,6 +3142,158 @@ fn keeps_the_right_shoulder_curved_and_the_left_edge_straight_at_row_boundaries(
     assert_eq!(
         (row_end, row_start),
         ((["\"\"", "\"\""], ["none", "none"]), (["none", "\"\""], ["none", "none"]))
+    );
+}
+
+#[test]
+fn extends_the_connected_sticky_mask_through_its_owned_strip_separator() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `--vscode-strokeThickness: 1px` é o tamanho do tema; `--modern-ui-connected-tab-border` (`#123456`, na raiz e no grupo) é a
+    // cor do traço de baixo, que o caso não confere.
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    // O `.monaco-scrollable-element` é `position: relative` de `33px` de altura; a máscara tem `84px` de largura.
+    let scrollable_height = 33.0;
+    let context = style.tab_box_context(&TabElement::new("tab", true), TabRowPlacement::default());
+    let sticky = style.sticky_tabs_background_box(scrollable_height, context.editor_group_tab_height);
+
+    assert_eq!(
+        (px(sticky.top), sticky.bottom.map(px), sticky.height, scrollable_height - (sticky.top + sticky.height), px(sticky.border_bottom_width)),
+        ("0px".to_owned(), Some("0px".to_owned()), 33.0, 0.0, "1px".to_owned())
+    );
+}
+
+#[test]
+fn centers_connected_actions_within_their_action_surface_in_every_theme() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    // `root.style.setProperty('--vscode-spacing-size20', '2px')` e `('--vscode-cornerRadius-small', '4px')`: são as únicas
+    // variáveis de tamanho da raiz, então `--modern-ui-connected-tab-radius` cai no fallback do `var()`, o raio pequeno.
+    let root_sizes = [(SPACING_SIZE20, 2.0), (CORNER_RADIUS_SMALL, 4.0)];
+    // `root.classList.add('hc-black')` troca só a classe da raiz.
+    let measure = |root_class_name: &str| {
+        let style = ModernUiStyle::new(&theme, root_class_name).with_explicit_colors_only().with_root_sizes(&root_sizes);
+        let measure_action = |actions_left: bool| {
+            // As duas abas são `tab active`, a segunda com `tab-actions-left`, no grupo ativo.
+            let tab = TabElement::new(if actions_left { "tab active tab-actions-left" } else { "tab active" }, true);
+            let context = style.tab_box_context(&tab, TabRowPlacement { tab_width: 120.0, ..TabRowPlacement::default() });
+            let classes = TabCssClasses { tab_actions_left: actions_left, ..TabCssClasses::default() };
+            let geometry = tab_action_geometry(&classes, &context).expect("a ranhura da ação");
+            // `.tab-actions` e o `.monaco-action-bar` dentro dela declaram `width: 24px` (`tabs.css`, linhas 512 e 526).
+            let width = geometry.actions.right - geometry.actions.left;
+            (shortest_border_radius(style.tab_actions_border_radii(&tab).expect("o raio das ações")), style.tab_actions_container_justify_content(), px(width))
+        };
+        (measure_action(false), measure_action(true))
+    };
+    let connected = measure("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+    let high_contrast = measure("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs hc-black");
+
+    // Os valores literais do oráculo: `0px 4px 0px 0px` e `4px 0px 0px`, com a ranhura e a barra de ações de `24px`.
+    let expected = (("0px 4px 0px 0px".to_owned(), Some("center"), "24px".to_owned()), ("4px 0px 0px".to_owned(), Some("center"), "24px".to_owned()));
+    assert_eq!((connected, high_contrast), (expected.clone(), expected));
+}
+
+#[test]
+fn applies_editor_tab_foregrounds_to_the_icon_name_and_description() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme.set_custom_colors([("tab.selectedForeground", "#0d0e0f")]);
+    let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs").with_explicit_colors_only();
+    for (state, hex) in [("active", "#010203"), ("inactive", "#040506"), ("unfocused-active", "#070809"), ("unfocused-inactive", "#0a0b0c")] {
+        style.set_root_variable(&format!("--modern-ui-editor-tab-{state}-foreground"), Color::from_hex(hex));
+    }
+    // O ícone (`::before` do rótulo), o nome e a descrição herdam a cor do `.tab-label`: os três valem a mesma.
+    let label_colors = |tab: EditorTabState, decoration: Option<&Color>| {
+        let color = rgb_of(style.editor_tab_label_color(tab, decoration));
+        [color.clone(), color.clone(), color]
+    };
+    let state = |active: bool, selected: bool, group_active: bool| EditorTabState { active, selected, group_active, ..EditorTabState::default() };
+    // O rótulo decorado (`monaco-decoration-itemColor`) leva a cor inline `#101112`.
+    let decoration = Color::from_hex("#101112");
+
+    let expected = |text: &str| [Some(text.to_owned()), Some(text.to_owned()), Some(text.to_owned())];
+    assert_eq!(
+        [
+            label_colors(state(true, false, true), None),
+            label_colors(state(false, false, true), None),
+            label_colors(state(false, true, true), None),
+            label_colors(state(false, false, true), Some(&decoration)),
+            label_colors(state(true, false, false), None),
+            label_colors(state(false, false, false), None),
+        ],
+        [
+            expected("rgb(1, 2, 3)"),
+            expected("rgb(4, 5, 6)"),
+            expected("rgb(13, 14, 15)"),
+            expected("rgb(16, 17, 18)"),
+            expected("rgb(7, 8, 9)"),
+            expected("rgb(10, 11, 12)"),
+        ]
+    );
+}
+
+#[test]
+fn uses_readable_theme_foregrounds_for_connected_inactive_tabs_in_either_editor_group() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // `{ background, inactive, foreground }` de cada paleta do oráculo; `createUnloadedTheme('vs', ...)` é o tema claro com o
+    // `colorMap` dado, e o `generateColorThemeCSS` é o estilo sem `with_explicit_colors_only`.
+    let palettes = [
+        ("#202122", "#8c8c8c", "#bfbfbf"),
+        ("#eaeaea", "#606060", "#202020"),
+        ("#2b2b2b", "#9d9d9d", "#cccccc"),
+        ("#e5e5e5", "#616161", "#3b3b3b"),
+        ("#303031", "#a6a6a6", "#cccccc"),
+        ("#e8e8e8", "#616161", "#616161"),
+    ];
+    for (background, inactive, foreground) in palettes {
+        let theme = unloaded_theme_of_type_with_file_colors(
+            ThemeType::Light,
+            &[("foreground", foreground), ("tab.inactiveForeground", inactive), ("editorGroupHeader.tabsBackground", background)],
+        );
+        let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs");
+        // Um grupo ativo e outro sem foco, cada um com uma aba inativa.
+        let labels = [true, false].map(|group_active| {
+            let tab = EditorTabState { group_active, ..EditorTabState::default() };
+            let fill = style.editor_tab_fill_background(tab).expect("o fundo do preenchimento da aba");
+            let text = style.editor_tab_foreground(tab).expect("o primeiro plano da aba");
+            (text.to_string(), fill.to_string(), text.blend(&fill).get_contrast_ratio(&fill) >= 4.5)
+        });
+
+        let expected = (inactive.to_owned(), background.to_owned(), true);
+        assert_eq!(labels, [expected.clone(), expected], "paleta de {background}");
+    }
+}
+
+#[test]
+fn preserves_pill_and_hc_label_defaults_and_explicit_connected_foreground_customizations() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut theme = unloaded_theme_of_type_with_file_colors(ThemeType::Dark, &[("foreground", "#cccccc"), ("tab.inactiveForeground", "#9d9d9d")]);
+    let connected_class_name = "monaco-workbench modern-ui-tabs modern-ui modern-ui-connected-editor-tabs";
+    let focused = EditorTabState { group_active: true, ..EditorTabState::default() };
+    let unfocused = EditorTabState { group_active: false, ..EditorTabState::default() };
+    // `probe.style.color = 'var(--modern-ui-editor-tab-inactive-foreground)'`: a cor da aba inativa do grupo.
+    let color = |style: &ModernUiStyle, tab: EditorTabState| rgb_of(style.editor_tab_foreground(tab));
+
+    let (pill, connected, high_contrast) = {
+        let mut style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui-tabs");
+        let pill = color(&style, focused);
+        style.set_root_class_name(connected_class_name);
+        let connected = color(&style, focused);
+        let high_contrast = ["hc-black", "hc-light"].map(|theme_class| {
+            style.set_root_class_name(&format!("{connected_class_name} {theme_class}"));
+            color(&style, focused)
+        });
+        (pill, connected, high_contrast)
+    };
+
+    // `theme.setCustomColors(...)` e o participante de tema que reemite as variáveis `--modern-ui-editor-tab-*-foreground`.
+    theme.set_custom_colors([("tab.inactiveForeground", "#123456"), ("tab.unfocusedInactiveForeground", "#654321")]);
+    let style = ModernUiStyle::new(&theme, connected_class_name);
+    let (custom, unfocused_custom) = (color(&style, focused), color(&style, unfocused));
+
+    assert_eq!(
+        (connected, high_contrast, custom, unfocused_custom),
+        (Some("rgb(157, 157, 157)".to_owned()), [pill.clone(), pill], Some("rgb(18, 52, 86)".to_owned()), Some("rgb(101, 67, 33)".to_owned()))
     );
 }
 

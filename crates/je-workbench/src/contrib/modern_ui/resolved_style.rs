@@ -20,7 +20,7 @@ use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
 use je_theme::registry::{as_css_variable_name, color_registry};
 use je_theme::size_utils::get_size_registry;
-use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
+use je_theme::sizes::base_sizes::{CODICON_FONT_SIZE, CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, FONT_WEIGHT_REGULAR, SPACING_NONE, STROKE_THICKNESS, SPACING_SIZE20, SPACING_SIZE240, SPACING_SIZE320, SPACING_SIZE360, SPACING_SIZE40, SPACING_SIZE60, SPACING_SIZE80};
 
 // Os traços de borda dos cartões compactos (`floatingPanels.css`, linhas 508 a 522).
 mod card_border_layers;
@@ -29,7 +29,7 @@ mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
 pub use connected_tabs::{
-    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
+    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, StickyTabsBackgroundBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
     TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
 
@@ -144,6 +144,11 @@ pub struct ModernUiStyle<'a> {
     /// As propriedades personalizadas de cor que o DOM escreve direto na raiz (`root.style.setProperty('--modern-ui-...')`),
     /// que vencem as que os participantes de tema declaram na folha de estilo.
     root_variables: BTreeMap<String, Color>,
+    /// Os tamanhos `--vscode-*` definidos na raiz. `None` é a produção, em que o registro de tamanhos escreve todos os do
+    /// tema na raiz (como o `modernUI.contribution.ts` faz ao montar a folha de estilo). `Some` é o DOM de um teste, em que
+    /// só existem as variáveis que o caso define com `root.style.setProperty`; as demais são indefinidas e cada `var()`
+    /// cai no fallback do CSS (ou invalida a declaração, que vale `0` nas margens, nos recuos e nos raios).
+    root_sizes: Option<BTreeMap<String, f64>>,
 }
 
 impl<'a> ModernUiStyle<'a> {
@@ -157,7 +162,16 @@ impl<'a> ModernUiStyle<'a> {
             activity_bar_action_gap: None,
             window_zoom_factor: 1.0,
             root_variables: BTreeMap::new(),
+            root_sizes: None,
         }
+    }
+
+    /// Um DOM em que só os tamanhos `--vscode-*` listados existem na raiz (`root.style.setProperty('--vscode-X', 'Npx')`).
+    /// Cada item é o id do tamanho (`cornerRadius.small` é `--vscode-cornerRadius-small`) e o valor em px; os demais ficam
+    /// indefinidos, sem os padrões do tema.
+    pub fn with_root_sizes(mut self, sizes: &[(&str, f64)]) -> Self {
+        self.root_sizes = Some(sizes.iter().map(|(id, value)| ((*id).to_owned(), *value)).collect());
+        self
     }
 
     /// Define uma propriedade personalizada de cor na raiz (`root.style.setProperty(name, color)`), por exemplo
@@ -364,7 +378,7 @@ impl<'a> ModernUiStyle<'a> {
             }
             _ => None,
         };
-        inset.and_then(|id| get_size_registry().resolve_default_size(id, self.theme)).map_or(0.0, |size| size.value)
+        inset.map_or(0.0, |id| self.size(id))
     }
 
     /// `background-color` do indicador (`.active-item-indicator`) de uma ação das abas de um painel composto
@@ -423,24 +437,46 @@ impl<'a> ModernUiStyle<'a> {
 
     /// `color` do `.tab-label` de uma aba do editor (`tabs.css`, linhas 1060 a 1111). A aba inativa usa
     /// `--modern-ui-editor-tab-inactive-foreground`: 50% do primeiro plano, ou `tab.inactiveForeground` nas abas conectadas
-    /// fora do alto contraste (linhas 37 e 61).
+    /// fora do alto contraste (linhas 37 e 61). Cada variável `--modern-ui-editor-tab-*-foreground` que o DOM escreveu na raiz
+    /// vence o padrão, e a do grupo sem foco (`unfocused-*`) é um alias da do grupo com foco (linhas 36, 38 e 40).
     pub fn editor_tab_foreground(&self, tab: EditorTabState) -> Option<Color> {
         if !self.has("modern-ui-tabs") {
             return None;
         }
         if tab.active {
-            return self.color("modernEditorTab.activeForeground");
+            return self.tab_foreground_variable(tab.group_active, "active", || self.color("modernEditorTab.activeForeground"));
         }
         if tab.selected {
             return self.color("tab.selectedForeground");
         }
         if tab.hovered {
-            return self.color("modernEditorTab.hoverForeground");
+            return self.tab_foreground_variable(tab.group_active, "hover", || self.color("modernEditorTab.hoverForeground"));
         }
-        if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
-            return self.color("tab.inactiveForeground");
+        self.tab_foreground_variable(tab.group_active, "inactive", || {
+            if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
+                self.color("tab.inactiveForeground")
+            } else {
+                self.color("foreground").map(|foreground| foreground.transparent(0.5))
+            }
+        })
+    }
+
+    /// `--modern-ui-editor-tab-<state>-foreground` (ou `unfocused-<state>-foreground`, que sem valor próprio é um alias da
+    /// primeira): o que o DOM escreveu na raiz e, sem isso, o que o participante de tema declara na folha (as customizações
+    /// legadas `tab.*Foreground`) e, por último, o padrão da folha.
+    fn tab_foreground_variable(&self, group_active: bool, state: &str, default: impl FnOnce() -> Option<Color>) -> Option<Color> {
+        let own = self.declared(&format!("--modern-ui-editor-tab-{state}-foreground"));
+        if group_active {
+            return own.or_else(default);
         }
-        self.color("foreground").map(|foreground| foreground.transparent(0.5))
+        self.declared(&format!("--modern-ui-editor-tab-unfocused-{state}-foreground")).or(own).or_else(default)
+    }
+
+    /// `color` do ícone (`::before`), do nome e da descrição de um rótulo de aba: o do `.tab-label`. O rótulo com a decoração
+    /// de arquivo (`.monaco-decoration-itemColor`, `decoration_color`) fica de fora das regras de `tabs.css` (linhas 1067 a
+    /// 1111) e o ícone, o nome e a descrição herdam a cor dela (linhas 1115 a 1119).
+    pub fn editor_tab_label_color(&self, tab: EditorTabState, decoration_color: Option<&Color>) -> Option<Color> {
+        decoration_color.cloned().or_else(|| self.editor_tab_foreground(tab))
     }
 
     /// `background-color` do `.tab-actions` de uma aba (`tabs.css`, linhas 580 a 650). O fundo só existe com o ponteiro
@@ -524,9 +560,29 @@ impl<'a> ModernUiStyle<'a> {
         self.has("modern-ui-notifications-dialogs")
     }
 
-    /// `var(--vscode-<size>)`, em px; `0` quando o tamanho não existe para o tema.
+    /// O valor de `--vscode-<size>` na raiz, em px; `None` é a variável indefinida (ver `root_sizes`).
+    fn size_variable(&self, id: &str) -> Option<f64> {
+        match &self.root_sizes {
+            Some(sizes) => sizes.get(id).copied(),
+            None => get_size_registry().resolve_default_size(id, self.theme).map(|size| size.value),
+        }
+    }
+
+    /// `var(--vscode-<size>)`, em px; `0` quando a variável é indefinida (a declaração é inválida e a margem, o recuo ou o
+    /// raio voltam ao valor inicial).
     fn size(&self, id: &str) -> f64 {
-        get_size_registry().resolve_default_size(id, self.theme).map_or(0.0, |size| size.value)
+        self.size_variable(id).unwrap_or(0.0)
+    }
+
+    /// `var(--vscode-<size>, <fallback>px)`.
+    fn size_or(&self, id: &str, fallback: f64) -> f64 {
+        self.size_variable(id).unwrap_or(fallback)
+    }
+
+    /// `--modern-ui-connected-tab-radius` (connectedEditorTabs.css, linha 114):
+    /// `var(--vscode-cornerRadius-medium, var(--vscode-cornerRadius-small))`.
+    fn connected_tab_radius(&self) -> f64 {
+        self.size_variable(CORNER_RADIUS_MEDIUM).or_else(|| self.size_variable(CORNER_RADIUS_SMALL)).unwrap_or(0.0)
     }
 
     /// Define as variáveis `--modern-ui-notifications-*-inset` (`root.style.setProperty`).
@@ -1599,7 +1655,7 @@ impl<'a> ModernUiStyle<'a> {
         if !self.has("floating-panels") || !editor.contains("editor") {
             return None;
         }
-        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") { 0.0 } else { self.size_or(CORNER_RADIUS_LARGE, 8.0) });
         let outer_bottom = editor.contains("floating-editor-outer-bottom");
         Some(self.with_exposed_bottom_corners(
             radii,
@@ -1617,7 +1673,7 @@ impl<'a> ModernUiStyle<'a> {
             return None;
         }
         let modal = overlay.contains("webview-overlay-modal");
-        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") && !modal { 0.0 } else { self.size(CORNER_RADIUS_LARGE) });
+        let radii = CornerRadii::uniform(if self.has("modern-ui-compact") && !modal { 0.0 } else { self.size_or(CORNER_RADIUS_LARGE, 8.0) });
         let outer_bottom = !modal && overlay.contains("webview-overlay-outer-bottom");
         Some(self.with_exposed_bottom_corners(
             radii,
