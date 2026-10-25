@@ -2100,6 +2100,7 @@ impl IExtensionService for AbstractExtensionService {
             this.registry.get_extension_description(&id).map(|description| IExtensionDescription {
                 extension_location: URI::parse(description.extension_location.as_str(), false),
                 display_name: description.manifest.display_name.clone(),
+                name: Some(description.manifest.name.clone()),
             })
         })
     }

@@ -1,10 +1,9 @@
 //! Porte parcial de `src/vs/workbench/contrib/preferences/common/preferences.ts`: as constantes de comando, de tag e de
-//! provedor de busca, o `compareTwoNullableNumbers`, as descrições dos indicadores e o `wordifyKey`. Ficam de fora o
-//! que depende de serviços ainda não portados: os contratos `IPreferencesSearchService`, `ISearchProvider`,
-//! `IRemoteSearchProvider` e `IAiSearchProvider` (a busca de configurações), as `RawContextKey` do editor de
-//! configurações e de atalhos, `IWorkbenchSettingsConfiguration`, `IEndpointDetails` e o
-//! `getExperimentalExtensionToggleData` (galeria de extensões e entitlement do chat). Cada um entra com o porte do
-//! serviço de que depende.
+//! provedor de busca, os contratos `IPreferencesSearchService`, `ISearchProvider`, `IRemoteSearchProvider` e
+//! `IAiSearchProvider` (a busca de configurações), o `getExperimentalExtensionToggleData`, o `compareTwoNullableNumbers`,
+//! as descrições dos indicadores e o `wordifyKey`. Ficam de fora o que depende de serviços ainda não portados: as
+//! `RawContextKey` do editor de configurações e de atalhos, `IWorkbenchSettingsConfiguration` e `IEndpointDetails`. Cada
+//! um entra com o porte do serviço de que depende.
 //!
 //! Divergências:
 //! - **`knownAcronyms`** (um `Set`) é a lista [`KNOWN_ACRONYMS`] e **`knownTermMappings`** (um `Map`, cuja ordem de
@@ -15,11 +14,140 @@
 //!   [`WorkbenchSettingsEditorSettings::as_str`].
 //! - **`PREVIEW_INDICATOR_DESCRIPTION`**, **`EXPERIMENTAL_INDICATOR_DESCRIPTION`** e **`ADVANCED_INDICATOR_DESCRIPTION`**
 //!   (constantes que chamam `localize` ao carregar o módulo) são funções, porque o idioma é lido na chamada.
+//! - **Provedores de busca.** Os quatro contratos são traits sobre `Rc<dyn ...>`; o `searchModel` recebe o modelo como
+//!   `Rc<dyn ISettingsEditorModel>` e devolve uma `Promise` de `Option<ISearchResult>` (o `ISearchResult | null`).
+//! - **`cachedExtensionToggleData`** (uma variável do módulo) é um `thread_local`, e o `getExperimentalExtensionToggleData`
+//!   é uma função `async` que devolve uma `Promise`. O `IGalleryExtension` é o [`GalleryExtension`] do `je-extensions`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use indexmap::IndexMap;
 use je_base::JsString;
+use je_base::async_::{async_fn, race_timeout};
+use je_base::cancellation::CancellationToken;
 use je_base::js_regexp::replace_all;
 use je_base::nls::localize;
+use je_base::product::IExtensionRecommendations;
+use je_base::promise::Promise;
+use je_extensions::management::{ExtensionInfo, ExtensionQueryOptions};
+use je_instantiation::service_id;
+use je_platform::product::IProductService;
 use zyarr::RegExp;
+
+use crate::services::extension_management::extension_gallery_service::{IExtensionGalleryService, IGalleryExtension};
+use crate::services::extension_management::service_contracts::IChatEntitlementService;
+use crate::services::preferences::preferences::{ISearchResult, ISettingsEditorModel};
+
+/// `ISearchProvider`.
+pub trait ISearchProvider {
+    /// `searchModel(preferencesModel, token)`.
+    fn search_model(&self, preferences_model: Rc<dyn ISettingsEditorModel>, token: CancellationToken) -> Promise<Option<ISearchResult>>;
+}
+
+/// `IRemoteSearchProvider`.
+pub trait IRemoteSearchProvider: ISearchProvider {
+    /// `setFilter(filter)`.
+    fn set_filter(&self, filter: &str);
+}
+
+/// `IAiSearchProvider`.
+pub trait IAiSearchProvider: IRemoteSearchProvider {
+    /// `getLLMRankedResults(token)`.
+    fn get_llm_ranked_results(&self, token: CancellationToken) -> Promise<Option<ISearchResult>>;
+}
+
+/// `IPreferencesSearchService`.
+pub trait IPreferencesSearchService {
+    /// `getLocalSearchProvider(filter)`.
+    fn get_local_search_provider(&self, filter: &str) -> Rc<dyn ISearchProvider>;
+
+    /// `getRemoteSearchProvider(filter, newExtensionsOnly?)`.
+    fn get_remote_search_provider(&self, filter: &str, new_extensions_only: bool) -> Option<Rc<dyn ISearchProvider>>;
+
+    /// `getAiSearchProvider(filter)`.
+    fn get_ai_search_provider(&self, filter: &str) -> Option<Rc<dyn IAiSearchProvider>>;
+}
+
+service_id!(pub I_PREFERENCES_SEARCH_SERVICE: dyn IPreferencesSearchService = "preferencesSearchService");
+
+/// `ExtensionToggleData`.
+#[derive(Clone)]
+pub struct ExtensionToggleData {
+    pub settings_editor_recommended_extensions: IndexMap<String, IExtensionRecommendations>,
+    pub recommended_extensions_gallery_info: IndexMap<String, IGalleryExtension>,
+}
+
+thread_local! {
+    /// `cachedExtensionToggleData`.
+    static CACHED_EXTENSION_TOGGLE_DATA: RefCell<Option<ExtensionToggleData>> = const { RefCell::new(None) };
+}
+
+/// `getExperimentalExtensionToggleData`.
+pub fn get_experimental_extension_toggle_data(
+    chat_entitlement_service: Rc<dyn IChatEntitlementService>,
+    extension_gallery_service: Rc<dyn IExtensionGalleryService>,
+    product_service: Rc<dyn IProductService>,
+) -> Promise<Option<ExtensionToggleData>> {
+    async_fn(async move {
+        if !ENABLE_EXTENSION_TOGGLE_SETTINGS {
+            return Ok(None);
+        }
+
+        if !extension_gallery_service.is_enabled() {
+            return Ok(None);
+        }
+
+        let sentiment = chat_entitlement_service.sentiment();
+        if sentiment.hidden || sentiment.disabled {
+            return Ok(None);
+        }
+
+        if let Some(cached) = CACHED_EXTENSION_TOGGLE_DATA.with(|cached| cached.borrow().clone()) {
+            return Ok(Some(cached));
+        }
+
+        let Some(extension_recommendations) = product_service.extension_recommendations() else {
+            return Ok(None);
+        };
+
+        let mut settings_editor_recommended_extensions: IndexMap<String, IExtensionRecommendations> = IndexMap::new();
+        for (extension_id, extension_info) in extension_recommendations {
+            if extension_info.on_settings_editor_open.is_some() {
+                settings_editor_recommended_extensions.insert(extension_id.clone(), extension_info.clone());
+            }
+        }
+
+        let mut recommended_extensions_gallery_info: IndexMap<String, IGalleryExtension> = IndexMap::new();
+        for key in settings_editor_recommended_extensions.keys() {
+            // Recommend prerelease if not on Stable.
+            let is_stable = product_service.quality() == Some("stable");
+            let extension_info = ExtensionInfo {
+                id: key.clone(),
+                uuid: None,
+                version: None,
+                pre_release: Some(!is_stable),
+                has_pre_release: None,
+                current_version: None,
+            };
+            let query = extension_gallery_service.get_extensions(vec![extension_info], ExtensionQueryOptions::default(), CancellationToken::None);
+            match race_timeout(&query, EXTENSION_FETCH_TIMEOUT_MS, None).await {
+                Ok(Some(mut extensions)) if extensions.len() == 1 => {
+                    recommended_extensions_gallery_info.insert(key.clone(), extensions.remove(0));
+                }
+                // same as network connection fail. we do not want a blank settings page: https://github.com/microsoft/vscode/issues/195722
+                // so instead of returning partial data we return undefined here
+                //
+                // Network connection fail. Return nothing rather than partial data.
+                _ => return Ok(None),
+            }
+        }
+
+        let data = ExtensionToggleData { settings_editor_recommended_extensions, recommended_extensions_gallery_info };
+        CACHED_EXTENSION_TOGGLE_DATA.with(|cached| *cached.borrow_mut() = Some(data.clone()));
+        Ok(Some(data))
+    })
+}
 
 pub const SETTINGS_EDITOR_COMMAND_CLEAR_SEARCH_RESULTS: &str = "settings.action.clearSearchResults";
 pub const SETTINGS_EDITOR_COMMAND_SHOW_AI_RESULTS: &str = "settings.action.showAIResults";
