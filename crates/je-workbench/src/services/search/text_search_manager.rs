@@ -570,7 +570,7 @@ impl NativeTextSearchManager {
     }
 
     /// `pfs.Promises.readdir(path)`.
-    fn disk_readdir(path: &str) -> Promise<Vec<String>> {
+    pub fn disk_readdir(path: &str) -> Promise<Vec<String>> {
         match pfs::readdir_names(path) {
             Ok(names) => Promise::resolved(names),
             Err(error) => Promise::rejected(Error::from(error)),

@@ -11,9 +11,9 @@
 //! - `session: unknown` de `FileSearchProviderOptions` é o `Rc<dyn Any>` do objeto da sessão. Sem `cacheKey` o original
 //!   passa `undefined`; aqui é um objeto vazio novo, que o provedor não tem como confundir com o de uma sessão.
 //! - `this.provider instanceof OldFileSearchProviderConverter ? sessionLifecycle?.tokenSource.token : sessionLifecycle?.obj`
-//!   é sempre o ramo do objeto: o conversor (`searchExtConversionTypes`) não existe no porte e todo provedor é um
-//!   `FileSearchProvider2`. O `tokenSource` do `SessionLifecycle`, que só o conversor usa, continua sendo cancelado por
-//!   `cancel`.
+//!   é [`FileSearchProvider2::is_old_file_search_provider_converter`]: o conversor entrega ao provedor antigo o token da
+//!   sessão (um [`CancellationToken`] dentro do `Rc<dyn Any>` de `session`, que o conversor devolve a `FileSearchOptions`),
+//!   e o `tokenSource` é cancelado por `cancel`.
 //! - o `location.folder` que o original lê com `!` (`findQueryFragmentAwareSubstr(result)!`) vira o erro de `TypeError`
 //!   que o JavaScript lançaria se a pasta não fosse achada.
 //! - `strings.equals(a, b, ignoreCase)` sobre texto opcional é [`strings_equals`], sobre unidades UTF-16.
@@ -213,7 +213,7 @@ impl FileSearchEngine {
         let cancellation = Rc::new(CancellationTokenSource::new(None));
         let folder_options = fqs.iter().map(|fq| self.get_search_options_for_folder(fq)).collect();
         let session: Rc<dyn Any> = match &self.session_lifecycle {
-            Some(session_lifecycle) => match session_lifecycle.obj() {
+            Some(session_lifecycle) => match session_lifecycle.session(self.provider.is_old_file_search_provider_converter()) {
                 Ok(session) => session,
                 Err(error) => {
                     cancellation.dispose();
@@ -442,6 +442,11 @@ impl SessionLifecycle {
             Some(obj) => Ok(obj.clone()),
             None => Err(Error::new("Session object has been dereferenced.")),
         }
+    }
+
+    /// O `session` das opções do provedor: o token da sessão para o provedor antigo, o objeto para o novo.
+    fn session(&self, old_provider: bool) -> Result<Rc<dyn Any>, Error> {
+        if old_provider { Ok(Rc::new(self.token_source.token())) } else { self.obj() }
     }
 
     fn cancel(&self) {
