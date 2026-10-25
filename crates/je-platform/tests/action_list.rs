@@ -4061,7 +4061,7 @@ fn width_measurement_keeps_the_hover_anchored_to_visible_item_8() {
 }
 
 /// O corpo de `resizable hover keeps its ${side} anchor at ${zoom} zoom${nearBottom ? ' near the viewport bottom' : ''}`.
-fn resizable_hover_keeps_its_anchor(side: &str, zoom: f64, near_bottom: bool) {
+fn resizable_hover_keeps_its_anchor(side: &'static str, zoom: f64, near_bottom: bool) {
     run_with_faked_timers(async move {
         let guard = ensure_no_disposables_are_leaked_in_test_suite();
         let content = sized_content("", 120.0, 80.0);
