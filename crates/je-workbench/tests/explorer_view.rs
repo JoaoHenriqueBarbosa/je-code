@@ -241,6 +241,122 @@ fn preserves_workspace_name_case_only_for_user_named_workspaces() {
     ));
 }
 
+/// O `controllers` (`Map<ExplorerItem, ICompressedNavigationController[]>`) da suíte `context menu`.
+struct Controllers(Vec<(Rc<ExplorerItem>, Rc<CompressedNavigationController>)>);
+
+impl CompressedNavigationControllerProvider for Controllers {
+    fn get_compressed_navigation_controller(&self, stat: &Rc<ExplorerItem>) -> Option<Vec<Rc<dyn ICompressedNavigationController>>> {
+        self.0.iter().find(|(item, _)| Rc::ptr_eq(item, stat)).map(|(_, controller)| {
+            let controller: Rc<dyn ICompressedNavigationController> = controller.clone();
+            vec![controller]
+        })
+    }
+}
+
+fn resources(items: &[&Rc<ExplorerItem>]) -> Vec<URI> {
+    items.iter().map(|item| item.resource()).collect()
+}
+
+const MENU_TITLE: &str = "Files - ExplorerView context menu";
+
+/// Os itens do `setup` da suíte `context menu`: a raiz, `first`, `second` e `target`.
+fn menu_items(services: &Services) -> (Rc<ExplorerItem>, Rc<ExplorerItem>, Rc<ExplorerItem>, Rc<ExplorerItem>) {
+    let d = date_now() as f64;
+    (
+        services.create_stat(MENU_TITLE, "/workspace", "workspace", true, d, false, false),
+        services.create_stat(MENU_TITLE, "/workspace/first.txt", "first.txt", false, d, false, false),
+        services.create_stat(MENU_TITLE, "/workspace/second.txt", "second.txt", false, d, false, false),
+        services.create_stat(MENU_TITLE, "/workspace/target.txt", "target.txt", false, d, false, false),
+    )
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_selects_an_unselected_item_with_previously_selected_items() {
+    let services = Services::new();
+    let (_root, first, second, target) = menu_items(&services);
+    let no_controllers = NoNavigationController;
+    for selection_size in [0usize, 1, 2] {
+        let previous: Vec<Rc<ExplorerItem>> = [first.clone(), second.clone()].into_iter().take(selection_size).collect();
+        let selection = explorer_view::selection_for_context_menu(Some(&target), &previous).expect("o alvo substitui a seleção");
+        assert_same_items(&selection, &[&target]);
+        assert_same_items(&explorer_view::get_context(&[target.clone()], &selection, true, &no_controllers), &[&target]);
+        assert_eq!(explorer_view::context_menu_arg(Some(&target), &no_controllers, &[]), explorer_view::ContextMenuArg::Resource(target.resource()));
+        assert_eq!(explorer_view::context_menu_actions_context(Some(&target), &selection), resources(&[&target]));
+    }
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_preserves_selected_items_when_the_target_belongs_to_the_selection() {
+    let services = Services::new();
+    let (_root, first, second, _target) = menu_items(&services);
+    let no_controllers = NoNavigationController;
+    for selection_size in [1usize, 2] {
+        let selection: Vec<Rc<ExplorerItem>> = [first.clone(), second.clone()].into_iter().take(selection_size).collect();
+        assert!(explorer_view::selection_for_context_menu(Some(&first), &selection).is_none());
+        let expected: Vec<&Rc<ExplorerItem>> = selection.iter().collect();
+        assert_same_items(&explorer_view::get_context(&[first.clone()], &selection, true, &no_controllers), &expected);
+        assert_eq!(explorer_view::context_menu_arg(Some(&first), &no_controllers, &[]), explorer_view::ContextMenuArg::Resource(first.resource()));
+        assert_eq!(explorer_view::context_menu_actions_context(Some(&first), &selection), resources(&expected));
+    }
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_keeps_the_compressed_folder_navigation_target_when_replacing_the_selection() {
+    let services = Services::new();
+    let (_root, first, second, _target) = menu_items(&services);
+    let d = date_now() as f64;
+    let parent = services.create_stat(MENU_TITLE, "/workspace/compact", "compact", true, d, false, false);
+    let child = services.create_stat(MENU_TITLE, "/workspace/compact/child", "child", true, d, false, false);
+    let controller = CompressedNavigationController::new("compact", vec![parent.clone(), child.clone()], 1, false);
+    controller.set_index(0);
+    let controllers = Controllers(vec![(parent.clone(), controller.clone()), (child.clone(), controller.clone())]);
+    let previous = vec![first.clone(), second.clone()];
+
+    let selection = explorer_view::selection_for_context_menu(Some(&child), &previous).expect("o filho substitui a seleção");
+    assert_same_items(&selection, &[&child]);
+    assert_same_items(&explorer_view::get_context(&[child.clone()], &selection, true, &controllers), &[&parent]);
+    assert_eq!(explorer_view::context_menu_arg(Some(&child), &controllers, &[]), explorer_view::ContextMenuArg::Resource(parent.resource()));
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_selects_the_keyboard_target_without_opening_it() {
+    let services = Services::new();
+    let (_root, first, second, target) = menu_items(&services);
+    let selection = explorer_view::selection_for_context_menu(Some(&target), &[first, second]).expect("o alvo substitui a seleção");
+    assert_same_items(&selection, &[&target]);
+    assert_eq!(explorer_view::compressed_anchor(true, false), explorer_view::CompressedAnchor::CurrentLabel);
+    assert_eq!(explorer_view::compressed_anchor(false, true), explorer_view::CompressedAnchor::CurrentLabel);
+    assert_eq!(explorer_view::compressed_anchor(false, false), explorer_view::CompressedAnchor::LastSegment);
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_preserves_the_background_context_menu() {
+    let services = Services::new();
+    let (root, first, second, _target) = menu_items(&services);
+    let no_controllers = NoNavigationController;
+    let selection = vec![first, second];
+
+    assert!(explorer_view::selection_for_context_menu(None, &selection).is_none());
+    assert_eq!(explorer_view::context_menu_arg(None, &no_controllers, &[root.clone()]), explorer_view::ContextMenuArg::Resource(root.resource()));
+    assert_eq!(explorer_view::context_menu_arg(None, &no_controllers, &[root.clone(), root.clone()]), explorer_view::ContextMenuArg::Empty);
+    assert!(explorer_view::context_menu_actions_context(None, &selection).is_empty());
+}
+
+#[test]
+#[ignore = "porte parcial: confere só a decisão lógica do menu de contexto; o caso fiel monta o ExplorerView com a árvore real, que ainda não existe"]
+fn context_menu_keeps_bulk_keyboard_commands_on_the_selection_after_deselecting_the_focused_item() {
+    let services = Services::new();
+    let (_root, first, second, target) = menu_items(&services);
+    let no_controllers = NoNavigationController;
+    // tree.setSelection([first, second, target]); tree.setFocus([target]); tree.setSelection([first, second]);
+    assert_same_items(&explorer_view::get_context(&[target.clone()], &[first.clone(), second.clone()], true, &no_controllers), &[&first, &second]);
+}
+
 #[test]
 fn compressed_navigation_controller() {
     const TITLE: &str = "Files - ExplorerView compressed navigation controller";
