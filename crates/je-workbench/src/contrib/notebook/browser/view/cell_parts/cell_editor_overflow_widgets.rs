@@ -12,7 +12,8 @@
 //! - `createScoped(this.domNode)` recebe o [`UiNodeTarget`], o nó como alvo do serviço de chaves de contexto: os atributos do alvo são
 //!   os do nó na árvore e o `parentElement` é o pai do nó. O adaptador é público porque as demais partes de célula que criam serviços
 //!   escopados por nó (barras de ferramentas, barra de status) o reutilizam.
-//! - Os 5 casos de `cellEditorOverflowWidgets.test.ts` entram na fatia do `cellRenderer.ts`, que fornece o editor da célula.
+//! - Os 5 casos de `cellEditorOverflowWidgets.test.ts` entram depois da fatia do `cellRenderer.ts` (`view/renderers/cell_renderer.rs`),
+//!   que cria o editor da célula e este `CellEditorOverflowWidgets` como o original.
 
 use std::cell::RefCell;
 use std::rc::Rc;

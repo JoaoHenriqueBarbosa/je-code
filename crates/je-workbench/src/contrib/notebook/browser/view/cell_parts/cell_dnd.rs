@@ -1,17 +1,86 @@
-//! Porte da lógica de reordenação de `src/vs/workbench/contrib/notebook/browser/view/cellParts/cellDnd.ts`: a função
-//! `performCellDropEdits`, que move as células arrastadas (a seleção inteira, se a célula arrastada faz parte dela) para
+//! Porte parcial de `src/vs/workbench/contrib/notebook/browser/view/cellParts/cellDnd.ts`: a parte `CellDragAndDropPart` (que liga a
+//! classe `cell-dragging` ao container da célula), os contratos do `CellDragAndDropController` que o `cellRenderer.ts` chama, e a
+//! função `performCellDropEdits`, que move as células arrastadas (a seleção inteira, se a célula arrastada faz parte dela) para
 //! perto da célula sobre a qual se soltou.
 //!
 //! Divergências:
-//! - `CellDragAndDropPart` e `CellDragAndDropController` (classes CSS de arraste, indicador de inserção, `DragEvent`,
-//!   `Delayer` de rolagem) são pintura e eventos do DOM e não entram: a UI é nativa.
+//! - `CellDragAndDropController` (indicador de inserção, `DragEvent`, `DataTransfer`, `Delayer` de rolagem) vive de eventos de arrastar
+//!   e soltar do DOM, que a árvore do `je-ui` ainda não tem (ver `je-ui/src/events.rs`). O renderizador de células fala com ele pelo
+//!   contrato [`ICellDragAndDropController`], só com `registerDragHandle`, e o `BaseCellRenderTemplate` que esse método lê é o contrato
+//!   [`ICellDragHandleTemplate`] (`container`, `templateDisposables` e `currentRenderedCell`). O `dragImageProvider` é um
+//!   [`DragImageProvider`], que devolve o nó solto da imagem de arraste.
+//! - `CellDragAndDropPart` troca a classe pelo `toggle_class` do nó, e `element.dragging` é o `dragging()` da base da célula.
 //! - `dropDirection: 'above' | 'below'` é [`CellDropDirection`].
 //! - `editor.getNextVisibleCellIndex(index) ?? index` é o `getNextVisibleCellIndex` do view model (que sempre devolve um
 //!   índice, e é o que o widget repassa).
 //! - `typeof index !== 'number'` (célula fora do modelo) é o índice negativo de `getCellIndex`.
 
+use std::rc::Rc;
+
+use je_base::lifecycle::DisposableStore;
+use je_ui::{NodeId, Ui};
+
 use crate::contrib::notebook::browser::controller::IActiveNotebookEditor;
+use crate::contrib::notebook::browser::notebook_view_events::CellViewModelStateChangeEvent;
+use crate::contrib::notebook::browser::view::cell_part::{CellPart, CellPartState};
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
+
+/// `DRAGGING_CLASS`.
+pub const DRAGGING_CLASS: &str = "cell-dragging";
+
+/// `DragImageProvider`: `() => HTMLElement`, o nó solto da imagem de arraste.
+pub type DragImageProvider = Box<dyn Fn() -> NodeId>;
+
+/// O que `registerDragHandle` lê do `BaseCellRenderTemplate`.
+pub trait ICellDragHandleTemplate {
+    /// `container`.
+    fn container(&self) -> NodeId;
+    /// `templateDisposables`.
+    fn template_disposables(&self) -> Rc<DisposableStore>;
+    /// `currentRenderedCell`.
+    fn current_rendered_cell(&self) -> Option<CellViewModel>;
+}
+
+/// O que o `cellRenderer.ts` chama do `CellDragAndDropController`.
+pub trait ICellDragAndDropController {
+    /// `registerDragHandle(templateData, cellRoot, dragHandles, dragImageProvider)`.
+    fn register_drag_handle(&self, template_data: Rc<dyn ICellDragHandleTemplate>, cell_root: NodeId, drag_handles: &[NodeId], drag_image_provider: DragImageProvider);
+}
+
+/// `CellDragAndDropPart`.
+pub struct CellDragAndDropPart {
+    state: CellPartState,
+    ui: Ui,
+    container: NodeId,
+}
+
+impl CellDragAndDropPart {
+    pub fn new(ui: &Ui, container: NodeId) -> Rc<Self> {
+        Rc::new(Self { state: CellPartState::new(), ui: ui.clone(), container })
+    }
+
+    fn update(&self, element: &CellViewModel) {
+        self.ui.tree_mut().toggle_class(self.container, DRAGGING_CLASS, element.base().dragging());
+    }
+}
+
+impl CellPart for CellDragAndDropPart {
+    fn state(&self) -> &CellPartState {
+        &self.state
+    }
+
+    fn did_render_cell(&self, element: &CellViewModel) {
+        self.update(element);
+    }
+
+    fn update_state(&self, element: &CellViewModel, e: &CellViewModelStateChangeEvent) {
+        if e.drag_state_changed {
+            self.update(element);
+        }
+    }
+}
+
+impl_cell_content_part!(CellDragAndDropPart, "CellDragAndDropPart");
 use crate::contrib::notebook::common::notebook_common::{ICellEditOperation, ICellMoveEdit, ISelectionIndexState, ISelectionState};
 use crate::contrib::notebook::common::notebook_range::ICellRange;
 
