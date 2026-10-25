@@ -2,16 +2,16 @@
 //! portou, na ordem e com os argumentos que o widget passa (`createInstance(readHotReloadableExport(Feature, reader), ...)`).
 //!
 //! Divergências:
-//! - **`DiffEditorViewZones`** (`components/diffEditorViewZones/diffEditorViewZones.ts`, com o `renderLines.ts`, o
-//!   `inlineDiffDeletedCodeMargin.ts` e o `copySelection.ts`) ainda não foi portado. Enquanto não é, a criação dele entra pelo
-//!   [`CreateDiffEditorViewZones`] do construtor, com os mesmos argumentos do contrato; quando o porte existir, o construtor passa a
-//!   chamá-lo direto e esse parâmetro some.
+//! - **`DiffEditorViewZones`** (`components/diffEditorViewZones/diffEditorViewZones.ts`) é criado direto pelo serviço de instanciação
+//!   do contexto (`createInstance(DiffEditorViewZones, ...)`), como o `diffEditorWidget.ts` faz; a janela é a principal (o contexto das
+//!   features não tem um nó com documento).
 //! - **A barra de ações da calha** (`MenuWorkbenchToolBar`) mora no `je-workbench`: o construtor recebe a
 //!   [`DiffGutterToolbarFactory`] que a cria (ver `features::gutter_feature`).
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+use je_base::browser::dom::get_window;
 use je_base::lifecycle::DisposableRef;
 use je_base::observable::IObservable;
 use je_widgets::sash::BoundarySashes;
@@ -21,6 +21,7 @@ use crate::diff::range_mapping::DetailedLineRangeMapping;
 use crate::diff_editor::ScrollAnchorRunner;
 use crate::diff_editor::components::accessible_diff_viewer::{AccessibleDiffViewer, AccessibleDiffViewerModelFromEditors};
 use crate::diff_editor::components::diff_editor_sash::SashLayout;
+use crate::diff_editor::components::diff_editor_view_zones::diff_editor_view_zones::{DiffEditorViewZones, DiffEditorViewZonesArgs};
 use crate::diff_editor::feature_contracts::{
     DiffEditorFeatureContext, DiffEditorFeatures, IAccessibleDiffViewer, IDiffEditorGutter, IDiffEditorViewZones, IHideUnchangedRegionsFeature,
     IMovedBlocksLinesFeature, IOverviewRulerFeature, IsUpdatingViewZones, SetAccessibleDiffViewerVisible,
@@ -33,20 +34,15 @@ use crate::diff_editor::features::revert_buttons_feature::RevertButtonsFeature;
 use crate::diff_editor_options::DiffEditorVariant;
 use crate::diff_editor_utils::ViewZoneIdSet;
 
-/// A criação do `DiffEditorViewZones`: `(context, isUpdatingViewZones, origViewZoneIdsToIgnore, modViewZoneIdsToIgnore)`.
-pub type CreateDiffEditorViewZones =
-    Rc<dyn Fn(&DiffEditorFeatureContext, IsUpdatingViewZones, ViewZoneIdSet, ViewZoneIdSet) -> Rc<dyn IDiffEditorViewZones>>;
-
 /// As sete features do `DiffEditorWidget`.
 pub struct DiffEditorFeaturesImpl {
     create_gutter_toolbar: DiffGutterToolbarFactory,
-    create_view_zones: CreateDiffEditorViewZones,
     hide_unchanged_regions: RefCell<Weak<HideUnchangedRegionsFeature>>,
 }
 
 impl DiffEditorFeaturesImpl {
-    pub fn new(create_gutter_toolbar: DiffGutterToolbarFactory, create_view_zones: CreateDiffEditorViewZones) -> Rc<Self> {
-        Rc::new(Self { create_gutter_toolbar, create_view_zones, hide_unchanged_regions: RefCell::new(Weak::new()) })
+    pub fn new(create_gutter_toolbar: DiffGutterToolbarFactory) -> Rc<Self> {
+        Rc::new(Self { create_gutter_toolbar, hide_unchanged_regions: RefCell::new(Weak::new()) })
     }
 
     /// A feature de regiões sem mudanças que o widget criou por último, enquanto ela está viva (o widget é quem a segura).
@@ -85,7 +81,16 @@ impl DiffEditorFeatures for DiffEditorFeaturesImpl {
         orig_view_zone_ids_to_ignore: ViewZoneIdSet,
         mod_view_zone_ids_to_ignore: ViewZoneIdSet,
     ) -> Rc<dyn IDiffEditorViewZones> {
-        (self.create_view_zones)(context, is_updating_view_zones, orig_view_zone_ids_to_ignore, mod_view_zone_ids_to_ignore)
+        context.instantiation_service.create_instance::<DiffEditorViewZones>(DiffEditorViewZonesArgs {
+            target_window: get_window(None),
+            editors: context.editors.clone(),
+            diff_model: context.diff_model.clone(),
+            options: context.options.clone(),
+            diff_editor_widget: context.diff_editor.clone(),
+            can_ignore_view_zone_update_event: is_updating_view_zones,
+            orig_view_zones_to_ignore: orig_view_zone_ids_to_ignore,
+            mod_view_zones_to_ignore: mod_view_zone_ids_to_ignore,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
