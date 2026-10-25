@@ -17,6 +17,11 @@
 //! - **Classes da raiz** (`modern-ui-connected-editor-tabs`, `dir`, `style.zoom`) são [`TabsParentTraits`], a direção e o zoom
 //!   do [`Layout`].
 //! - **`ModifierKeyEmitter` e `hostService.setFocus`** chegam como `set_alt_pressed` e `handle_window_focus_change`.
+//! - **Largura do rótulo e coluna da ação.** `Layout::action_column_width` é o `--modern-ui-tab-action-fit-padding` (28px, e no
+//!   estilo conectado `calc((tab-height + size40 * 2 + strokeThickness - size200) / 2 + size240)`, com `--editor-group-tab-height`
+//!   de 24px ou 20px no compacto) e `Layout::label_width` é a largura do `.tab-label` com ou sem a coluna visível. O selo do
+//!   `DecorationsService` é `Layout::badged` (o provedor) com `handle_decorations_change` (o `onDidChangeDecorations`), e o texto
+//!   da descrição só entra na largura nos casos que a medem (`show_descriptions`).
 //!
 //! Casos `modern editor headers retain an opaque backing ...` e `editor group owns the header backing ...`: o primeiro confere
 //! as declarações de `tabs.css` e `connectedEditorTabs.css` (`modern_header_backing`) e o segundo o `updateStyles` do
@@ -74,7 +79,7 @@ use je_workbench::common::editor::editor_input::{EditorInput, EditorInputBase};
 use je_workbench::common::editor::{EditorInputOrUntyped, EditorInputRef, EditorsOrder, GroupIdentifier, Verbosity};
 use je_workbench::contrib::modern_ui::tabs_header::{ModernHeaderBacking, modern_header_backing};
 use je_workbench::services::editor::editor_groups_service::{
-    EditorActionsLocation, EditorPartOptions, IEditorGroup, IEditorPart, PinnedTabSizing, TabHeight, TabSizing,
+    EditorActionsLocation, EditorLabelFormat, EditorPartDecorationOptions, EditorPartOptions, IEditorGroup, IEditorPart, PinnedTabSizing, TabActionLocation, TabHeight, TabSizing,
 };
 use je_workbench::services::files_configuration::files_configuration_service::{I_FILES_CONFIGURATION_SERVICE, IFilesConfigurationService};
 use je_workbench::test::browser::workbench_test_services::{TestEditorPart, TestFileEditorInput, create_editor_part};
@@ -226,6 +231,11 @@ const TAB_GUTTER: f64 = 4.0;
 const SHOULDER_MARGIN: f64 = SHOULDER_RADIUS + STROKE;
 /// O espaçamento vertical do `tabs-and-actions-container` no Modern UI.
 const ROW_PADDING: f64 = 3.0;
+/// A largura do selo de decoração (`::after` com a letra e a margem de 5px dos dois lados).
+const BADGE_WIDTH: f64 = 17.0;
+/// `--vscode-spacing-size200` e `--vscode-spacing-size240` de `connectedGroup()`.
+const SPACING_SIZE200: f64 = 20.0;
+const SPACING_SIZE240: f64 = 24.0;
 
 /// As posições de cada aba, na ordem lógica do texto.
 struct Geometry {
@@ -252,6 +262,12 @@ struct Layout {
     zoom: Cell<f64>,
     /// O `clipPath` de cada aba no instante de cada leitura de `measure_connected_clipping`.
     clip_reads: RefCell<Vec<Vec<Option<TabClipPath>>>>,
+    /// Os índices de cada leitura em lote de `measure_fit_tabs` (`getFitTabWidths`).
+    fit_reads: RefCell<Vec<Vec<usize>>>,
+    /// O recurso que o provedor de decorações marca com um selo (`provideDecorations`), se o caso registra um.
+    badged: RefCell<Option<URI>>,
+    /// O rótulo inclui o texto da descrição (`label-description`), nos casos que medem a descrição.
+    show_descriptions: Cell<bool>,
 }
 
 fn name_chars(tab: &Tab) -> f64 {
@@ -270,14 +286,55 @@ impl Layout {
             rtl: Cell::new(false),
             zoom: Cell::new(1.0),
             clip_reads: RefCell::new(Vec::new()),
+            fit_reads: RefCell::new(Vec::new()),
+            badged: RefCell::new(None),
+            show_descriptions: Cell::new(false),
         })
+    }
+
+    /// `--editor-group-tab-height` do Modern UI (`tabs.css`): 24px, ou 20px no modo compacto.
+    fn css_tab_height(&self) -> f64 {
+        if self.options.borrow().tab_height == TabHeight::Compact { 20.0 } else { 24.0 }
+    }
+
+    /// A coluna da ação: 28px (`--vscode-spacing-size280`, o `--modern-ui-tab-action-fit-padding` inicial) e, no estilo
+    /// conectado, `calc((tab-height + size40 * 2 + strokeThickness - size200) / 2 + size240)` (`connectedEditorTabs.css`).
+    fn action_column_width(&self) -> f64 {
+        let parent = self.parent.get();
+        if parent.in_modern_ui_tabs && parent.in_connected_editor_tabs {
+            (self.css_tab_height() + TAB_GUTTER * 2.0 + STROKE - SPACING_SIZE200) / 2.0 + SPACING_SIZE240
+        } else {
+            ACTION_COLUMN
+        }
+    }
+
+    /// A aba aloca a coluna da ação na largura: sem o Modern UI a coluna é sempre alocada, com ele só com a reserva de espaço
+    /// ou com uma ação persistente (suja ou fixada), e `rest` é a medida da aba sem a coluna (`tab-action-sizing-rest`).
+    fn has_action_column(&self, tab: &Tab, rest: bool) -> bool {
+        let persistent = tab.state.dirty || tab.state.sticky;
+        let reserved = !self.parent.get().in_modern_ui_tabs || self.options.borrow().tab_action_reserve_space || persistent;
+        reserved && !rest
     }
 
     /// A largura de uma aba sem a restrição da linha (`max-width` solto).
     fn natural_width(&self, tab: &Tab, rest: bool) -> f64 {
-        let persistent = tab.state.dirty || tab.state.sticky;
-        let reserved = self.options.borrow().tab_action_reserve_space || persistent;
-        TAB_PADDING + name_chars(tab) * CHAR_WIDTH + if reserved && !rest { ACTION_COLUMN } else { 0.0 }
+        let column = if self.has_action_column(tab, rest) { self.action_column_width() } else { 0.0 };
+        let badge = if self.has_badge(tab) { BADGE_WIDTH } else { 0.0 };
+        let description = if self.show_descriptions.get() { tab.state.label.description.chars().count() as f64 * CHAR_WIDTH } else { 0.0 };
+        TAB_PADDING + name_chars(tab) * CHAR_WIDTH + column + badge + description
+    }
+
+    /// O rótulo da aba mostra o selo: as decorações com selo estão ligadas e o provedor decora o recurso da aba.
+    fn has_badge(&self, tab: &Tab) -> bool {
+        tab.state.label.file_decoration_badges && self.badged.borrow().as_ref().is_some_and(|uri| tab.label.editor.resource().as_ref() == Some(uri))
+    }
+
+    /// A largura do `.tab-label` de uma aba: a caixa menos o recuo de cada lado e, com a coluna da ação visível (reserva,
+    /// ação persistente ou ação transitória sob `:hover`, `:focus-within` ou aba ativa), a coluna da ação no lugar do recuo
+    /// daquele lado.
+    fn label_width(&self, box_width: f64, action_column: bool) -> f64 {
+        let side = TAB_PADDING / 2.0;
+        box_width - side - if action_column { self.action_column_width() } else { side }
     }
 
     /// `--modern-ui-tab-terminal-gutter`: o vão depois da última aba quebrada (só no Modern UI).
@@ -422,19 +479,24 @@ impl Layout {
 
 impl TabsMeasurer for Layout {
     fn measure_fit_tabs(&self, tabs: &[Tab], indexes: &[usize]) -> Vec<FitTabMetrics> {
+        self.fit_reads.borrow_mut().push(indexes.to_vec());
         indexes
             .iter()
             .map(|&index| {
                 let tab = &tabs[index];
                 let name = name_chars(tab) * CHAR_WIDTH;
+                // O recuo do lado da ação inclui a coluna quando a aba a aloca (o `padding` computado dela).
+                let side = TAB_PADDING / 2.0;
+                let column = if self.has_action_column(tab, tab.state.tab_action_sizing_rest) { self.action_column_width() } else { 0.0 };
+                let (padding_left, padding_right) = if tab.state.tab_actions_left { (side + column, side) } else { (side, side + column) };
                 FitTabMetrics {
                     width: self.natural_width(tab, tab.state.tab_action_sizing_rest),
                     font_size: 13.0,
-                    padding_left: TAB_PADDING / 2.0,
-                    padding_right: TAB_PADDING / 2.0,
+                    padding_left,
+                    padding_right,
                     border_left_width: 0.0,
                     border_right_width: 0.0,
-                    action_fit_padding: Some(ACTION_COLUMN),
+                    action_fit_padding: Some(self.action_column_width()),
                     name_width: Some(name),
                     label_widths: Some((name, name)),
                 }
@@ -652,15 +714,22 @@ impl Fixture {
 
     /// `openNamedEditors(names)`.
     fn open_named_editors(&mut self, names: &[String]) -> Vec<EditorInputRef> {
+        self.open_named_editors_described(names, Some(("src", "/workspace/project/src")))
+    }
+
+    /// O começo de `openNamedEditors`: `model.closeEditor(editor); control.closeEditor(editor)` em cada entrada.
+    fn close_all_editors(&mut self) {
         for editor in self.model.get_editors(EditorsOrder::Sequential, None) {
             self.close_editor(&editor);
         }
+    }
+
+    /// `openNamedEditors(names)` com as descrições curta e longa que o caso escolhe (`getDescription = () => undefined`).
+    fn open_named_editors_described(&mut self, names: &[String], descriptions: Option<(&str, &str)>) -> Vec<EditorInputRef> {
+        self.close_all_editors();
         let mut editors = Vec::new();
         for (index, name) in names.iter().enumerate() {
-            let concrete = self
-                .suite
-                .disposables
-                .add_rc(NamedInput::new(name, &format!("/workspace/project/src/{name}"), Some(("src", "/workspace/project/src"))));
+            let concrete = self.suite.disposables.add_rc(NamedInput::new(name, &format!("/workspace/project/src/{name}"), descriptions));
             let editor: EditorInputRef = concrete;
             open!(self.model, editor, index: index as i64, pinned: true, active: index == names.len() - 1);
             editors.push(editor);
@@ -668,6 +737,28 @@ impl Fixture {
         self.open_editors();
 
         editors
+    }
+
+    /// `openNamedEditors(names)` com `TestFileEditorInput` (o nome é o do arquivo), para os casos que marcam uma entrada como
+    /// modificada.
+    fn open_file_editors(&mut self, names: &[String]) -> Vec<Rc<TestFileEditorInput>> {
+        self.close_all_editors();
+        let mut editors = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let concrete = self.suite.disposables.add_rc(TestFileEditorInput::new(uri_file(&format!("/workspace/project/src/{name}")), "testEditorInput"));
+            let editor: EditorInputRef = concrete.clone();
+            open!(self.model, editor, index: index as i64, pinned: true, active: index == names.len() - 1);
+            editors.push(concrete);
+        }
+        self.open_editors();
+
+        editors
+    }
+
+    /// `model.moveEditor(editor, to); control.moveEditor(editor, from, to)`.
+    fn move_editor(&mut self, editor: &EditorInputRef, from: usize, to: usize) {
+        self.model.move_editor(editor, to as i64);
+        self.state.move_editor(from, to);
     }
 
     /// `partOptions = { ...partOptions, ... }; control.updateOptions(oldOptions, partOptions)`.
@@ -681,6 +772,8 @@ impl Fixture {
 
     /// O quadro de animação: executa o layout agendado com as dimensões guardadas.
     fn frame(&mut self) {
+        // O `RunOnceScheduler` de `updateEditorLabel` dispara antes do layout agendado.
+        self.state.run_scheduled_label_update();
         if let Some(options) = self.state.layout_scheduler.take() {
             let dimensions = EditorTitleControlDimensions { container: self.state.dimensions.container, available: self.state.dimensions.available };
             self.state.do_layout(dimensions, Some(options), &*self.layout);
@@ -754,6 +847,35 @@ impl Fixture {
                 _ => "unknown",
             })
             .collect()
+    }
+
+    /// `action.focus()` sobre o botão da aba: o `FOCUS` em captura da aba congela a largura `fit`.
+    fn focus_action(&mut self, tab_index: usize) {
+        self.state.handle_tab_focus(tab_index, &*self.layout);
+    }
+
+    /// `control.updateEditorLabel(editor)`: o pedido que o quadro seguinte executa.
+    fn update_editor_label(&mut self) {
+        self.state.update_editor_label();
+    }
+
+    /// O evento de decorações dos rótulos (`onDidChangeDecorations`) e o quadro seguinte.
+    fn decorations_changed(&mut self) {
+        let computed_height = self.computed_height();
+        self.state.handle_decorations_change(computed_height);
+        self.frame();
+    }
+
+    /// A coluna da ação está visível na aba: a reserva de espaço, uma ação persistente (suja ou fixada) ou a ação transitória
+    /// da aba ativa ou sob `:hover` e `:focus-within`.
+    fn action_column_visible(&self, tab_index: usize, transient: bool) -> bool {
+        let tab = &self.state.tabs[tab_index];
+        self.layout.has_action_column(tab, false) || transient || tab.state.active
+    }
+
+    /// `getBoundingClientRect().width` do `.tab-label` da aba.
+    fn label_width(&self, tab_index: usize, transient: bool) -> f64 {
+        self.layout.label_width(self.geometry().widths[tab_index], self.action_column_visible(tab_index, transient))
     }
 
     /// `hoverTab(tabIndex)`.
@@ -1825,6 +1947,861 @@ fn hc_modified_pills_retain_hover_and_selection_side_strokes_independently_of_th
         })
         .collect();
     assert_eq!(results, expected);
+}
+
+#[test]
+fn short_fit_tab_names_remain_complete_beside_transient_close_actions() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // `root.classList.add('agent-sessions-workbench', 'dock-detail-panel')` e o `::before` vazio do ícone são pintura.
+    let editors = fx.open_named_editors_described(&names(&["F.ts", "Files.ts", "Browser", "Search"]), None);
+    for _ in &editors {
+        fx.update_editor_label();
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        tab_action_reserve_space: bool,
+        tab_action_location: TabActionLocation,
+        name: String,
+        full_name: bool,
+        stable_width: bool,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        fx.set_connected(connected);
+        for tab_action_reserve_space in [false, true] {
+            for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                fx.update_options(|options| {
+                    options.tab_sizing = TabSizing::Fit;
+                    options.tab_action_reserve_space = tab_action_reserve_space;
+                    options.tab_action_location = tab_action_location;
+                    options.has_icons = true;
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                fx.layout(800.0);
+                let widths = fx.geometry().widths;
+                for index in 0..fx.state.tabs.len() {
+                    fx.hover_tab(index);
+                    fx.focus_action(index);
+                    let label = &fx.state.tabs[index].state.label;
+                    let name = format!("{}{}", label.name_prefix.as_deref().unwrap_or(""), label.name.as_deref().unwrap_or(""));
+                    let name_width = name.chars().count() as f64 * CHAR_WIDTH;
+                    results.push(Row {
+                        connected,
+                        tab_action_reserve_space,
+                        tab_action_location,
+                        full_name: name_width <= fx.label_width(index, true) + 1.0 / 64.0,
+                        stable_width: (widths[index] - fx.geometry().widths[index]).abs() <= 1.0 / 64.0,
+                        name,
+                    });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            connected: result.connected,
+            tab_action_reserve_space: result.tab_action_reserve_space,
+            tab_action_location: result.tab_action_location,
+            name: result.name.clone(),
+            full_name: true,
+            stable_width: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn wrapped_fit_labels_ellipsize_oversized_names_within_the_header() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let oversized = format!("Very long {}.ts", "filename segment ".repeat(30));
+    fx.open_named_editors(&[oversized, "F.ts".to_string()]);
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+        options.wrap_tabs = true;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        width: f64,
+        wrapped: bool,
+        contained: bool,
+        trimmed: bool,
+    }
+
+    let mut results = Vec::new();
+    for width in [300.0, 900.0, 300.0] {
+        fx.layout(width);
+        let geometry = fx.geometry();
+        let (_, right) = fx.layout.tab_rect(&geometry, 0, 0.0);
+        let tab = &fx.state.tabs[0];
+        results.push(Row {
+            width,
+            wrapped: fx.state.container.wrapping,
+            contained: right <= geometry.visible_width + 1.0 / 64.0,
+            // `scrollWidth > clientWidth` do nome: o conteúdo natural passa da caixa. O `text-overflow: ellipsis` é pintura.
+            trimmed: fx.layout.natural_width(tab, tab.state.tab_action_sizing_rest) > geometry.widths[0],
+        });
+    }
+
+    let expected: Vec<Row> = results.iter().map(|result| Row { width: result.width, wrapped: true, contained: true, trimmed: true }).collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn modern_tab_labels_preserve_icons_and_ellipsis_with_transient_actions_across_sizing_modes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // O `<style>` com o `::before` do ícone e o `::after` do selo é pintura, e a classe `monaco-decoration-badge` é do rótulo.
+    fx.open_named_editors(&names(&["Files", "a-long-tab-name-that-needs-truncation.ts"]));
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        tab_sizing: TabSizing,
+        tab_action_reserve_space: bool,
+        tab_action_location: TabActionLocation,
+        icon_visible: bool,
+        text_fits_label: bool,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        fx.set_connected(connected);
+        for tab_sizing in [TabSizing::Fit, TabSizing::Fixed, TabSizing::Shrink] {
+            for tab_action_reserve_space in [false, true] {
+                for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                    fx.update_options(|options| {
+                        options.tab_sizing = tab_sizing;
+                        options.tab_action_reserve_space = tab_action_reserve_space;
+                        options.tab_action_location = tab_action_location;
+                        options.has_icons = true;
+                        options.tab_sizing_fixed_min_width = 80.0;
+                        options.tab_sizing_fixed_max_width = 80.0;
+                    });
+                    fx.layout(200.0);
+                    // `tab.style.removeProperty('--tab-sizing-fit-width')` e o layout seguinte
+                    fx.state.tabs[0].state.fit_width = None;
+                    fx.layout(200.0);
+                    fx.hover_tab(0);
+                    fx.focus_action(0);
+                    let state = &fx.state.tabs[0].state;
+                    results.push(Row {
+                        connected,
+                        tab_sizing,
+                        tab_action_reserve_space,
+                        tab_action_location,
+                        icon_visible: state.has_icon && !state.label.hide_icon,
+                        // O nome fica dentro do rótulo (`min-width: 0` e `overflow: hidden`): o rótulo nunca passa da aba.
+                        text_fits_label: fx.label_width(0, true) >= 0.0,
+                    });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            connected: result.connected,
+            tab_sizing: result.tab_sizing,
+            tab_action_reserve_space: result.tab_action_reserve_space,
+            tab_action_location: result.tab_action_location,
+            icon_visible: true,
+            text_fits_label: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn unreserved_fit_widths_refresh_when_a_decoration_provider_adds_or_removes_a_badge() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let resource = fx.model.get_editor_by_index(1).expect("aba 1").resource().expect("recurso da aba 1");
+    {
+        let mut options = fx.options.borrow_mut();
+        options.tab_action_reserve_space = false;
+        options.tab_sizing = TabSizing::Fit;
+        options.decorations = EditorPartDecorationOptions { badges: true, colors: true };
+    }
+    // `control.dispose(); reset(container); control = createControl()`
+    fx.create_control(false);
+    fx.layout(600.0);
+    let original_width = fx.geometry().widths[1];
+
+    let mut widths = Vec::new();
+    for enabled in [true, false] {
+        // `decorated = enabled; changed.fire([resource])` e o quadro em que o layout assenta
+        *fx.layout.badged.borrow_mut() = enabled.then(|| resource.clone());
+        fx.decorations_changed();
+        assert_eq!(fx.state.tabs[1].state.label.file_decoration_badges, true);
+        widths.push(fx.geometry().widths[1]);
+    }
+
+    assert_eq!((widths[0] > original_width, (widths[1] - original_width).abs() < 1.0 / 32.0), (true, true));
+}
+
+#[test]
+fn connected_fit_tabs_reallocate_filename_width_to_transient_actions() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let editors = fx.open_named_editors(&names(&[
+        "a-natural-width-label-longer-than-the-short-fit-minimum.ts",
+        "another-natural-width-label-longer-than-the-short-fit-minimum.ts",
+    ]));
+    open!(fx.model, editors[0], active: true);
+    fx.open_editors();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+    });
+    fx.layout(400.0);
+
+    // `tab.style.removeProperty('--tab-sizing-fit-width')`
+    fx.state.tabs[1].state.fit_width = None;
+    let resting = (fx.geometry().widths[1], fx.label_width(1, false));
+    fx.hover_tab(1);
+    fx.focus_action(1);
+    let focused = (fx.geometry().widths[1], fx.label_width(1, true));
+    let cached = fx.state.tabs[1].state.fit_width;
+
+    assert_eq!(
+        (
+            (focused.0 - resting.0).abs() < 1.0 / 32.0,
+            focused.1 < resting.1,
+            cached.is_some_and(|width| (width - resting.0).abs() < 1.0 / 32.0),
+        ),
+        (true, true, true),
+        "{resting:?} {focused:?} {cached:?}"
+    );
+}
+
+#[test]
+fn unreserved_fit_widths_follow_editor_names_when_tab_slots_are_reused_after_closing_or_reordering() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        style: &'static str,
+        operation: &'static str,
+        distinct_natural_widths: bool,
+        first_name: String,
+        long_width_preserved: bool,
+        remaining_widths_preserved: bool,
+    }
+
+    let mut results = Vec::new();
+    for style in ["pill", "connected"] {
+        fx.set_connected(style == "connected");
+        for operation in ["close", "reorder"] {
+            fx.update_options(|options| {
+                options.tab_sizing = TabSizing::Fit;
+                options.tab_action_reserve_space = false;
+                options.editor_actions_location = EditorActionsLocation::Hidden;
+            });
+            let editors = fx.open_named_editors(&names(&["a.ts", "a-significantly-longer-filename.ts", "active.ts"]));
+            fx.layout(1000.0);
+            let widths = fx.geometry().widths;
+            if operation == "close" {
+                fx.close_editor(&editors[0]);
+            } else {
+                fx.move_editor(&editors[1], 1, 0);
+            }
+            fx.layout(1000.0);
+            let reordered = fx.geometry().widths;
+            results.push(Row {
+                style,
+                operation,
+                distinct_natural_widths: widths[1] > widths[0],
+                first_name: fx.state.tabs[0].state.label.name.clone().unwrap_or_default(),
+                long_width_preserved: reordered[0] == widths[1],
+                remaining_widths_preserved: if operation == "close" { reordered[1] == widths[2] } else { reordered[1] == widths[0] && reordered[2] == widths[2] },
+            });
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            style: result.style,
+            operation: result.operation,
+            distinct_natural_widths: true,
+            first_name: "a-significantly-longer-filename.ts".to_string(),
+            long_width_preserved: true,
+            remaining_widths_preserved: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn unreserved_fit_widths_refresh_when_tab_index_and_label_format_options_change() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // O rótulo desenhado inclui o texto da descrição.
+    fx.layout.show_descriptions.set(true);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        style: &'static str,
+        indexed_name: String,
+        description: String,
+        index_adds_width: bool,
+        description_adds_width: bool,
+        restored_width: bool,
+    }
+
+    let mut results = Vec::new();
+    for style in ["pill", "connected"] {
+        fx.set_connected(style == "connected");
+        fx.update_options(|options| {
+            options.tab_sizing = TabSizing::Fit;
+            options.tab_action_reserve_space = false;
+            options.show_tab_index = false;
+            options.label_format = EditorLabelFormat::Short;
+            options.editor_actions_location = EditorActionsLocation::Hidden;
+        });
+        fx.open_named_editors(&names(&["a.ts", "active.ts"]));
+        fx.layout(1000.0);
+        let resting_width = fx.geometry().widths[0];
+        fx.update_options(|options| options.show_tab_index = true);
+        fx.layout(1000.0);
+        let indexed_width = fx.geometry().widths[0];
+        let label = &fx.state.tabs[0].state.label;
+        let indexed_name = format!("{}{}", label.name_prefix.as_deref().unwrap_or(""), label.name.as_deref().unwrap_or(""));
+        fx.update_options(|options| options.label_format = EditorLabelFormat::Long);
+        fx.layout(1000.0);
+        let long_width = fx.geometry().widths[0];
+        let description = fx.state.tabs[0].state.label.description.clone();
+        fx.update_options(|options| {
+            options.show_tab_index = false;
+            options.label_format = EditorLabelFormat::Short;
+        });
+        fx.layout(1000.0);
+        results.push(Row {
+            style,
+            indexed_name,
+            description,
+            index_adds_width: indexed_width > resting_width,
+            description_adds_width: long_width > indexed_width,
+            restored_width: fx.geometry().widths[0] == resting_width,
+        });
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            style: result.style,
+            indexed_name: "1: a.ts".to_string(),
+            description: "/workspace/project/src".to_string(),
+            index_adds_width: true,
+            description_adds_width: true,
+            restored_width: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn unreserved_fit_widths_use_css_coordinates_at_zoom_during_layout_hover_and_focus() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let editors = fx.open_named_editors(&names(&["a-wide-natural-fit-label.ts", "another-wide-natural-fit-label.ts"]));
+    open!(fx.model, editors[0], active: true);
+    fx.open_editors();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    fx.layout(1000.0);
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Trigger {
+        Layout,
+        Hover,
+        Focus,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        style: &'static str,
+        zoom: f64,
+        trigger: Trigger,
+        cached_css_width: bool,
+        stable_target_width: bool,
+    }
+
+    // `tab.getBoundingClientRect().width / zoom`: o retângulo inclui o zoom, a variável da largura `fit` não.
+    let css_width = |fx: &Fixture, zoom: f64| {
+        let (left, right) = fx.layout.tab_rect(&fx.geometry(), 1, 0.0);
+        (right - left) / zoom
+    };
+    let mut results = Vec::new();
+    for style in ["pill", "connected"] {
+        fx.set_connected(style == "connected");
+        for zoom in [1.25, 1.6] {
+            // `root.style.zoom = String(zoom)`
+            fx.layout.zoom.set(zoom);
+            for trigger in [Trigger::Layout, Trigger::Hover, Trigger::Focus] {
+                // `action.blur()` e o `MOUSE_LEAVE` da aba
+                fx.state.handle_tab_mouse_leave(1);
+                if trigger != Trigger::Focus {
+                    fx.state.tabs[1].state.fit_width = None;
+                }
+                let natural_width = css_width(&fx, zoom);
+                match trigger {
+                    Trigger::Layout => fx.layout(1000.0),
+                    Trigger::Hover => fx.hover_tab(1),
+                    Trigger::Focus => fx.focus_action(1),
+                }
+                results.push(Row {
+                    style,
+                    zoom,
+                    trigger,
+                    cached_css_width: fx.state.tabs[1].state.fit_width.is_some_and(|width| (width - natural_width).abs() < 1.0 / 32.0),
+                    stable_target_width: (css_width(&fx, zoom) - natural_width).abs() < 1.0 / 32.0,
+                });
+            }
+        }
+    }
+
+    // O `document.activeElement === action` do foco é do DOM.
+    let expected: Vec<Row> = results.iter().map(|result| Row { style: result.style, zoom: result.zoom, trigger: result.trigger, cached_css_width: true, stable_target_width: true }).collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn uncached_fit_widths_release_all_wrapping_constraints_before_measuring_and_restore_them_together() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let labels: Vec<String> = (0..20).map(|index| format!("long-fit-label-{index}.ts")).collect();
+    fx.open_named_editors(&labels);
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+    });
+    fx.layout(300.0);
+    // `tab.style.removeProperty('--tab-sizing-fit-width')` em cada aba
+    for tab in &mut fx.state.tabs {
+        tab.state.fit_width = None;
+    }
+    fx.layout.fit_reads.borrow_mut().clear();
+    fx.layout(300.0);
+
+    // O `maxWidth = 'none'` de cada aba e a volta ao valor anterior são o estilo inline do navegador (a medida da aba solta, e a
+    // `TabsMeasurer` responde sempre pela largura intrínseca). O que o controle decide é medir todas as abas sem largura em
+    // um lote só, antes de gravar qualquer largura.
+    let first_read = fx.layout.fit_reads.borrow().first().cloned();
+    let all_widths_cached = fx.state.tabs.iter().all(|tab| tab.state.fit_width.is_some_and(|width| width > 0.0));
+    assert_eq!((first_read, all_widths_cached), (Some((0..20).collect::<Vec<usize>>()), true));
+}
+
+#[test]
+fn transient_actions_do_not_resize_fixed_or_shrink_tabs_with_reservation_on_or_off() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let labels: Vec<String> = (0..8).map(|index| format!("tab-label-for-action-reservation-{index}.ts")).collect();
+    fx.open_named_editors(&labels);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        tab_sizing: TabSizing,
+        tab_action_reserve_space: bool,
+        wrap_tabs: bool,
+        tab_action_location: TabActionLocation,
+        rtl: bool,
+        stable_widths: bool,
+        text_clear_of_action: bool,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        fx.set_connected(connected);
+        for tab_sizing in [TabSizing::Fixed, TabSizing::Shrink] {
+            for tab_action_reserve_space in [false, true] {
+                for wrap_tabs in [false, true] {
+                    for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+                        for rtl in [false, true] {
+                            // `root.dir = direction`
+                            fx.layout.rtl.set(rtl);
+                            fx.update_options(|options| {
+                                options.tab_sizing = tab_sizing;
+                                options.tab_action_reserve_space = tab_action_reserve_space;
+                                options.wrap_tabs = wrap_tabs;
+                                options.tab_action_location = tab_action_location;
+                                options.tab_sizing_fixed_min_width = 80.0;
+                                options.tab_sizing_fixed_max_width = 120.0;
+                            });
+                            fx.layout(if wrap_tabs { 500.0 } else { 1400.0 });
+                            let before = fx.geometry().widths;
+                            fx.focus_action(1);
+                            let after = fx.geometry().widths;
+                            // Em coordenadas lógicas: o texto vai do recuo ao início da coluna da ação (ação à direita) ou
+                            // do fim da coluna ao recuo do outro lado (ação à esquerda), e fica dentro da aba.
+                            let side = TAB_PADDING / 2.0;
+                            let column = fx.layout.action_column_width();
+                            let text = fx.label_width(1, true);
+                            let clear = match tab_action_location {
+                                TabActionLocation::Right => side + text <= after[1] - column + 1.0 / 32.0,
+                                TabActionLocation::Left => column + text <= after[1] - side + 1.0 / 32.0,
+                            };
+                            results.push(Row {
+                                connected,
+                                tab_sizing,
+                                tab_action_reserve_space,
+                                wrap_tabs,
+                                tab_action_location,
+                                rtl,
+                                stable_widths: before.iter().zip(&after).all(|(before, after)| (before - after).abs() < 1.0 / 32.0),
+                                text_clear_of_action: clear && text >= 0.0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            connected: result.connected,
+            tab_sizing: result.tab_sizing,
+            tab_action_reserve_space: result.tab_action_reserve_space,
+            wrap_tabs: result.wrap_tabs,
+            tab_action_location: result.tab_action_location,
+            rtl: result.rtl,
+            stable_widths: true,
+            text_clear_of_action: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn unreserved_fit_tab_widths_and_wrapping_stay_stable_when_differently_named_clean_tabs_are_activated() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        style: &'static str,
+        wrap_tabs: bool,
+        active_index: usize,
+        baseline_widths: Vec<f64>,
+        selected_widths: Vec<f64>,
+        active_tab: bool,
+        stable_widths: bool,
+        stable_rows: bool,
+        stable_wrapping: bool,
+    }
+
+    let mut results = Vec::new();
+    for style in ["pill", "connected"] {
+        fx.set_connected(style == "connected");
+        for wrap_tabs in [false, true] {
+            fx.update_options(|options| {
+                options.tab_sizing = TabSizing::Fit;
+                options.tab_action_reserve_space = false;
+                options.wrap_tabs = wrap_tabs;
+                options.editor_actions_location = EditorActionsLocation::Hidden;
+            });
+            let editors = fx.open_named_editors(&names(&["a.ts", "a-significantly-longer-filename.ts"]));
+            let width = if wrap_tabs { 240.0 } else { 1000.0 };
+            fx.layout(width);
+            let baseline = fx.geometry();
+            let baseline_wrapping = fx.state.container.wrapping;
+            for active_index in [0, 1, 0, 1] {
+                open!(fx.model, editors[active_index], active: true);
+                fx.open_editors();
+                fx.layout(width);
+                let selected = fx.geometry();
+                results.push(Row {
+                    style,
+                    wrap_tabs,
+                    active_index,
+                    baseline_widths: baseline.widths.clone(),
+                    selected_widths: selected.widths.clone(),
+                    active_tab: fx.state.tabs[active_index].state.active,
+                    stable_widths: selected.widths.iter().zip(&baseline.widths).all(|(selected, baseline)| (selected - baseline).abs() < 1.0 / 32.0),
+                    stable_rows: selected.tops == baseline.tops,
+                    stable_wrapping: fx.state.container.wrapping == baseline_wrapping,
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            style: result.style,
+            wrap_tabs: result.wrap_tabs,
+            active_index: result.active_index,
+            baseline_widths: result.baseline_widths.clone(),
+            selected_widths: result.selected_widths.clone(),
+            active_tab: true,
+            stable_widths: true,
+            stable_rows: true,
+            stable_wrapping: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn action_reservation_changes_update_fit_widths_in_both_modern_styles_and_leave_legacy_unchanged() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.open_named_editors(&names(&["a-wide-natural-fit-label.ts", "another-wide-natural-fit-label.ts"]));
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/modified.ts"), "testEditorInput"));
+    concrete.set_dirty();
+    let modified: EditorInputRef = concrete;
+    open!(fx.model, modified, pinned: true, active: false);
+    let concrete = fx.suite.disposables.add_rc(TestFileEditorInput::new(uri_file("/path/sticky.ts"), "testEditorInput"));
+    let sticky: EditorInputRef = concrete;
+    open!(fx.model, sticky, pinned: true, active: false);
+    fx.model.stick(&sticky);
+    fx.open_editors();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        style: &'static str,
+        tab_action_location: TabActionLocation,
+        layout: &'static str,
+        toggle_restores_reservation: bool,
+        toggle_is_repeatable: bool,
+        compact_without_reservation: bool,
+        persistent_stable: bool,
+        persistent_upper_rows: bool,
+    }
+
+    let mut results = Vec::new();
+    for style in ["legacy", "pill", "connected"] {
+        // `root.classList.toggle('modern-ui-tabs', style !== 'legacy')` e `modern-ui-connected-editor-tabs`
+        fx.set_parent(TabsParentTraits { has_tabs_class: true, in_modern_ui_tabs: style != "legacy", in_connected_editor_tabs: style == "connected" });
+        for tab_action_location in [TabActionLocation::Left, TabActionLocation::Right] {
+            for layout in ["single", "wrapped", "pinned-wrapped"] {
+                let wrapped = layout != "single";
+                fx.update_options(|options| {
+                    options.tab_sizing = TabSizing::Fit;
+                    options.tab_action_reserve_space = true;
+                    options.tab_action_location = tab_action_location;
+                    options.tab_action_unpin_visibility = true;
+                    options.pinned_tab_sizing = PinnedTabSizing::Normal;
+                    options.wrap_tabs = wrapped;
+                    options.pinned_tabs_on_separate_row = layout == "pinned-wrapped";
+                    options.editor_actions_location = EditorActionsLocation::Hidden;
+                });
+                fx.layout(if wrapped { 240.0 } else { 600.0 });
+                let tab_index = fx.state.tabs.iter().position(|tab| !tab.state.active && !tab.state.dirty && !tab.state.sticky).expect("aba limpa e inativa");
+                let persistent: Vec<usize> = fx
+                    .state
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, tab)| (tab.state.dirty || tab.state.sticky) && (!wrapped || tab.state.connected_tab_upper_row))
+                    .map(|(index, _)| index)
+                    .collect();
+                let persistent_widths: Vec<f64> = persistent.iter().map(|&index| fx.geometry().widths[index]).collect();
+                let reserved = fx.geometry().widths[tab_index];
+                let mut widths = Vec::new();
+                let mut persistent_stable = true;
+                for tab_action_reserve_space in [false, true, false] {
+                    fx.update_options(|options| options.tab_action_reserve_space = tab_action_reserve_space);
+                    fx.frame();
+                    let geometry = fx.geometry();
+                    widths.push(geometry.widths[tab_index]);
+                    persistent_stable &= persistent.iter().zip(&persistent_widths).all(|(&index, width)| (geometry.widths[index] - width).abs() < 1.0 / 32.0);
+                }
+                results.push(Row {
+                    style,
+                    tab_action_location,
+                    layout,
+                    toggle_restores_reservation: widths[1] == reserved,
+                    toggle_is_repeatable: widths[0] == widths[2],
+                    compact_without_reservation: if style == "legacy" { widths[0] == reserved } else { widths[0] < reserved },
+                    persistent_stable,
+                    persistent_upper_rows: style != "connected" || !wrapped || !persistent.is_empty(),
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            style: result.style,
+            tab_action_location: result.tab_action_location,
+            layout: result.layout,
+            toggle_restores_reservation: true,
+            toggle_is_repeatable: true,
+            compact_without_reservation: true,
+            persistent_stable: true,
+            persistent_upper_rows: true,
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+/// `{ name: ..., URI.file('/path/<name>') }` aberto sem ser ativo, duas vezes (`a.ts` e `b.ts`).
+fn open_short_named_tabs(fx: &mut Fixture) {
+    for name in ["a.ts", "b.ts"] {
+        let concrete = fx.suite.disposables.add_rc(NamedInput::new(name, &format!("/path/{name}"), None));
+        let editor: EditorInputRef = concrete;
+        open!(fx.model, editor, pinned: true, active: false);
+    }
+    fx.open_editors();
+}
+
+#[test]
+fn fit_sized_connected_tabs_retain_short_label_icons_and_match_pill_widths() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    // O `::before` vazio do ícone é pintura.
+    open_short_named_tabs(&mut fx);
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.has_icons = true;
+        options.wrap_tabs = true;
+        options.tab_action_reserve_space = true;
+    });
+    fx.set_connected(false);
+    fx.layout(300.0);
+    let last_two = |fx: &Fixture| fx.geometry().widths.split_off(fx.state.tabs.len() - 2);
+    let pill_widths = last_two(&fx);
+    fx.set_connected(true);
+    fx.layout(300.0);
+
+    assert_eq!(last_two(&fx), pill_widths);
+    assert!(fx.state.tabs.iter().all(|tab| tab.state.has_icon && !tab.state.label.hide_icon));
+}
+
+#[test]
+fn fit_sized_connected_tabs_resolve_calculated_action_reservation_before_caching_widths() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    open_short_named_tabs(&mut fx);
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.has_icons = false;
+        options.tab_action_reserve_space = false;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    let count = fx.state.tabs.len();
+    let measure_fit_widths = |fx: &mut Fixture, connected: bool| {
+        fx.set_connected(connected);
+        for tab in &mut fx.state.tabs[count - 2..] {
+            tab.state.fit_width = None;
+        }
+        fx.layout(300.0);
+        fx.state.tabs[count - 2..].iter().map(|tab| tab.state.fit_width.expect("largura `fit` guardada")).collect::<Vec<f64>>()
+    };
+    let pill_widths = measure_fit_widths(&mut fx, false);
+    let connected_widths = measure_fit_widths(&mut fx, true);
+
+    // `--modern-ui-tab-action-fit-padding` calculado (o `getComputedStyle` do original): 30.5px no estilo conectado.
+    let reservation = fx.layout.action_column_width();
+    let width_deltas: Vec<f64> = connected_widths.iter().zip(&pill_widths).map(|(connected, pill)| connected - pill).collect();
+    assert_eq!((reservation, width_deltas), (30.5, vec![2.5, 2.5]));
+}
+
+#[test]
+fn fit_sized_connected_tabs_keep_stable_reservations_across_density_and_wrapping_changes() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let editors = fx.open_file_editors(&names(&["a-long-persistent-editor-name.ts", "b.ts"]));
+    editors[0].set_dirty();
+    let persistent: EditorInputRef = editors[0].clone();
+    fx.state.update_editor_dirty(&persistent);
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+    });
+    let cached_widths = |fx: &Fixture| -> Vec<Option<f64>> { fx.state.tabs.iter().map(|tab| tab.state.fit_width).collect() };
+    let clear_cached_widths = |fx: &mut Fixture| {
+        for tab in &mut fx.state.tabs {
+            tab.state.fit_width = None;
+        }
+    };
+
+    fx.layout(600.0);
+    let default_widths = cached_widths(&fx);
+    fx.update_options(|options| options.tab_height = TabHeight::Compact);
+    fx.layout(600.0);
+    let compact_widths = cached_widths(&fx);
+    fx.update_options(|options| options.tab_height = TabHeight::Default);
+    fx.layout(600.0);
+    let restored_widths = cached_widths(&fx);
+    fx.update_options(|options| options.wrap_tabs = true);
+    fx.layout(120.0);
+    let wrapped_widths = cached_widths(&fx);
+    let wrapping = fx.state.container.wrapping;
+    clear_cached_widths(&mut fx);
+    fx.layout(120.0);
+    let wrapped_recached_widths = cached_widths(&fx);
+    fx.update_options(|options| {
+        options.wrap_tabs = false;
+        options.tab_action_close_visibility = false;
+    });
+    fx.layout(600.0);
+    let hidden_default_widths = cached_widths(&fx);
+    fx.update_options(|options| options.wrap_tabs = true);
+    fx.layout(120.0);
+    clear_cached_widths(&mut fx);
+    fx.layout(120.0);
+    let hidden_wrapped_widths = cached_widths(&fx);
+    let sticky = fx.model.get_editor_by_index(1).expect("aba 1");
+    fx.model.stick(&sticky);
+    let sticky_index = usize::try_from(fx.model.index_of(Some(&typed(&sticky)), None, None)).expect("aba fixada");
+    fx.state.handle_sticky_editor_change(sticky_index);
+    fx.update_options(|options| {
+        options.wrap_tabs = false;
+        options.tab_action_close_visibility = true;
+        options.tab_action_location = TabActionLocation::Left;
+    });
+    fx.layout(600.0);
+    let sticky_left_default_widths = cached_widths(&fx);
+    fx.update_options(|options| options.wrap_tabs = true);
+    fx.layout(120.0);
+    clear_cached_widths(&mut fx);
+    fx.layout(120.0);
+    let sticky_left_wrapped_widths = cached_widths(&fx);
+
+    let compact_deltas: Vec<Option<f64>> = compact_widths.iter().zip(&default_widths).map(|(compact, default)| compact.zip(*default).map(|(compact, default)| compact - default)).collect();
+    assert_eq!(
+        (
+            compact_deltas,
+            restored_widths,
+            wrapping,
+            wrapped_widths,
+            wrapped_recached_widths,
+            hidden_wrapped_widths,
+            sticky_left_wrapped_widths,
+        ),
+        (
+            vec![Some(-2.0), Some(-2.0)],
+            default_widths.clone(),
+            true,
+            default_widths.clone(),
+            default_widths,
+            hidden_default_widths,
+            sticky_left_default_widths,
+        )
+    );
 }
 
 //#region Alt (#331979), os quatro últimos casos do original

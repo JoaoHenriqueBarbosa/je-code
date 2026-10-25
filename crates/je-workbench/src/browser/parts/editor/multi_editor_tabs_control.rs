@@ -1161,6 +1161,30 @@ impl MultiEditorTabsControlState {
         self.layout_scheduler.schedule(None);
     }
 
+    /// `updateEditorLabel`: vários pedidos do mesmo quadro viram uma só atualização. Devolve `true` se este pedido acorda o
+    /// agendador.
+    pub fn update_editor_label(&self) -> bool {
+        self.label_scheduler.schedule()
+    }
+
+    /// O disparo do `RunOnceScheduler` de `updateEditorLabel`: refaz todos os rótulos se houve pedido.
+    pub fn run_scheduled_label_update(&mut self) -> bool {
+        let pending = self.label_scheduler.fire();
+        if pending {
+            self.do_update_editor_labels();
+        }
+
+        pending
+    }
+
+    /// `doHandleDecorationsChange`: solta a largura `fit` de cada aba e refaz o layout com as dimensões guardadas, porque uma
+    /// decoração pode mudar o tamanho das abas.
+    pub fn handle_decorations_change(&mut self, computed_height: f64) {
+        self.clear_fit_widths();
+        let dimensions = EditorTitleControlDimensions { container: self.dimensions.container, available: self.dimensions.available };
+        self.layout(dimensions, None, computed_height);
+    }
+
     /// `setActive`.
     pub fn set_active(&mut self) {
         for index in 0..self.tabs.len() {
