@@ -14,6 +14,11 @@
 //!   filhos dentro dele. [`build_parts`] cria os nós e [`layout_parts`] os posiciona da esquerda para a
 //!   direita numa caixa de linha de `line_height`, como o fluxo em linha do navegador, cortando com
 //!   reticências quando há uma largura máxima (o `text-overflow: ellipsis`).
+//! - **Cor herdada.** O texto de um `span` em linha não declara cor no CSS: herda a do elemento dono. Com
+//!   [`build_parts_with`] e `inherit`, os nós de texto e de ícone ficam com [`je_ui::Foreground::Inherit`] e a cor
+//!   vem do antepassado (a linha de uma lista, o rótulo do arquivo no peek); um `span` com [`SpanPart::color`] a declara.
+//!   O fundo de um `span` ([`SpanPart::background`]) é um nó irmão do texto, abaixo dele, com a altura da área de conteúdo
+//!   da fonte (a caixa de linha só o centra).
 //!
 //! Fica de fora: o `codicon-modifier-spin` e `codicon-modifier-anim` (a animação de giro dos ícones) e o itálico
 //! (o `je-text` ainda não tem estilo itálico: o estado fica nas classes e em [`InlineStyle::italic`], o texto
@@ -23,10 +28,10 @@ use je_base::themables::ThemeIcon;
 use je_render::Rgba;
 use je_render::kurbo::Rect;
 use je_text::TextStyle;
-use je_ui::{Content, NodeId, Role, Tree};
+use je_ui::{Content, Foreground, NodeId, Role, Tree};
 
 use crate::dom::create_el;
-use crate::text::{ellipsize, measure_text, ui_font};
+use crate::text::{ellipsize, measure_text, natural_line_height, ui_font};
 
 /// O tamanho do glifo de um ícone embutido no texto (`font: normal normal normal 16px/1 codicon`).
 pub const INLINE_ICON_SIZE: f64 = 16.0;
@@ -39,13 +44,15 @@ pub enum LabelPart {
 }
 
 /// Um `span` com classes. `icon` é o id do glifo quando o `span` é um ícone (o `::before` do `codicon`).
-/// `color` e `weight` são a regra de CSS que a classe do `span` carrega (a cor e o `font-weight` do
-/// `.highlight`), aplicada aos filhos.
+/// `color`, `background` e `weight` são a regra de CSS que a classe do `span` carrega (a cor, o fundo e o
+/// `font-weight` do `.highlight`), aplicada aos filhos. O fundo cobre a área de conteúdo da fonte (o ascendente mais o
+/// descendente), centrada na caixa de linha, como o fundo de um `span` em linha.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpanPart {
     pub class_names: Vec<String>,
     pub icon: Option<String>,
     pub color: Option<Rgba>,
+    pub background: Option<Rgba>,
     pub weight: Option<u16>,
     pub children: Vec<LabelPart>,
 }
@@ -152,18 +159,30 @@ pub enum Rendered {
     Run { node: NodeId, text: String, style: InlineStyle },
     /// Um ícone embutido.
     Icon { node: NodeId },
-    /// Um `span`: o nó e o que há dentro.
-    Span { node: NodeId, children: Vec<Rendered> },
+    /// Um `span`: o nó, o que há dentro e, quando o `span` tem fundo ([`SpanPart::background`]), o nó do fundo (primeiro
+    /// filho, para pintar por baixo do texto) com a altura da área de conteúdo da fonte.
+    Span { node: NodeId, children: Vec<Rendered>, background: Option<(NodeId, f64)> },
 }
 
-/// `dom.reset(container, ...parts)` sem o `clearNode`: acrescenta os nós de `parts` a `container`.
+/// `dom.reset(container, ...parts)` sem o `clearNode`: acrescenta os nós de `parts` a `container`, com as cores próprias
+/// do estilo (o texto pinta com [`InlineStyle::color`]).
 pub fn build_parts(tree: &mut Tree, container: NodeId, parts: &[LabelPart], style: &InlineStyle) -> Vec<Rendered> {
+    build_parts_with(tree, container, parts, style, false)
+}
+
+/// Como [`build_parts`]; com `inherit`, o texto e os ícones não fixam a cor: herdam a do antepassado (o `color` do CSS,
+/// [`Foreground::Inherit`]), e um `span` com [`SpanPart::color`] a declara ([`Foreground::Color`]). [`InlineStyle::color`]
+/// só vale quando nenhum antepassado declara cor.
+pub fn build_parts_with(tree: &mut Tree, container: NodeId, parts: &[LabelPart], style: &InlineStyle, inherit: bool) -> Vec<Rendered> {
     parts
         .iter()
         .map(|part| match part {
             LabelPart::Text(text) => {
                 let node = create_el(tree, container, Role::Generic, "");
                 tree.style_mut(node).content = Content::Text { text: text.clone(), style: style.text_style(), color: style.color, line_height: style.line_height };
+                if inherit {
+                    tree.style_mut(node).foreground = Foreground::Inherit;
+                }
                 if style.strikethrough {
                     let line = create_el(tree, node, Role::Presentation, "");
                     tree.style_mut(line).background = Some(style.color);
@@ -173,12 +192,20 @@ pub fn build_parts(tree: &mut Tree, container: NodeId, parts: &[LabelPart], styl
             LabelPart::Span(span) => {
                 let node = create_el(tree, container, Role::Generic, &span.class_names.join(" "));
                 let style = &InlineStyle { color: span.color.unwrap_or(style.color), weight: span.weight.unwrap_or(style.weight), ..*style };
+                if inherit {
+                    tree.style_mut(node).foreground = span.color.map_or(Foreground::Inherit, Foreground::Color);
+                }
                 if let Some(icon) = &span.icon {
                     tree.style_mut(node).content = Content::Codicon { id: icon.clone(), size: INLINE_ICON_SIZE as f32, color: style.color };
                     return Rendered::Icon { node };
                 }
-                let children = build_parts(tree, node, &span.children, style);
-                Rendered::Span { node, children }
+                let background = span.background.map(|color| {
+                    let background = create_el(tree, node, Role::Presentation, "");
+                    tree.style_mut(background).background = Some(color);
+                    (background, natural_line_height(&style.text_style()))
+                });
+                let children = build_parts_with(tree, node, &span.children, style, inherit);
+                Rendered::Span { node, children, background }
             }
         })
         .collect()
@@ -245,8 +272,13 @@ fn layout_flow(tree: &mut Tree, rendered: &[Rendered], line_height: f64, flow: &
                 }
                 INLINE_ICON_SIZE
             }
-            Rendered::Span { children, .. } => {
+            Rendered::Span { children, background, .. } => {
                 let width = layout_flow(tree, children, line_height, flow);
+                if let Some((background, height)) = background {
+                    // A área de conteúdo da fonte fica centrada na caixa de linha (o meio-espaçamento arredondado para baixo).
+                    let top = ((line_height - height) / 2.0).floor();
+                    tree.set_bounds(*background, Rect::new(0.0, top, width, top + height));
+                }
                 tree.set_bounds(node, Rect::new(x, 0.0, x + width, line_height));
                 width
             }

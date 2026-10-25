@@ -11,7 +11,6 @@ pub mod pane_composite;
 pub mod labels;
 pub mod parts;
 pub mod quickaccess;
-pub mod resource_navigator;
 pub mod window;
 pub mod workbench_table;
 pub mod workbench_tree;

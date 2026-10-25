@@ -9,8 +9,13 @@
 //!   [`crate::text::measure_text`].
 //! - A regra de CSS do workbench (`.monaco-workbench .monaco-list .monaco-list-row .monaco-highlighted-label
 //!   .highlight { color: var(--vscode-list-highlightForeground) }`) vira [`HighlightedLabelStyles`]: a cor do
-//!   texto, a cor e o peso do realce, o tamanho da fonte e a altura da linha. O nó cresce até a largura do
-//!   texto (o `span` em linha) e a altura da linha; a posição fica com quem o contém.
+//!   texto, a cor, o fundo e o peso do realce, o tamanho da fonte e a altura da linha. O nó cresce até a largura do
+//!   texto (o `span` em linha) e a altura da linha; a posição fica com quem o contém. O fundo do realce
+//!   (`.referenceMatch .highlight { background-color }` do peek) é um nó sob o texto do `span`, com a altura da área de
+//!   conteúdo da fonte ([`crate::icon_labels::SpanPart::background`]).
+//! - **Cor herdada.** Com [`HighlightedLabelStyles::inherit_foreground`] o texto não fixa a cor: herda a do antepassado
+//!   ([`je_ui::Foreground::Inherit`]), como o CSS faz com o rótulo de uma linha selecionada; o realce com cor própria a
+//!   declara, e sem cor própria herda a do texto.
 //! - O `IManagedHover` do título vem do delegado de hover da camada de base ([`crate::hover_api`]).
 //! - [`HighlightedLabel::set_max_width`] é o `overflow: hidden; text-overflow: ellipsis` do contêiner: o texto
 //!   que passa da largura é cortado com reticências.
@@ -29,7 +34,7 @@ use je_ui::{NodeId, Role, Ui};
 
 use crate::dom::{clear_node, create_el};
 use crate::hover_api::{IHoverDelegate, ManagedHoverContent, ManagedHoverContentOrFactory, IManagedHover, HoverPlacement, get_base_layer_hover_delegate, get_default_hover_delegate};
-use crate::icon_labels::{InlineStyle, LabelPart, Rendered, SpanPart, build_parts, layout_parts, render_label_with_icons, resize};
+use crate::icon_labels::{InlineStyle, LabelPart, Rendered, SpanPart, build_parts_with, layout_parts, render_label_with_icons, resize};
 use crate::text::{UI_FONT_SIZE, natural_line_height, ui_font};
 
 /// O `IHighlight`: o trecho `[start, end)` em unidades UTF-16 e as classes extras do realce.
@@ -55,10 +60,13 @@ pub struct IHighlightedLabelOptions {
 /// O estilo de um [`HighlightedLabel`]: as regras de CSS que o original deixa para a folha de estilo.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HighlightedLabelStyles {
-    /// A cor do texto (herdada do dono).
+    /// A cor do texto (herdada do dono). Com [`HighlightedLabelStyles::inherit_foreground`], só vale quando nenhum antepassado
+    /// declara cor.
     pub foreground: Rgba,
     /// A cor do `.highlight` (`--vscode-list-highlightForeground`); sem cor, o realce herda a do texto.
     pub highlight_foreground: Option<Rgba>,
+    /// O `background-color` do `.highlight` (o `peekViewResult.matchHighlightBackground` do peek); sem cor, sem fundo.
+    pub highlight_background: Option<Rgba>,
     /// O `font-weight` do `.highlight`.
     pub highlight_weight: u16,
     pub font_size: f32,
@@ -67,6 +75,9 @@ pub struct HighlightedLabelStyles {
     pub line_height: Option<f64>,
     pub italic: bool,
     pub strikethrough: bool,
+    /// O texto não declara cor: herda a do antepassado (`color` do CSS, [`je_ui::Foreground::Inherit`]), como o rótulo de
+    /// uma linha de lista que muda de cor com a seleção. Falso: o texto pinta sempre com [`HighlightedLabelStyles::foreground`].
+    pub inherit_foreground: bool,
 }
 
 /// O que o workbench dá a um rótulo numa lista: texto em `foreground`, realce em `list.highlightForeground`.
@@ -74,12 +85,14 @@ pub fn default_highlighted_label_styles(theme: &ColorTheme) -> HighlightedLabelS
     HighlightedLabelStyles {
         foreground: theme.get_color("foreground").unwrap_or(Rgba::opaque(0xcc, 0xcc, 0xcc)),
         highlight_foreground: theme.get_color("list.highlightForeground"),
+        highlight_background: None,
         highlight_weight: 400,
         font_size: UI_FONT_SIZE,
         font_weight: 400,
         line_height: None,
         italic: false,
         strikethrough: false,
+        inherit_foreground: false,
     }
 }
 
@@ -224,6 +237,7 @@ impl HighlightedLabel {
             children.push(LabelPart::Span(SpanPart {
                 class_names: classes,
                 color: styles.highlight_foreground,
+                background: styles.highlight_background,
                 weight: Some(styles.highlight_weight),
                 children: parts_of(sub(pos, highlight.end)),
                 ..SpanPart::default()
@@ -238,7 +252,7 @@ impl HighlightedLabel {
         {
             let mut tree = self.ui.tree_mut();
             clear_node(&mut tree, self.dom_node);
-            *self.rendered.borrow_mut() = build_parts(&mut tree, self.dom_node, &children, &styles.inline_style());
+            *self.rendered.borrow_mut() = build_parts_with(&mut tree, self.dom_node, &children, &styles.inline_style(), styles.inherit_foreground);
         }
         self.relayout();
 

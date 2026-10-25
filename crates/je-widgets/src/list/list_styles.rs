@@ -8,8 +8,8 @@
 //!   último. O `:focus` da lista vira [`RowState::list_focused`].
 //! - `outline: 1px solid|dotted|dashed` vira uma borda sólida de 1 px por dentro da linha
 //!   (`outline-offset: -1px`); o `je-ui` não tem traço pontilhado nem tracejado.
-//! - O `color` do CSS herda; os nós do `je-ui` não herdam. A lista aplica a cor da linha ao texto e aos
-//!   codicons de todos os descendentes (ver `List::paint_row`).
+//! - O `color` do CSS herda. A lista o dá à linha (`Foreground::Color` do `je-ui`) e o texto que herda a cor a toma; o texto
+//!   que ainda fixa a cor própria recebe a cor da linha em cada nó, a de todos os descendentes (ver `List::paint_row`).
 //! - `listDropOverBackground` e `listDropBetweenBackground` pintam as linhas com a classe `drop-target*` (ver
 //!   `List::paint_row`); as cores de tabela ainda não têm efeito.
 

@@ -17,12 +17,14 @@ fn styles() -> HighlightedLabelStyles {
     HighlightedLabelStyles {
         foreground: Rgba::opaque(0xcc, 0xcc, 0xcc),
         highlight_foreground: Some(Rgba::opaque(0x2a, 0xaa, 0xff)),
+        highlight_background: None,
         highlight_weight: 400,
         font_size: 13.0,
         font_weight: 400,
         line_height: Some(22.0),
         italic: false,
         strikethrough: false,
+        inherit_foreground: false,
     }
 }
 

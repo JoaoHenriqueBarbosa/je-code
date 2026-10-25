@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use je_ui::{Modifiers, NodeId, PointerButton, Role};
+use je_ui::{KeyData, Modifiers, NodeId, PointerButton, Role};
 
 /// Os renderers de uma lista por `templateId`, compartilhados com o cache de linhas.
 pub type RendererMap<T> = Rc<RefCell<HashMap<String, Rc<dyn IListRenderer<T>>>>>;
@@ -169,3 +169,16 @@ impl<T, K: std::hash::Hash + Eq> IListVirtualDelegate<T> for CachedListVirtualDe
 pub trait IKeyboardNavigationLabelProvider<T> {
     fn get_keyboard_navigation_label(&self, element: &T) -> Vec<Option<String>>;
 }
+
+/// `IKeyboardNavigationDelegate`: diz à lista se uma tecla pode produzir um caractere imprimível (o que liga a navegação
+/// por tipo). O `mightProducePrintableCharacter` não é do `IKeyboardNavigationLabelProvider`: o original o põe aqui, e o
+/// `StringRepresentationProvider` do peek o declara por conta própria (`referencesTree.ts`). O padrão da lista é o
+/// [`DefaultKeyboardNavigationDelegate`](crate::list::type_navigation::DefaultKeyboardNavigationDelegate); o workbench
+/// injeta o do `IKeybindingService` (`listService.ts`).
+pub trait IKeyboardNavigationDelegate {
+    fn might_produce_printable_character(&self, event: &KeyData) -> bool;
+}
+
+/// `IKeyboardNavigationEventFilter`: `(e: StandardKeyboardEvent) => boolean`, a condição para uma tecla começar a navegação
+/// por tipo (a lista aceita tudo quando não há filtro).
+pub type IKeyboardNavigationEventFilter = Rc<dyn Fn(&KeyData) -> bool>;

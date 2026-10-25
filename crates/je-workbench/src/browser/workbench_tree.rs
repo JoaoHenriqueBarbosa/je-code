@@ -5,8 +5,8 @@
 //!
 //! O contrato do serviço, o [`ListService`](je_platform::list::list_service::ListService) e as chaves de contexto (`listFocus`,
 //! `listHasSelectionOrFocus`...) ficam em `je-platform/src/list/list_service.rs`, que não depende de widgets. Estas árvores
-//! precisam de `je-widgets` (a `AsyncDataTree`, a `ObjectTree`) e do `ResourceNavigator`, que já mora em `je-workbench`
-//! ([`crate::browser::resource_navigator`]); por isso o código que toca widgets fica aqui, ao lado dele.
+//! precisam de `je-widgets` (a `AsyncDataTree`, a `ObjectTree`) e do `ResourceNavigator`, que mora em `je-widgets`
+//! ([`je_widgets::list::resource_navigator`], o `je-editor` o usa no peek); por isso o código que toca widgets fica aqui.
 //!
 //! Divergências:
 //! - **Herança.** Cada `WorkbenchXTree extends XTree` do original é um [`WorkbenchTree`] sobre o widget (`Deref` para ele), com os
@@ -18,11 +18,15 @@
 //!   serviço.
 //! - **`overrideStyles`.** O `IStyleOverride<IListStyles>` do original (nomes de cor) já chega resolvido como [`IListStyles`] (quem
 //!   conhece o tema resolve); `tree.style(overrideStyles ? getListStyles(overrideStyles) : defaultListStyles)` fica igual.
-//! - **O que o widget ainda não tem.** O `typeNavigationMode`, o `horizontalScrolling`, o `keyboardNavigationDelegate`, o
-//!   `keyboardNavigationEventFilter`, o `multipleSelectionController`, o `scrollToActiveElement`, o `contextViewProvider` e o
-//!   `findWidgetStyles` não existem nas opções das árvores do `je-widgets`; o `useAltAsMultipleSelectionModifier` é lido e mantido
+//! - **O que o widget ainda não tem.** O `horizontalScrolling`, o `multipleSelectionController`, o `scrollToActiveElement`, o
+//!   `contextViewProvider` e o `findWidgetStyles` não existem nas opções das árvores do `je-widgets`; o
+//!   `useAltAsMultipleSelectionModifier` é lido e mantido
 //!   atualizado por [`WorkbenchTree::use_alt_as_multiple_selection_modifier`] para quando o controlador existir. A árvore abstrata
 //!   não emite `onDidChangeFindOpenState`, então a chave `treeFindOpen` é criada (com o padrão `false`) mas ainda não é guiada.
+//! - **Navegação por tipo.** O widget tem `typeNavigationMode`, `keyboardNavigationDelegate` e `keyboardNavigationEventFilter`
+//!   (`list::type_navigation`), mas o `workbenchTreeDataPreamble` daqui ainda não os liga: o `typeNavigationMode` da
+//!   configuração `workbench.list.typeNavigationMode` e o `keyboardNavigationDelegate` do `IKeybindingService` (que o
+//!   `WorkbenchTreeServices` não carrega) ficam nos padrões do widget (modo automático e o delegate padrão).
 //! - **Serviço de chaves escopado.** O `createScoped(widget.getHTMLElement())` usa o [`ContextKeyTarget`] avulso do porte (como o
 //!   editor), porque o alvo do serviço não é o nó do `je-ui`.
 
@@ -57,11 +61,11 @@ use je_widgets::tree::tree_renderer::RenderIndentGuides;
 use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeModel, ITreeRenderer, ITreeSorter, TreeEvent, TreeMouseEvent, TreeNodeApi};
 
 use crate::browser::parts::editor::editor_group_view::ContextKeyTarget;
-use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
+use je_widgets::list::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
 use crate::services::editor::editor_resolver_service::workbench_configuration_node_base;
 
 pub const MULTI_SELECT_MODIFIER_SETTING_KEY: &str = "workbench.list.multiSelectModifier";
-pub const OPEN_MODE_SETTING_KEY: &str = "workbench.list.openMode";
+pub use je_widgets::list::resource_navigator::OPEN_MODE_SETTING_KEY;
 pub const HORIZONTAL_SCROLLING_KEY: &str = "workbench.list.horizontalScrolling";
 pub const DEFAULT_FIND_MODE_SETTING_KEY: &str = "workbench.list.defaultFindMode";
 pub const TYPE_NAVIGATION_MODE_SETTING_KEY: &str = "workbench.list.typeNavigationMode";

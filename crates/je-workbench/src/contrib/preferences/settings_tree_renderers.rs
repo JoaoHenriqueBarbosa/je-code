@@ -1011,12 +1011,14 @@ impl AbstractSettingRenderer {
         HighlightedLabelStyles {
             foreground: self.services.styles.foreground,
             highlight_foreground: None,
+            highlight_background: None,
             highlight_weight: 400,
             font_size: UI_FONT_SIZE,
             font_weight: 400,
             line_height: Some(WORKBENCH_LINE_HEIGHT),
             italic: true,
             strikethrough: false,
+            inherit_foreground: false,
         }
     }
 
@@ -1044,12 +1046,14 @@ impl AbstractSettingRenderer {
         let label_styles = HighlightedLabelStyles {
             foreground: styles.header_foreground,
             highlight_foreground: None,
+            highlight_background: None,
             highlight_weight: 600,
             font_size: UI_FONT_SIZE,
             font_weight: 600,
             line_height: Some(WORKBENCH_LINE_HEIGHT),
             italic: false,
             strikethrough: false,
+            inherit_foreground: false,
         };
         let label_element = to_dispose.add_rc(Rc::new(SimpleIconLabel::new(ui, label_container_element, label_styles)));
         let indicators_label = to_dispose.add_rc(Rc::new(SettingsTreeIndicatorsLabel::new(
