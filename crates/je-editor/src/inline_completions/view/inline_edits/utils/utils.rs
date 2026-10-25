@@ -51,7 +51,8 @@ use je_base::runtime::date_now;
 use je_base::strings::split_lines;
 use je_base::uri::{URI, UriComponents};
 
-use crate::code_editor_widget::CodeEditorWidget;
+use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
+use crate::cursor_common::CursorSimpleModel;
 use crate::config::editor_options::editor_font_info::FONT_INFO;
 use crate::core_2d::point::Point;
 use crate::core_2d::rect::Rect;
@@ -63,16 +64,11 @@ use crate::observable_code_editor::{ObservableCodeEditor, observable_code_editor
 use crate::offset_range::OffsetRange;
 use crate::position::Position;
 use crate::range::Range;
-use crate::text_model::TextModel;
+use crate::text_model::{TextModel, indent_of_line};
 
 /// `derivedOpts({ name }, fn)`: um derivado com o nome de depuração dado.
 fn derived_named<T: Clone + StrictEquals + 'static>(name: &str, compute: impl Fn(&dyn IReader) -> T + 'static) -> IObservable<T> {
     derived_opts(DerivedOptions { debug_name: Some(DebugNameSource::from(name)), ..DerivedOptions::default() }, compute)
-}
-
-/// `indentOfLine(line)` (`textModel.ts`): quantos espaços e tabs há no início da linha.
-fn indent_of_line(line: &JsString) -> i32 {
-    line.units().iter().take_while(|&&unit| unit == cc::Space || unit == cc::Tab).count() as i32
 }
 
 /// Warning: might return 0.
@@ -155,8 +151,8 @@ pub fn get_prefix_trim(
     };
 
     let replacement_start = diff_ranges.iter().map(|r| if r.is_single_line() { r.start_column - 1 } else { 0 });
-    let original_indents = original_lines_range.map_to_line_array(|line| indent_of_line(&text_model.get_line_content(line)));
-    let modified_indents = modified_lines.iter().filter(|line| !line.is_empty()).map(indent_of_line);
+    let original_indents = original_lines_range.map_to_line_array(|line| indent_of_line(&text_model.get_line_content(line)) as i32);
+    let modified_indents = modified_lines.iter().filter(|line| !line.is_empty()).map(|line| indent_of_line(line) as i32);
     let prefix_trim = replacement_start.chain(original_indents).chain(modified_indents).min().unwrap_or(i32::MAX);
 
     let prefix_left_offset;

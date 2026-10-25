@@ -406,11 +406,12 @@ fn code_editor_services(disposables: &LeakGuard, with_diff_provider: bool) -> Rc
     let test_configuration_service = TestConfigurationService::new(None);
     disposables.add_rc(test_configuration_service.on_did_change_configuration_emitter.clone());
     let configuration_service: Rc<dyn IConfigurationService> = test_configuration_service;
-    let model_service: Rc<dyn IModelService> = disposables.add_rc(ModelService::new(
+    let model_service = disposables.add_rc(ModelService::new(
         configuration_service.clone(),
         TestTextResourcePropertiesService::new(configuration_service),
         UndoRedoService::for_tests(),
     ));
+    let model_service: Rc<dyn IModelService> = model_service;
 
     let collection = ServiceCollection::new();
     collection.set(I_MODEL_SERVICE, model_service.clone());
