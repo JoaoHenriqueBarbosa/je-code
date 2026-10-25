@@ -65,6 +65,11 @@
 //! ...` até `reserves the connected terminal shoulder ...`. Em `preserves a single HC frame ...` a linha de base da
 //! geometria do cartão é por densidade, porque o DOM do original deixa os `--vscode-spacing-*` indefinidos (margens nulas) e
 //! a margem nativa usa o espaçamento do tema.
+//! Portados com o contorno do `.tab-fill` (`tab_fill_outline_style`), a largura das bordas dos indicadores
+//! (`tab_border_container_border_widths`), as bordas e o conteúdo dos ombros (`connected_edge_border_color`,
+//! `fill_shoulder_content`, `fill_shoulder_box`, `tab_fill_border_color`) e as medidas da fileira
+//! (`tabs_and_actions_padding_top`, `tabs_container_padding_bottom`): de `HC active multi-selection keeps one cap outline ...`
+//! até `keeps the right shoulder curved and the left edge straight at row boundaries`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -119,10 +124,11 @@ use je_widgets::splitview::SplitViewView;
 use je_workbench::browser::actions::layout_density_actions::{LayoutDensityMenu, register_layout_density_actions, set_layout_density};
 use je_workbench::contrib::modern_ui::modern_ui_contribution::{ModernUiContribution, ModernUiHost, register_layout_density_menu};
 use je_workbench::contrib::modern_ui::resolved_style::{
-    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, GradientKind, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
-    NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TabBorderIndicator, TabElement, TabRowPlacement, EDITOR_TABS_SCROLLBAR_Z_INDEX, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb, editor_group_child_display,
+    ActionTabState, ActivityBarMetrics, ActivityItemState, BoxOffsets, ClassList, CornerRadii, EditorTabState, FillShoulder, GradientKind, ListRowHost, MENUBAR_MENU_HOLDER_POSITION, MenubarButtonState, ModernUiStyle,
+    NotificationInsets, NotificationsPlacement, PaneHost, PaneState, PartMargins, SashPlacement, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderIndicator, TabElement, TabRowPlacement,
+    EDITOR_TABS_SCROLLBAR_Z_INDEX, VISIBLE_SCROLLBAR_Z_INDEX, css_rgb, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
-use je_workbench::browser::parts::editor::multi_editor_tabs_control::{BoxRect, TabBoxContext, TabCssClasses, TabSizingParams, tab_box_style, tab_fill_rect};
+use je_workbench::browser::parts::editor::multi_editor_tabs_control::{BoxRect, StrokeSide, TabBoxContext, TabCssClasses, TabSizingParams, tab_box_style, tab_fill_rect};
 use je_workbench::services::environment::environment_service::I_WORKBENCH_ENVIRONMENT_SERVICE;
 use je_workbench::services::layout::layout_service::{
     AddedContainer, LayoutContainerId, LayoutSettings, ModernUiDensity, ModernUiEditorTabStyle,
@@ -827,7 +833,12 @@ const SURFACE_BORDER: Option<Defaults> = Some(Defaults::Single(ColorValue::Id("s
 
 /// O `<div class="monaco-workbench ...">` com as variáveis `--vscode-X` do `style.setProperty`: um tema de cores `X`.
 fn theme_with_colors(colors: &[(&str, &str)]) -> ColorTheme {
-    let mut theme = unloaded_theme(ThemeType::Dark);
+    theme_with_colors_of_type(ThemeType::Dark, colors)
+}
+
+/// `theme_with_colors` para qualquer um dos quatro tipos de tema.
+fn theme_with_colors_of_type(theme_type: ThemeType, colors: &[(&str, &str)]) -> ColorTheme {
+    let mut theme = unloaded_theme(theme_type);
     theme.set_custom_colors(colors.iter().copied());
     theme
 }
@@ -2877,5 +2888,234 @@ fn reserves_the_connected_terminal_shoulder_without_moving_tab_content() {
             }
         }
     }
+}
+
+#[test]
+fn hc_active_multi_selection_keeps_one_cap_outline_without_an_inner_frame() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    // A aba única do `.tabs-container` (a primeira, então abre a fileira) de 120px.
+    let placement = TabRowPlacement { tab_width: 120.0, starts_row: true, ..TabRowPlacement::default() };
+    for theme_id in ["hc-black", "hc-light"] {
+        let mut theme = unloaded_theme(theme_type_of(theme_id));
+        theme.set_custom_colors([("contrastActiveBorder", "#ff0000"), ("focusBorder", "#00ff00")]);
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        let ordinary = TabElement::new("tab active", true);
+        let selected = TabElement::new("tab active selected multi-selected", true);
+        let bounds = box_array(tab_fill_rect(&style.tab_box_context(&ordinary, placement)));
+        let ordinary_outline = style.tab_fill_outline_style(&ordinary);
+        let indicator = style.tab_border_container_border_widths();
+        assert_eq!(
+            (
+                ordinary_outline,
+                style.tab_fill_outline_style(&selected),
+                rgb_of(style.connected_edge_border_color(&selected, StrokeSide::Right, placement.starts_row)),
+                [indicator.top, indicator.right, indicator.bottom, indicator.left].map(px),
+                box_array(tab_fill_rect(&style.tab_box_context(&selected, placement))),
+            ),
+            ("none", "none", Some("rgb(255, 0, 0)".to_owned()), ["0px", "0px", "0px", "0px"].map(str::to_owned), bounds),
+            "{theme_id}"
+        );
+    }
+}
+
+#[test]
+fn matches_connected_cap_and_shoulder_radii_for_the_outside_stroke_and_omits_the_first_outer_shoulder() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = theme_with_colors(&[("focusBorder", "#ffaa00")]);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    let shoulders = |tab: &TabElement, starts_row: bool| [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_content(tab, starts_row, shoulder));
+
+    // A primeira aba (`:first-child`, ativa) não tem o ombro externo da esquerda.
+    let first_shoulders = shoulders(&TabElement::new("tab active first-in-row", true), true);
+    // A aba do meio (a segunda, ativa quando a primeira deixa de ser).
+    let middle = TabElement::new("tab active", true);
+    let middle_context = style.tab_box_context(&middle, TabRowPlacement::default());
+    let [left_shoulder, right_shoulder] = [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_box(&middle, false, shoulder).expect("o ombro da aba ativa"));
+
+    assert_eq!(
+        (
+            first_shoulders,
+            (
+                shoulders(&middle, false),
+                [px(middle_context.fill_top_left_radius()), px(tab_fill_top_right_radius(&middle_context))],
+                TAB_FILL_BACKGROUND_CLIP,
+                [px(left_shoulder.bottom_radius), px(right_shoulder.bottom_radius)],
+                [[px(left_shoulder.width), px(left_shoulder.height)], [px(right_shoulder.width), px(right_shoulder.height)]],
+            ),
+        ),
+        (
+            ["none", "\"\""],
+            (
+                ["\"\"", "\"\""],
+                ["7px".to_owned(), "7px".to_owned()],
+                "border-box",
+                ["7px".to_owned(), "7px".to_owned()],
+                [["7px".to_owned(), "7px".to_owned()], ["7px".to_owned(), "7px".to_owned()]],
+            ),
+        )
+    );
+}
+
+#[test]
+fn aligns_single_row_connected_caps_while_retaining_wrapped_gutters() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    let single = TabRowPlacement::default();
+    let wrapped = TabRowPlacement { wrapping: true, ..TabRowPlacement::default() };
+    let row_start = |placement: TabRowPlacement| TabRowPlacement { starts_row: true, ..placement };
+
+    // A fileira de uma linha: a aba inativa abre a fileira e a ativa é a segunda.
+    let inactive_single = (TabElement::new("tab", true), row_start(single));
+    let active_single = (TabElement::new("tab active", true), single);
+    // A fileira quebrada: a pílula de cima abre a fileira, e as de baixo vêm depois dela.
+    let upper = (TabElement::new("tab active connected-tab-upper-row connected-tab-top-row first-in-row", true), row_start(wrapped));
+    let inactive_bottom = (TabElement::new("tab", true), wrapped);
+    let active_bottom = (TabElement::new("tab active", true), wrapped);
+
+    // A moldura de cima fora da quebra: o `left` do preenchimento e os raios da esquerda.
+    let upper_unwrapped = style.tab_box_context(&upper.0, row_start(single));
+    let non_wrapped_top_frame = (
+        px(tab_fill_rect(&upper_unwrapped).left),
+        px(upper_unwrapped.fill_top_left_radius()),
+        px(tab_fill_bottom_left_radius(&upper_unwrapped)),
+    );
+    // `border-block` da aba, os recuos `top` e `bottom` do preenchimento e o `left` dele.
+    let geometry = |(tab, placement): &(TabElement, TabRowPlacement)| {
+        let context = style.tab_box_context(tab, *placement);
+        let fill = tab_fill_rect(&context);
+        let (border_top, border_bottom) = context.pill_border_block();
+        ([px(border_top), px(border_bottom)], [px(fill.top), px(context.tab_height - fill.bottom)], px(fill.left))
+    };
+    let upper_context = style.tab_box_context(&upper.0, upper.1);
+    let active_bottom_context = style.tab_box_context(&active_bottom.0, active_bottom.1);
+    let top_widths = style.tab_fill_border_widths(&upper.0).expect("as larguras da borda do preenchimento");
+    let transparent = Some("rgba(0, 0, 0, 0)".to_owned());
+
+    assert_eq!(
+        (
+            non_wrapped_top_frame,
+            px(style.tabs_and_actions_padding_top(wrapped)),
+            // A reserva da ação (`padding-right`) é a mesma na pílula de cima e na aba de baixo.
+            upper_context.action_padding(&TabCssClasses::default()) == active_bottom_context.action_padding(&TabCssClasses::default()),
+            [px(style.tabs_container_padding_bottom(single)), px(style.tabs_container_padding_bottom(wrapped))],
+            [px(style.tabs_row_separator_bottom()), px(style.tabs_row_separator_bottom())],
+            (
+                [style.tab_fill_border_color(&upper.0, StrokeSide::Top, upper.1), style.tab_fill_border_color(&upper.0, StrokeSide::Left, upper.1)],
+                px(upper_context.fill_top_left_radius()),
+                [px(top_widths.top), px(top_widths.left)],
+            ),
+            geometry(&upper),
+            (geometry(&inactive_single), geometry(&inactive_bottom)),
+            (geometry(&active_single), geometry(&active_bottom)),
+        ),
+        (
+            ("2px".to_owned(), "4px".to_owned(), "4px".to_owned()),
+            "2px".to_owned(),
+            true,
+            ["1px".to_owned(), "1px".to_owned()],
+            ["0px".to_owned(), "0px".to_owned()],
+            ([transparent.clone(), transparent], "4px".to_owned(), ["1px".to_owned(), "1px".to_owned()]),
+            (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "2px".to_owned()], "2px".to_owned()),
+            (
+                (["0px".to_owned(), "0px".to_owned()], ["3.5px".to_owned(), "3.5px".to_owned()], "2px".to_owned()),
+                (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "2px".to_owned()], "2px".to_owned()),
+            ),
+            (
+                (["0px".to_owned(), "0px".to_owned()], ["-1px".to_owned(), "-1px".to_owned()], "0px".to_owned()),
+                (["0px".to_owned(), "0px".to_owned()], ["2px".to_owned(), "-1px".to_owned()], "0px".to_owned()),
+            ),
+        )
+    );
+}
+
+#[test]
+fn shares_the_high_contrast_outer_frame_while_retaining_upper_row_outlines() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut outlines = Vec::new();
+    for theme_id in ["hc-black", "hc-light"] {
+        let theme = theme_with_colors_of_type(theme_type_of(theme_id), &[("focusBorder", "#ffaa00")]);
+        let style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        for upper_row in [false, true] {
+            // `row.classList.toggle('wrapping', upperRow)` e `tab.classList.toggle('connected-tab-upper-row', upperRow)`.
+            let tab = TabElement::new(if upper_row { "tab active connected-tab-top-row first-in-row connected-tab-upper-row" } else { "tab active connected-tab-top-row first-in-row" }, true);
+            let placement = TabRowPlacement { wrapping: upper_row, starts_row: true, ..TabRowPlacement::default() };
+            outlines.push((
+                theme_id,
+                upper_row,
+                style.tab_fill_border_color(&tab, StrokeSide::Top, placement),
+                style.tab_fill_border_color(&tab, StrokeSide::Left, placement),
+            ));
+        }
+    }
+    let expected = |theme_id: &'static str, upper_row: bool| {
+        let color = Some(if upper_row { "rgb(255, 170, 0)" } else { "rgba(0, 0, 0, 0)" }.to_owned());
+        (theme_id, upper_row, color.clone(), color)
+    };
+    assert_eq!(outlines, vec![expected("hc-black", false), expected("hc-black", true), expected("hc-light", false), expected("hc-light", true)]);
+}
+
+#[test]
+fn upper_connected_pills_reserve_top_accents_for_customizations_and_retain_hc_outlines() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let mut measurements = Vec::new();
+    let mut expected = Vec::new();
+    for theme_id in ["vs", "vs-dark", "hc-black", "hc-light"] {
+        let theme = theme_with_colors_of_type(theme_type_of(theme_id), &[("focusBorder", "#ffaa00"), ("contrastBorder", "#00ffff")]);
+        let mut style = ModernUiStyle::new(&theme, &format!("monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs {theme_id}")).with_explicit_colors_only();
+        style.set_root_variable("--modern-ui-editor-tab-custom-border", Color::from_hex("#445566"));
+        // A pílula de cima de 160px, a primeira da fileira, em qualquer grupo (`group.classList.toggle('active', active)`).
+        let placement = TabRowPlacement { tab_width: 160.0, starts_row: true, ..TabRowPlacement::default() };
+        for active in [false, true] {
+            let tab = TabElement::new("tab active connected-tab-upper-row tab-border-top", active);
+            for customized in [false, true] {
+                let before = box_array(tab_fill_rect(&style.tab_box_context(&tab, placement)));
+                if customized {
+                    style.set_root_variable("--modern-ui-editor-tab-custom-active-border-top", Color::from_hex("#112233"));
+                    style.set_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top", Color::from_hex("#445566"));
+                } else {
+                    style.remove_root_variable("--modern-ui-editor-tab-custom-active-border-top");
+                    style.remove_root_variable("--modern-ui-editor-tab-custom-unfocused-active-border-top");
+                }
+                let borders = [StrokeSide::Top, StrokeSide::Right, StrokeSide::Bottom, StrokeSide::Left].map(|side| style.tab_fill_border_color(&tab, side, placement));
+                let geometry_stable = before == box_array(tab_fill_rect(&style.tab_box_context(&tab, placement)));
+                measurements.push((theme_id, active, customized, borders, geometry_stable));
+                let transparent = "rgba(0, 0, 0, 0)".to_owned();
+                let border = if theme_id.starts_with("hc-") { (if active { "rgb(255, 170, 0)" } else { "rgb(0, 255, 255)" }).to_owned() } else { transparent.clone() };
+                let borders = if theme_id.starts_with("hc-") {
+                    [border.clone(), border.clone(), border.clone(), border]
+                } else {
+                    let top = if customized { (if active { "rgb(17, 34, 51)" } else { "rgb(68, 85, 102)" }).to_owned() } else { transparent.clone() };
+                    [top, transparent.clone(), transparent.clone(), transparent]
+                };
+                expected.push((theme_id, active, customized, borders.map(Some), true));
+            }
+        }
+    }
+    assert_eq!(measurements, expected);
+}
+
+#[test]
+fn keeps_the_right_shoulder_curved_and_the_left_edge_straight_at_row_boundaries() {
+    let _guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let theme = unloaded_theme(ThemeType::Dark);
+    let style = ModernUiStyle::new(&theme, "monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs").with_explicit_colors_only();
+    // Os ombros do `.tab-fill` e as máscaras do `.tab-connected-edge` (`::before` e `::after`).
+    let edges = |tab: &TabElement, starts_row: bool| {
+        (
+            [FillShoulder::Left, FillShoulder::Right].map(|shoulder| style.fill_shoulder_content(tab, starts_row, shoulder)),
+            [TAB_CONNECTED_EDGE_PSEUDO_CONTENT; 2],
+        )
+    };
+
+    // O fim da fileira é a segunda aba (depois de uma aba comum); ela está ativa primeiro.
+    let row_end = edges(&TabElement::new("tab active last-in-row", true), false);
+    // O começo da fileira vem logo depois do `last-in-row` (`.tab.last-in-row + .tab.active`) e fica ativo depois.
+    let row_start = edges(&TabElement::new("tab active first-in-row", true), true);
+
+    assert_eq!(
+        (row_end, row_start),
+        ((["\"\"", "\"\""], ["none", "none"]), (["none", "\"\""], ["none", "none"]))
+    );
 }
 

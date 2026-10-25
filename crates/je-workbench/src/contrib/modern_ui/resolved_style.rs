@@ -28,7 +28,10 @@ mod card_border_layers;
 mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
-pub use connected_tabs::{ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, TabBorderContainer, TabBorderIndicator, TabElement, TabRowPlacement, editor_group_child_display};
+pub use connected_tabs::{
+    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
+    TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
+};
 
 /// O `classList` de um elemento: só o que os seletores consultam.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

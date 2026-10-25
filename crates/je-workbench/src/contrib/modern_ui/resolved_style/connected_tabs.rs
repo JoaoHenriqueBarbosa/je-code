@@ -24,8 +24,10 @@ use je_theme::sizes::base_sizes::{
     CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
 };
 
-use super::{BoxEdges, ClassList, EditorTabState, ModernUiStyle};
-use crate::browser::parts::editor::multi_editor_tabs_control::{ModernSpacing, TabBoxContext};
+use super::{BoxEdges, ClassList, EditorTabState, ModernUiStyle, css_rgb};
+use crate::browser::parts::editor::multi_editor_tabs_control::{
+    ModernSpacing, StrokeSide, TabBoxContext, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke,
+};
 use crate::common::theme::{EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BORDER};
 use crate::services::themes::modern_tab_color_customizations::collect_modern_tab_color_customizations;
 
@@ -44,6 +46,9 @@ pub struct TabElement {
     pub group_active: bool,
     /// `:hover` na aba.
     pub hovered: bool,
+    /// `:focus` e `:focus-visible` na aba (o foco de teclado). Uma aba que não foi focada não os tem.
+    pub focused: bool,
+    pub focus_visible: bool,
     /// `--tab-border-top-color`, escrita na aba.
     pub border_top_color: Option<Color>,
     /// `--tab-border-bottom-color`, escrita na aba.
@@ -546,6 +551,177 @@ impl<'a> ModernUiStyle<'a> {
             radius: size(CORNER_RADIUS_LARGE),
             pointer_events_none: true,
         })
+    }
+}
+
+/// Qual dos dois ombros do `.tab-fill` da aba ativa: o `::before` (à esquerda) ou o `::after` (à direita).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillShoulder {
+    Left,
+    Right,
+}
+
+/// A caixa de um ombro da aba ativa (`connectedEditorTabs.css`, linhas 373 a 393 e 478 a 484): um quadrado de
+/// `--modern-ui-connected-tab-shoulder-radius` de lado, com o canto de baixo (o do lado de fora da aba) arredondado pelo mesmo raio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FillShoulderBox {
+    pub width: f64,
+    pub height: f64,
+    pub bottom_radius: f64,
+}
+
+/// `border-top-right-radius` do `.tab-fill`: o espelho de [`TabBoxContext::fill_top_left_radius`] sem o canto quadrado do início
+/// da fileira (a aresta cola só na esquerda, `connectedEditorTabs.css` L715 e L723). A aba ativa conectada tem a tampa de
+/// `cap_radius` (L333); as demais têm o raio pequeno (`tabs.css` L154, `connectedEditorTabs.css` L233 e L709).
+pub fn tab_fill_top_right_radius(ctx: &TabBoxContext) -> f64 {
+    if !ctx.connected || !ctx.active || ctx.upper_row { ctx.spacing.corner_small } else { ctx.spacing.cap_radius(ctx.wrapping, ctx.upper_bar) }
+}
+
+/// `border-bottom-left-radius` do `.tab-fill`: a aba ativa conectada fora da linha de cima tem a base reta (L333 zera os dois
+/// cantos de baixo, e L716 e L724 repetem o da esquerda no início da fileira); as demais têm o raio pequeno.
+pub fn tab_fill_bottom_left_radius(ctx: &TabBoxContext) -> f64 {
+    if !ctx.connected || !ctx.active || ctx.upper_row { ctx.spacing.corner_small } else { 0.0 }
+}
+
+/// `background-clip` do `.tab-fill`: nenhuma regra de `tabs.css`, `multieditortabscontrol.css` ou `connectedEditorTabs.css`
+/// o declara no preenchimento (o `padding-box` de `tabs.css` L516 e L549 é do `.tab-actions` e do `::before` dele).
+pub const TAB_FILL_BACKGROUND_CLIP: &str = "border-box";
+
+/// `content` do `::before` e do `::after` do `.tab-connected-edge`: nenhuma regra os declara (as máscaras das pontas são do
+/// `.tab-fill`), então valem `none`.
+pub const TAB_CONNECTED_EDGE_PSEUDO_CONTENT: &str = "none";
+
+impl<'a> ModernUiStyle<'a> {
+    /// `outline-style` do `.tab-fill`. Só o contorno de foco de teclado da aba ativa em alto contraste o declara
+    /// (`connectedEditorTabs.css`, linhas 96 a 100: `dashed`); a `.tab` em si tem `outline: none !important` (`tabs.css` L930 a
+    /// L933) e o traço vive no preenchimento. As demais abas valem `none`.
+    pub fn tab_fill_outline_style(&self, tab: &TabElement) -> &'static str {
+        if self.connected_tabs() && self.high_contrast() && tab.has("active") && tab.focus_visible { "dashed" } else { "none" }
+    }
+
+    /// `border-*-width` do `.tab-border-top-container` e do `.tab-border-bottom-container`: nenhuma regra os declara (o
+    /// `border: none` de `tabs.css` L764 é do estilo Pill, e o indicador é uma faixa de `background-color`), então valem `0`.
+    pub fn tab_border_container_border_widths(&self) -> BoxEdges {
+        BoxEdges { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 }
+    }
+
+    /// `border-<lado>-color` do `.tab-connected-edge` da aba ativa fora da linha de cima (`connectedEditorTabs.css`, linhas 406 a
+    /// 421, 713 a 727 e 785 a 786). `None` quando o elemento não é desenhado (ver
+    /// [`ModernUiStyle::connected_edge_border_top_color`]) e na base, que não tem borda (`border-bottom: 0`, a cor é a
+    /// `currentColor`). O lado esquerdo da aba que abre a fileira (`starts_row`) é transparente (L718 e L726).
+    pub fn connected_edge_border_color(&self, tab: &TabElement, side: StrokeSide, starts_row: bool) -> Option<Color> {
+        if !self.connected_tabs() || !tab.has("active") || tab.has("connected-tab-upper-row") {
+            return None;
+        }
+        match side {
+            StrokeSide::Top => self.connected_edge_border_top_color(tab),
+            StrokeSide::Bottom => None,
+            StrokeSide::Left if starts_row => Some(Color::transparent_color()),
+            StrokeSide::Left | StrokeSide::Right => self.tab_variable("--modern-ui-connected-tab-border", tab),
+        }
+    }
+
+    /// `content` do `::before` e do `::after` do `.tab-fill` (`connectedEditorTabs.css`, linhas 373 a 404, 478 a 484, 750 a 753 e
+    /// 817 a 819): `""` nos dois ombros da aba ativa fora da linha de cima, menos o da esquerda na aba que abre a fileira
+    /// (`:first-child` ou depois de `.last-in-row`, `starts_row`) ou que tem `.connected-tab-left-edge`, em que a aresta cola.
+    /// A pílula de cima não tem ombros (`none`), mas o `::after` dela vira o sublinhado de `tab-border-bottom` (aba ativa) ou o
+    /// do `:hover` (L817 e L818), que não é um ombro ([`ModernUiStyle::fill_shoulder_box`] devolve `None`).
+    pub fn fill_shoulder_content(&self, tab: &TabElement, starts_row: bool, shoulder: FillShoulder) -> &'static str {
+        const PRESENT: &str = "\"\"";
+        if !self.connected_tabs() {
+            return "none";
+        }
+        let active = tab.has("active");
+        if tab.has("connected-tab-upper-row") {
+            let underline = (active && tab.has("tab-border-bottom")) || (tab.hovered && !tab.has("selected") && !active);
+            return if shoulder == FillShoulder::Right && underline { PRESENT } else { "none" };
+        }
+        if !active || (shoulder == FillShoulder::Left && (starts_row || tab.has("connected-tab-left-edge"))) {
+            return "none";
+        }
+        PRESENT
+    }
+
+    /// A caixa do ombro (`width`, `height` e o raio do canto de baixo) ou `None` quando ele não existe ou, na pílula de cima, é
+    /// o sublinhado (`width: auto`, `height: strokeThickness`, `border-radius: 0`).
+    pub fn fill_shoulder_box(&self, tab: &TabElement, starts_row: bool, shoulder: FillShoulder) -> Option<FillShoulderBox> {
+        if self.fill_shoulder_content(tab, starts_row, shoulder) == "none" || tab.has("connected-tab-upper-row") {
+            return None;
+        }
+        let radius = self.modern_spacing().shoulder_radius();
+        Some(FillShoulderBox { width: radius, height: radius, bottom_radius: radius })
+    }
+
+    /// `border-<lado>-color` do `.tab-fill` de uma aba conectada, como o `getComputedStyle` devolve (`rgb(...)`, `rgba(...)`).
+    /// Em alto contraste vale a cascata de `high_contrast_connected_tab_fill_stroke` (a aba ativa fora da linha de cima tem o
+    /// contorno transparente, L330, e o `.tab-connected-edge` desenha o traço); fora dele, o topo é o de
+    /// [`ModernUiStyle::connected_tab_fill_border_top_color`] e os demais lados são transparentes, menos o da aba selecionada
+    /// inativa, que usa `--modern-ui-editor-tab-border` (`tabs.css`, linhas 459 a 467). `None` fora das abas conectadas e quando a
+    /// cor é `currentColor` (a variável do tema não existe).
+    pub fn tab_fill_border_color(&self, tab: &TabElement, side: StrokeSide, placement: TabRowPlacement) -> Option<String> {
+        if !self.connected_tabs() {
+            return None;
+        }
+        let (active, selected, upper_row) = (tab.has("active"), tab.has("selected"), tab.has("connected-tab-upper-row"));
+        if !self.high_contrast() {
+            let color = match side {
+                StrokeSide::Top => self.connected_tab_fill_border_top_color(tab),
+                _ if selected && !active && !upper_row && !tab.has("dirty-border-top") => Some(self.editor_tab_border()),
+                _ => Some(Color::transparent_color()),
+            };
+            return color.as_ref().map(css_rgb);
+        }
+        if active && !upper_row {
+            return Some(css_rgb(&Color::transparent_color()));
+        }
+        let css = |id: &str| self.color(id).as_ref().map(css_rgb);
+        let (tab_border, contrast_active_border, focus_border) = (css("tab.border"), css("contrastActiveBorder"), css("focusBorder"));
+        let dirty_border_top_color = tab.dirty_border_top_color.as_ref().map(css_rgb);
+        let input = TabFillStrokeInput {
+            wrapping: placement.wrapping,
+            upper_bar: placement.upper_bar,
+            active,
+            selected,
+            multi_selected: tab.has("multi-selected"),
+            dirty_border_top: tab.has("dirty-border-top"),
+            upper_row,
+            pointer_hover: tab.hovered,
+            hovered: false,
+            focused: tab.focused,
+            focus_within: tab.focus_within,
+            tab_border: tab_border.as_deref(),
+            contrast_active_border: contrast_active_border.as_deref(),
+            focus_border: focus_border.as_deref(),
+            dirty_border_top_color: dirty_border_top_color.as_deref(),
+            spacing_size20: self.size(SPACING_SIZE20),
+            regular_theme: false,
+        };
+        match high_contrast_connected_tab_fill_stroke(&input).color(side) {
+            TabStrokeColor::Transparent => Some(css_rgb(&Color::transparent_color())),
+            TabStrokeColor::CurrentColor => None,
+            TabStrokeColor::EditorTabBorder => Some(css_rgb(&self.editor_tab_border())),
+            TabStrokeColor::ConnectedTabBorder => self.connected_tab_border(tab).as_ref().map(css_rgb),
+            TabStrokeColor::Color(color) => Some(color.to_owned()),
+        }
+    }
+
+    /// `padding-top` do `.tabs-and-actions-container` (`tabs.css`, linhas 283, 305 a 307 e 318 a 320, e `connectedEditorTabs.css`,
+    /// linhas 148 a 150 e 301 a 304): `size20` na quebra (sem duas barras) e na barra superior, `0` nas demais e sem o
+    /// `.modern-ui-tabs`.
+    pub fn tabs_and_actions_padding_top(&self, placement: TabRowPlacement) -> f64 {
+        let reserved = self.has("modern-ui-tabs") && (placement.upper_bar || (placement.wrapping && !placement.two_tab_bars));
+        if reserved { self.size(SPACING_SIZE20) } else { 0.0 }
+    }
+
+    /// `padding-bottom` do `.tabs-container` (`connectedEditorTabs.css`, linhas 182 a 189): o traço de `strokeThickness` que o
+    /// separador ocupa, e `0` na barra superior. Fora das abas conectadas a regra não existe.
+    pub fn tabs_container_padding_bottom(&self, placement: TabRowPlacement) -> f64 {
+        if self.connected_tabs() && !placement.upper_bar { self.size(STROKE_THICKNESS) } else { 0.0 }
+    }
+
+    /// `bottom` do `::after` do `.tabs-and-actions-container`, o separador sob a fileira (`tabs.css`, linhas 286 a 297): `0`.
+    pub fn tabs_row_separator_bottom(&self) -> f64 {
+        0.0
     }
 }
 
