@@ -59,6 +59,12 @@ impl PaneCompositeDescriptor {
         Self { ctor, id: id.to_owned(), name: name.to_owned(), css_class: css_class.map(str::to_owned), order, requested_index, icon_url }
     }
 
+    /// A identidade do descritor (o `===` do original): o descritor registrado é o mesmo quando o clone devolvido pelo registro
+    /// compartilha a fábrica.
+    pub fn is_same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.ctor, &other.ctor)
+    }
+
     /// `instantiate(instantiationService)`.
     pub fn instantiate(&self, instantiation_service: &Rc<InstantiationService>) -> Rc<dyn IPaneComposite> {
         (self.ctor)(instantiation_service)
