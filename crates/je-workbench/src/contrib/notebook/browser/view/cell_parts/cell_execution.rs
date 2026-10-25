@@ -8,7 +8,8 @@
 //! - `renderLabelWithIcons('$(icon)')` anexado ao `div` interno é o [`SimpleIconLabel`] sobre ele (ele limpa os filhos e monta o ícone).
 //!   O estilo do texto (cor, fonte) chega como o argumento `label_styles`, montado por quem tem o tema.
 //! - `executingStateIcon` (`notebookIcons.ts`, sem porte) é `registerIcon('notebook-state-executing', Codicon.sync)`: o ícone
-//!   registrado resolve para o glifo padrão `sync`, que é o id usado aqui (uma troca do ícone pelo tema não é honrada).
+//!   registrado resolve para o glifo padrão `sync`, que `code_cell_execution_icon.rs` expõe (uma troca do ícone pelo tema não é
+//!   honrada).
 //! - `INotebookEditorDelegate` é o contrato estreito [`ICellExecutionEditor`]. `activeKernel` é o `Rc<dyn INotebookKernel>` e
 //!   `activeKernel.onDidChange` é o evento do kernel; `onDidScroll` carrega `()` porque a parte só reage ao disparo.
 //! - `hasKey(e, { affectsCell: true })` é o `match` na variante de célula do [`ExecutionStateChange`].
@@ -23,7 +24,6 @@ use je_base::dynamic::number_to_js_string;
 use je_base::async_::disposable_timeout;
 use je_base::lifecycle::DisposableStore;
 use je_base::numbers::clamp;
-use je_base::themables::{IconModifier, ThemeIcon};
 use je_base::event::Event;
 use je_render::kurbo::Rect;
 use je_ui::{NodeId, Role, Tree, Ui};
@@ -33,6 +33,7 @@ use je_widgets::simple_icon_label::SimpleIconLabel;
 
 use crate::contrib::notebook::browser::notebook_view_events::CellViewModelStateChangeEvent;
 use crate::contrib::notebook::browser::view::cell_part::{CellPart, CellPartState, common_layout_info};
+use crate::contrib::notebook::browser::view::cell_parts::code_cell_execution_icon::spinning_executing_state_icon;
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
 use crate::contrib::notebook::common::notebook_common::NotebookCellInternalMetadata;
 use crate::contrib::notebook::common::notebook_execution_state_service::{ExecutionStateChange, INotebookExecutionStateService};
@@ -52,11 +53,6 @@ pub trait ICellExecutionEditor {
     fn get_absolute_top_of_element(&self, cell: &CellViewModel) -> f64;
     /// `scrollBottom`.
     fn scroll_bottom(&self) -> f64;
-}
-
-/// `executingStateIcon` (ver as divergências do módulo).
-fn executing_state_icon() -> ThemeIcon {
-    ThemeIcon::from_id("sync")
 }
 
 /// O texto do rótulo: `[n]` com a ordem, ou `[ ]` sem ela.
@@ -271,7 +267,7 @@ impl CellExecutionPart {
                     // Only recreate the content if we're newly becoming sticky
                     clear_node(&mut self.ui.tree_mut(), self.execution_order_content);
                     self.ui.tree_mut().clear_label(self.execution_order_content);
-                    let icon = ThemeIcon::modify(&executing_state_icon(), Some(IconModifier::Spin));
+                    let icon = spinning_executing_state_icon();
                     self.icon_label.set_text(&format!("$({})", icon.id));
                 }
                 // When already sticky, we don't need to recreate the content

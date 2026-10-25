@@ -11,10 +11,9 @@
 //!   quando o editor tem modelo, e o `Rc<dyn IActiveNotebookEditor>` é o `notebookEditor` do contexto.
 //! - **O contexto da barra** (`{ ui, cell, notebookEditor, source, $mid }`) é [`INotebookActionContext::to_dynamic`].
 //! - **`createActionViewItem` e `MenuEntryActionViewItem`.** Não existem numa UI de nós nativos (ver `MenuWorkbenchToolBar`): o
-//!   `ToolBar` de `je-widgets` desenha cada ação, então os `actionViewItemProvider` que caem nesses dois não são passados. O
-//!   `CodiconActionViewItem` (de `cellActionView.ts`, ainda sem porte) chega como argumento do [`BetweenCellToolbar`]
-//!   (`codicon_action_view_item_provider`) e só é consultado quando o alinhamento é `center`; nos demais casos o provedor devolve
-//!   `None` e a barra desenha a ação.
+//!   `ToolBar` de `je-widgets` desenha cada ação, então o `actionViewItemProvider` que cai no `MenuEntryActionViewItem` (alinhamento
+//!   diferente de `center`) não é passado. O `CodiconActionViewItem` (`cellActionView.ts`) é construído direto, só quando o
+//!   alinhamento é `center`; nos demais casos o provedor devolve `None` e a barra desenha a ação.
 //! - **`style.transform = translateY(...)`** do contêiner inferior é o [`IndicatorNode`] (o mesmo substituto de `FastDomNode` de
 //!   `cellFocusIndicator.ts`), e o `style.top` do contêiner da barra de título é o [`StickyTopNode`].
 //! - **`_titleToolbarContainer`** do construtor do `BetweenCellToolbar` não é usado pelo original e não é parâmetro aqui.
@@ -41,7 +40,7 @@ use je_platform::keybinding::keybinding::IKeybindingService;
 use je_platform::telemetry::ITelemetryService;
 use je_ui::{NodeId, Ui};
 use je_widgets::action_bar::IActionViewItemProvider;
-use je_widgets::action_view_items::IActionViewItemOptions;
+use je_widgets::action_view_items::{IActionViewItem, IActionViewItemOptions};
 use je_widgets::dom::is_ancestor_of_active_element;
 use je_widgets::hover_api::{IHoverDelegate, create_instant_hover_delegate};
 use je_widgets::toolbar::{IToolBarOptions, ToolBar};
@@ -49,9 +48,11 @@ use je_widgets::toolbar::{IToolBarOptions, ToolBar};
 use crate::contrib::notebook::browser::controller::{IActiveNotebookEditor, INotebookCellActionContext};
 use crate::contrib::notebook::browser::notebook_options::NotebookOptions;
 use crate::contrib::notebook::browser::view::cell_part::{CellPart, CellPartState, common_layout_info};
+use crate::contrib::notebook::browser::view::cell_parts::cell_action_view::CodiconActionViewItem;
 use crate::contrib::notebook::browser::view::cell_parts::cell_focus_indicator::{ICellTitleToolbar, IndicatorNode};
 use crate::contrib::notebook::browser::view::cell_parts::cell_toolbar_sticky_scroll::{ICellToolbarStickyScrollEditor, StickyScrollOptions, StickyTopNode, register_cell_toolbar_sticky_scroll};
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel;
+use crate::platform::actions::menu_entry_action_view_item::{IMenuEntryActionViewItemOptions, MenuEntryServices};
 use crate::platform::actions::toolbar::{IWorkbenchToolBarOptions, WorkbenchToolBar};
 use crate::platform::contextview::ContextMenuServiceProvider;
 
@@ -67,7 +68,7 @@ pub struct CellToolbarServices {
 }
 
 /// `getCellToolbarActions(menu)`.
-fn get_cell_toolbar_actions(menu: &dyn IMenu) -> PrimaryAndSecondaryActions {
+pub(crate) fn get_cell_toolbar_actions(menu: &dyn IMenu) -> PrimaryAndSecondaryActions {
     let options = MenuActionOptions { should_forward_args: true, ..MenuActionOptions::default() };
     get_action_bar_actions(&menu.get_actions(Some(&options)), &|group: &str| group.starts_with("inline"), false)
 }
@@ -89,19 +90,12 @@ pub struct BetweenCellToolbar {
     notebook_editor: Rc<dyn IBetweenCellToolbarEditor>,
     bottom_cell_toolbar_container: Rc<IndicatorNode>,
     services: CellToolbarServices,
-    codicon_action_view_item_provider: IActionViewItemProvider,
     between_cell_toolbar: RefCell<Option<Rc<ToolBar>>>,
 }
 
 impl BetweenCellToolbar {
-    pub fn new(
-        ui: &Ui,
-        notebook_editor: Rc<dyn IBetweenCellToolbarEditor>,
-        bottom_cell_toolbar_container: Rc<IndicatorNode>,
-        services: CellToolbarServices,
-        codicon_action_view_item_provider: IActionViewItemProvider,
-    ) -> Rc<Self> {
-        Rc::new(Self { state: CellPartState::new(), ui: ui.clone(), notebook_editor, bottom_cell_toolbar_container, services, codicon_action_view_item_provider, between_cell_toolbar: RefCell::new(None) })
+    pub fn new(ui: &Ui, notebook_editor: Rc<dyn IBetweenCellToolbarEditor>, bottom_cell_toolbar_container: Rc<IndicatorNode>, services: CellToolbarServices) -> Rc<Self> {
+        Rc::new(Self { state: CellPartState::new(), ui: ui.clone(), notebook_editor, bottom_cell_toolbar_container, services, between_cell_toolbar: RefCell::new(None) })
     }
 
     fn initialize(&self) -> Rc<ToolBar> {
@@ -111,10 +105,17 @@ impl BetweenCellToolbar {
 
         let action_view_item_provider: IActionViewItemProvider = {
             let notebook_editor = self.notebook_editor.clone();
-            let codicon_action_view_item_provider = self.codicon_action_view_item_provider.clone();
+            let ui = self.ui.clone();
+            let entry_services = MenuEntryServices { keybinding_service: self.services.keybinding_service.clone(), context_key_service: self.services.context_key_service.clone() };
             Rc::new(move |action: &ActionRef, options: &IActionViewItemOptions| {
                 if action.as_any().is::<MenuItemAction>() && notebook_editor.notebook_options().get_display_options().insert_toolbar_alignment == "center" {
-                    return codicon_action_view_item_provider(action, options);
+                    let item: Rc<dyn IActionViewItem> = CodiconActionViewItem::new(
+                        &ui,
+                        action.clone(),
+                        Some(IMenuEntryActionViewItemOptions { hover_delegate: options.hover_delegate.clone(), ..IMenuEntryActionViewItemOptions::default() }),
+                        entry_services.clone(),
+                    );
+                    return Some(item);
                 }
 
                 None

@@ -3,6 +3,8 @@
 //! de `menuEntryActionViewItem.ts` está em `je_platform::actions::menu_entry_action_view_item`.
 
 pub mod buttonbar;
+pub mod dropdown_with_primary_action_view_item;
+pub mod menu_entry_action_view_item;
 pub mod toolbar;
 
 pub use buttonbar::{IButtonConfig, IButtonConfigProvider, IMenuWorkbenchButtonBarOptions, IWorkbenchButtonBarOptions, MenuWorkbenchButtonBar, WorkbenchButtonBar};
