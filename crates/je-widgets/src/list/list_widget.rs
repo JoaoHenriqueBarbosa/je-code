@@ -500,7 +500,7 @@ impl<T: Clone + 'static> List<T> {
             let (color, target) = match &mut tree.style_mut(node).content {
                 Content::Text { color, .. } => (color, paint.foreground),
                 Content::Codicon { color, .. } => (color, paint.icon_foreground.or(paint.foreground)),
-                Content::None | Content::Host(_) => continue,
+                Content::None | Content::Host(_) | Content::Paragraph(_) => continue,
             };
             match (target, overridden.get(&node).copied()) {
                 (Some(target), previous) => {

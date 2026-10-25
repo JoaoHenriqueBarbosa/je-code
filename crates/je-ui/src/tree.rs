@@ -6,6 +6,8 @@ use je_render::kurbo::{BezPath, Rect, RoundedRect, RoundedRectRadii, Shape as _,
 use je_render::{DisplayList, Rgba, Shape};
 use je_text::{TextStyle, with_text_system};
 
+use crate::paragraph::{Paragraph, SpanFrame};
+
 /// Aplica a opacidade ao alfa da cor.
 fn fade(color: Rgba, opacity: f32) -> Rgba {
     if opacity >= 1.0 {
@@ -155,6 +157,9 @@ pub enum Content {
     /// Texto numa linha, com a origem no canto superior esquerdo da caixa de linha (`line_height`),
     /// centrado verticalmente nela como o Chromium centra a linha de texto.
     Text { text: String, style: TextStyle, color: Rgba, line_height: f64 },
+    /// Um parágrafo: trechos com estilo, cor e link, quebrados na largura da caixa do nó pelo motor de texto
+    /// (ver [`Paragraph`]). O [`Tree::text_content`] devolve o texto concatenado dos trechos.
+    Paragraph(Paragraph),
     /// Um codicon centrado no nó, no tamanho dado.
     Codicon { id: String, size: f32, color: Rgba },
     /// Conteúdo pintado por quem monta a árvore, na ordem de pintura do nó (o `<canvas>` do VS Code: o
@@ -340,6 +345,27 @@ impl Tree {
             stack.extend(self.node(n).children.iter().rev());
         }
         out
+    }
+
+    /// O `textContent` do nó: o texto de [`Content::Text`] e dos parágrafos de toda a subárvore, em pré-ordem,
+    /// concatenado.
+    pub fn text_content(&self, id: NodeId) -> String {
+        self.subtree(id)
+            .into_iter()
+            .map(|node| match &self.node(node).style.content {
+                Content::Text { text, .. } => text.clone(),
+                Content::Paragraph(paragraph) => paragraph.text_content(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    /// O link do parágrafo do nó no ponto (`x`, `y`) da janela, se o nó tem [`Content::Paragraph`] e o ponto cai
+    /// sobre um trecho de link (ver [`Paragraph::link_at`]).
+    pub fn paragraph_link_at(&self, id: NodeId, x: f64, y: f64) -> Option<u32> {
+        let Content::Paragraph(paragraph) = &self.node(id).style.content else { return None };
+        let rect = self.absolute_bounds(id);
+        paragraph.link_at(rect.width(), x - rect.x0, y - rect.y0)
     }
 
     /// Remove o nó e a subárvore dele (o `remove` do DOM).
@@ -629,6 +655,13 @@ impl Tree {
                     line.paint(list, (rect.x0 * scale) as f32, top as f32, fade(*color, opacity));
                 }
             }
+            Content::Paragraph(paragraph) => {
+                if (scale - 1.0).abs() < f64::EPSILON {
+                    paint_paragraph(paragraph, rect.x0, rect.y0, rect.width(), list, opacity);
+                } else {
+                    paint_paragraph(&paragraph.scaled(scale), rect.x0 * scale, rect.y0 * scale, rect.width() * scale, list, opacity);
+                }
+            }
             Content::Codicon { id: icon, size, color } => {
                 let px = (f64::from(*size) * scale) as f32;
                 if let Some(line) = with_text_system(|t| t.codicon(icon, px)) {
@@ -662,6 +695,36 @@ impl Tree {
                 list.stroke(rounded_shape(inset, radii.map(|r| (r - w / 2.0).max(0.0))), w, fade(border.color, opacity));
             }
         }
+    }
+}
+
+/// Pinta o parágrafo com o canto superior esquerdo em (`x`, `y`) e a largura dada, em pixels de dispositivo: cada
+/// linha ocupa um `line-height` e o texto dela fica centrado nele como o Chromium centra a linha.
+fn paint_paragraph(paragraph: &Paragraph, x: f64, y: f64, width: f64, list: &mut DisplayList, opacity: f32) {
+    let layout = paragraph.layout(width);
+    for (index, line) in layout.lines.iter().enumerate() {
+        let top = y + index as f64 * paragraph.line_height + half_leading(paragraph.line_height, f64::from(line.line_height));
+        let baseline = top + f64::from(line.baseline);
+        for piece in &line.pieces {
+            let Some(span) = paragraph.spans.get(piece.span) else { continue };
+            if let (true, Some(frame)) = (piece.boxed, &span.frame) {
+                let frame_rect = Rect::new(x + f64::from(piece.x), baseline - f64::from(piece.ascent) - frame.inset_y, x + f64::from(piece.x + piece.width), baseline + f64::from(piece.descent) + frame.inset_y);
+                paint_frame(frame, frame_rect, list, opacity);
+            }
+            piece.paint(list, x as f32, baseline as f32, fade(paragraph.color_of(span), opacity));
+        }
+    }
+}
+
+/// O fundo e a borda da moldura de um trecho (a mesma regra do fundo e da borda de um nó: a borda fica dentro da caixa).
+fn paint_frame(frame: &SpanFrame, rect: Rect, list: &mut DisplayList, opacity: f32) {
+    let radii = [frame.radius; 4];
+    if let Some(background) = frame.background {
+        list.fill(rounded_shape(rect, radii), fade(background, opacity));
+    }
+    if let Some(border) = frame.border {
+        let inset = rect.inset(-border.width / 2.0);
+        list.stroke(rounded_shape(inset, radii.map(|r| (r - border.width / 2.0).max(0.0))), border.width, fade(border.color, opacity));
     }
 }
 

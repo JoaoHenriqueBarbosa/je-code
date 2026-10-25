@@ -65,7 +65,7 @@ use je_platform::sandbox::settings::AgentSandboxSettingId;
 use je_platform::telemetry::telemetry_utils::null_telemetry_service;
 use je_platform::user_data_sync::user_data_sync::{IUserDataSyncEnablementService, SyncResource};
 use je_theme::{ColorTheme, ThemeType};
-use je_ui::{Content, Event as UiEvent, EventKind, NodeId, Role, Ui};
+use je_ui::{Event as UiEvent, EventKind, NodeId, Role, Ui};
 use je_widgets::context_view_api::{IContextMenuDelegate, IContextMenuProvider, IContextViewDelegate, IContextViewProvider};
 use je_widgets::dom::create_el;
 use je_widgets::hover_api::{
@@ -76,7 +76,7 @@ use je_widgets::tree::index_tree_model::TreeNode;
 use je_widgets::tree::tree_types::{ITreeRenderer, TreeVisibility};
 use je_workbench::contrib::preferences::settings_tree_models::SettingsTreeElement;
 use je_workbench::contrib::preferences::preferences_widgets::SettingsTarget;
-use je_workbench::contrib::preferences::settings_markdown_view::{OwnedMarkdownEnvironment, SPACE_BEFORE_ATTR};
+use je_workbench::contrib::preferences::settings_markdown_view::OwnedMarkdownEnvironment;
 use je_workbench::contrib::preferences::settings_tree_models::{
     SettingsTreeGroupChild, SettingsTreeGroupElement, SettingsTreeModel, SettingsTreeServices, SettingsTreeSettingElement,
 };
@@ -275,19 +275,10 @@ fn with_label(ui: &Ui, root: NodeId, label: &str) -> Vec<NodeId> {
     tree.subtree(root).into_iter().filter(|node| tree.label(*node) == Some(label)).collect()
 }
 
-/// `element.textContent`: cada palavra do Markdown é um nó, e o espaço que o DOM guarda entre elas é o atributo do nó seguinte.
+/// `element.textContent`: o texto concatenado da subárvore. O Markdown de um bloco é um parágrafo só (um nó), então o
+/// espaço entre as palavras já está no texto, como no nó de texto do DOM.
 fn text_content(ui: &Ui, root: NodeId) -> String {
-    let tree = ui.tree();
-    tree.subtree(root)
-        .into_iter()
-        .filter_map(|node| match &tree.style(node).content {
-            Content::Text { text, .. } => {
-                let space = if tree.attribute(node, SPACE_BEFORE_ATTR) == Some("true") { " " } else { "" };
-                Some(format!("{space}{text}"))
-            }
-            _ => None,
-        })
-        .collect()
+    ui.tree().text_content(root)
 }
 
 fn click(ui: &Ui, node: NodeId) {

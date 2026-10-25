@@ -1,39 +1,43 @@
 //! A tradução nativa do Markdown renderizado (`IRenderedMarkdown.element`, a árvore sanitizada de [`Element`] que
 //! `je_base::markdown::render_markdown` entrega) para nós do `je-ui`, que o template do editor de configurações usa para a
 //! descrição e para a mensagem de depreciação (`renderSettingMarkdown` de `settingsTree.ts`). No VS Code isso é o DOM do
-//! navegador com o CSS de `.setting-item-markdown`; aqui é um fluxo de linhas calculado no [`MarkdownView::layout`].
+//! navegador com o CSS de `.setting-item-markdown`; aqui é um nó por bloco, empilhados pelo [`MarkdownView::layout`].
 //!
 //! O porte de `IMarkdownRendererService` (a camada que dá ao `renderMarkdown` o ambiente e escolhe os widgets) ainda não
 //! existe na plataforma; quando existir, este módulo migra para `je-widgets` como o mapeamento "árvore para widgets" que o
 //! `//!` de `je_base::markdown` deixou em aberto, e o [`OwnedMarkdownEnvironment`] sai daqui.
 //!
+//! Um bloco (parágrafo, item de lista, título, bloco de código) é UM nó com [`Content::Paragraph`]: os trechos inline
+//! (`strong`, `em`, `a`, `code`, `span.codicon`, `br`) são [`Span`]s do mesmo texto, e quem quebra as linhas na largura do bloco
+//! é o motor de texto (`je-text`, parley), como o navegador faz no `white-space: normal`, inclusive depois de hífen. O
+//! `textContent` do nó é o texto do bloco ([`je_ui::Tree::text_content`]), sem nó por palavra.
+//!
 //! Do CSS de `settingsEditor2.css` (`.setting-item-markdown`) para a geometria:
 //! - `* { margin: 0 }` e `*:not(:last-child) { margin-bottom: 8px }`: cada bloco (parágrafo, item de lista, título, citação,
 //!   bloco de código) fica a 8 px do seguinte, e o último não tem margem.
-//! - `a`: cor `textLink.foreground`, `textLink.activeForeground` sob o ponteiro, cursor de mão. Um `a` é um nó por palavra (o
-//!   texto quebra em linhas), todos com o mesmo destino; Click, Space e Enter chamam [`RenderedMarkdown::activate_link`] com o
-//!   `data-href`, como o `renderMarkdown` do original faz com os ouvintes de clique e de teclado.
-//! - `code`: fonte monoespaçada de 11 px, linha de 15 px, `padding: 1px 3px`, raio de 4 px e borda de 1 px
-//!   (`textPreformat.*`), numa caixa que não quebra.
+//! - `a`: cor `textLink.foreground`, `textLink.activeForeground` sob o ponteiro, cursor de mão. O trecho do link carrega o
+//!   número do destino; o clique no bloco, sobre um trecho de link, chama [`RenderedMarkdown::activate_link`] com o
+//!   `data-href`, como o `renderMarkdown` do original faz com os ouvintes de clique.
+//! - `code`: fonte monoespaçada de 11 px, `padding: 1px 3px`, raio de 4 px e borda de 1 px (`textPreformat.*`), numa caixa
+//!   em linha que não quebra por dentro.
 //! - `ul` e `ol` têm o recuo padrão do navegador (40 px) e o marcador fora do conteúdo; a citação (`blockquote`) recua 15 px e
 //!   ganha uma barra de 3 px à esquerda de cada um dos blocos dela.
 //!
 //! Divergências:
-//! - **Fluxo.** Não há motor de CSS: o texto é medido por palavra com [`measure_text`] e quebrado na largura dada, e uma
-//!   linha só quebra em espaço (a `white-space: normal` do navegador também quebra depois de hífen, o que não existe aqui).
 //! - **Elementos sem equivalente.** Tabelas viram blocos empilhados (uma célula por bloco), o tachado (`del`) não é
-//!   desenhado (o nó de texto do `je-ui` não tem decoração), e imagens saem antes da tradução ([`clean_rendered_markdown`]).
-//! - **Foco.** O `je-ui` não tem `tabindex`: um link é alcançado pelo ponteiro, e o foco por teclado entra com o foco do nó.
-//! - **Espaço entre palavras.** O DOM guarda o espaço como parte do nó de texto; aqui cada palavra é um nó e o espaço é a folga
-//!   do layout. O nó que vem depois de um espaço leva o atributo [`SPACE_BEFORE_ATTR`], para a concatenação dos textos
-//!   (`textContent`) devolver as palavras separadas.
+//!   desenhado (o parágrafo do `je-ui` não tem decoração de texto), e imagens saem antes da tradução
+//!   ([`clean_rendered_markdown`]).
+//! - **Foco.** O `je-ui` não tem `tabindex` nem foco dentro de um parágrafo: o link é ativado pelo ponteiro, e o `Space` e o
+//!   `Enter` sobre ele do original não existem.
+//! - **Papel.** O link não é um nó (`Role::Link`) próprio: o bloco inteiro é genérico, e o destino sai do hit test do texto.
+//! - **Espaço em branco.** O `white-space: normal` é aplicado aqui, ao montar os trechos: sequências de espaço, tabulação e
+//!   quebra de linha do texto viram um espaço, e o espaço no começo e no fim do bloco (e junto de um `br`) é descartado.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::JsString;
 use je_base::browser::html_parser::{Element, Node};
-use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{DisposableStore, IDisposable};
 use je_base::markdown::{MarkdownEnvironment, RenderedMarkdown};
 use je_base::network::FileAccess;
@@ -41,10 +45,9 @@ use je_base::path::Environment;
 use je_base::resources::ExtUri;
 use je_render::Rgba;
 use je_render::kurbo::Rect;
-use je_text::TextStyle;
+use je_text::{CODICON_FAMILY, TextStyle, codicon_code_point};
 use je_theme::ColorTheme;
-use je_ui::{Border, Content, Cursor, EventKind, NodeId, Role, Tree, Ui};
-use je_widgets::dom::StandardKeyboardEvent;
+use je_ui::{Border, Content, Cursor, EventKind, NodeId, Paragraph, Role, Span, SpanFrame, SpanKind, Tree, Ui};
 use je_widgets::text::{UI_FONT_SIZE, WORKBENCH_LINE_HEIGHT, measure_text, ui_font};
 
 /// O espaçamento entre blocos (`*:not(:last-child) { margin-bottom: 8px }`).
@@ -56,18 +59,16 @@ const MARKER_GAP: f64 = 6.0;
 /// O recuo de uma citação.
 const QUOTE_INDENT: f64 = 15.0;
 const QUOTE_BAR_WIDTH: f64 = 3.0;
-/// `code { font-size: 11px; line-height: 15px; padding: 1px 3px; border: 1px }`.
+/// `code { font-size: 11px; padding: 1px 3px; border: 1px }`.
 const CODE_FONT_SIZE: f32 = 11.0;
-const CODE_LINE_HEIGHT: f64 = 15.0;
 const CODE_PADDING_X: f64 = 3.0;
+const CODE_PADDING_Y: f64 = 1.0;
 const CODE_BORDER: f64 = 1.0;
 const CODE_RADIUS: f64 = 4.0;
 /// A família de `--monaco-monospace-font` no Linux.
 const MONOSPACE_FAMILIES: &str = "\"Droid Sans Mono\", \"monospace\", monospace";
 /// O tamanho do codicon de um `span.codicon`.
 const CODICON_SIZE: f32 = 16.0;
-/// O atributo do nó (palavra ou caixa de código) que tinha um espaço antes dele no texto.
-pub const SPACE_BEFORE_ATTR: &str = "data-space-before";
 
 /// As cores e as medidas do texto de um [`MarkdownView`].
 #[derive(Clone)]
@@ -129,39 +130,31 @@ pub fn clean_rendered_markdown(element: &mut Element) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AtomKind {
-    Word,
-    Break,
-}
-
-/// Uma peça de uma linha: uma palavra, uma caixa de código, um codicon, ou uma quebra de linha.
-struct Atom {
-    kind: AtomKind,
-    node: Option<NodeId>,
-    /// O texto da caixa de código (a caixa é o `node`, o texto é este filho).
-    inner: Option<(NodeId, f64)>,
-    width: f64,
-    height: f64,
-    space_before: bool,
-}
-
 struct Marker {
     node: NodeId,
     width: f64,
 }
 
-/// Um bloco (parágrafo, item de lista, título, citação, código, régua).
+/// Um bloco pronto (parágrafo, item de lista, título, citação, código, régua): o nó dele e o que o enfeita.
 struct Block {
     indent: f64,
     quote_bar: Option<NodeId>,
     marker: Option<Marker>,
-    atoms: Vec<Atom>,
+    /// O nó do parágrafo, ou a régua.
+    node: NodeId,
     line_height: f64,
-    preformatted: bool,
-    rule: Option<NodeId>,
-    background: Option<NodeId>,
-    space_width: f64,
+    rule: bool,
+}
+
+/// Um bloco em montagem: os trechos ainda não viraram nó.
+struct Draft {
+    indent: f64,
+    quote_bar: Option<NodeId>,
+    marker: Option<Marker>,
+    line_height: f64,
+    spans: Vec<Span>,
+    /// Os destinos dos links do bloco, na ordem do número que os trechos carregam.
+    links: Vec<Rc<LinkTarget>>,
 }
 
 /// O que se herda ao descer pela árvore (negrito, itálico, ligação...).
@@ -189,8 +182,9 @@ struct Builder<'a> {
     disposables: &'a Rc<DisposableStore>,
     activate: Option<Rc<dyn Fn(&JsString)>>,
     blocks: Vec<Block>,
-    current: Option<Block>,
-    pending_space: bool,
+    current: Option<Draft>,
+    /// O texto montado até aqui termina em espaço (ou o bloco está no começo): o próximo espaço é descartado.
+    trailing_space: bool,
     pending_marker: Option<String>,
 }
 
@@ -207,8 +201,13 @@ impl<'a> Builder<'a> {
         TextStyle::new(MONOSPACE_FAMILIES, CODE_FONT_SIZE, 400)
     }
 
+    /// A cor do texto de um trecho: a do link dentro de um `a`, a do texto fora.
+    fn text_color(&self, ctx: &Ctx, plain: Rgba) -> Rgba {
+        if ctx.link.is_some() { self.styles.link_foreground } else { plain }
+    }
+
     /// O bloco em andamento, criado (com o marcador pendente de lista e a barra da citação) se não existir.
-    fn ensure_current(&mut self, ctx: &Ctx) -> &mut Block {
+    fn ensure_current(&mut self, ctx: &Ctx) -> &mut Draft {
         if self.current.is_none() {
             let line_height = self.styles.line_height * f64::from(ctx.scale);
             let marker = self.pending_marker.take().map(|text| {
@@ -223,26 +222,46 @@ impl<'a> Builder<'a> {
                 self.tree.style_mut(node).opacity = 0.4;
                 node
             });
-            let space_width = measure_text(" ", &self.text_style(ctx));
-            self.current = Some(Block { indent: ctx.indent, quote_bar, marker, atoms: Vec::new(), line_height, preformatted: false, rule: None, background: None, space_width });
+            self.current = Some(Draft { indent: ctx.indent, quote_bar, marker, line_height, spans: Vec::new(), links: Vec::new() });
         }
         self.current.as_mut().expect("o bloco em andamento acabou de ser criado")
     }
 
-    /// Fecha o bloco em andamento: sem peças, ele some (o marcador e a barra dele também).
+    /// Fecha o bloco em andamento: sem trechos, ele some (o marcador e a barra dele também).
     fn flush(&mut self) {
-        self.pending_space = false;
-        let Some(mut block) = self.current.take() else { return };
-        while block.atoms.last().is_some_and(|atom| atom.kind == AtomKind::Break) {
-            block.atoms.pop();
+        self.trailing_space = true;
+        let Some(mut draft) = self.current.take() else { return };
+        while draft.spans.last().is_some_and(|span| span.kind == SpanKind::LineBreak) {
+            draft.spans.pop();
         }
-        if block.atoms.is_empty() && block.rule.is_none() {
-            for node in [block.marker.as_ref().map(|marker| marker.node), block.quote_bar, block.background].into_iter().flatten() {
+        trim_trailing_space(&mut draft.spans);
+        if draft.spans.is_empty() {
+            for node in [draft.marker.as_ref().map(|marker| marker.node), draft.quote_bar].into_iter().flatten() {
                 self.tree.remove(node);
             }
             return;
         }
-        self.blocks.push(block);
+        self.finish(draft, true, None);
+    }
+
+    /// Cria o nó do bloco com os trechos do rascunho. `wrap` falso é o `white-space: pre`; `background` é o fundo do bloco.
+    fn finish(&mut self, draft: Draft, wrap: bool, background: Option<Rgba>) {
+        let node = self.tree.create(self.root, Role::Generic);
+        let mut paragraph = Paragraph::new(draft.spans, draft.line_height);
+        paragraph.wrap = wrap;
+        if !draft.links.is_empty() {
+            paragraph.link_hover_color = Some(self.styles.link_active_foreground);
+        }
+        let style = self.tree.style_mut(node);
+        style.content = Content::Paragraph(paragraph);
+        if let Some(color) = background {
+            style.background = Some(color);
+            style.radius = CODE_RADIUS;
+        }
+        if !draft.links.is_empty() {
+            self.attach_links(node, draft.links);
+        }
+        self.blocks.push(Block { indent: draft.indent, quote_bar: draft.quote_bar, marker: draft.marker, node, line_height: draft.line_height, rule: false });
     }
 
     fn walk(&mut self, nodes: &[Node], ctx: &Ctx) {
@@ -328,38 +347,30 @@ impl<'a> Builder<'a> {
         self.flush();
     }
 
+    /// O bloco de código: cada linha do texto é um trecho, separado por quebra, sem colapsar espaço nem quebrar na largura.
     fn preformatted(&mut self, element: &Element, ctx: &Ctx) {
         self.flush();
         let text = element.text_content().to_string_lossy();
         let style = self.mono_style();
+        let color = self.styles.code_foreground;
         let mut lines: Vec<&str> = text.split('\n').collect();
         if lines.last().is_some_and(|line| line.is_empty()) {
             lines.pop();
         }
-        let background = self.styles.code_background.map(|color| {
-            let node = self.tree.create(self.root, Role::Generic);
-            self.tree.style_mut(node).background = Some(color);
-            self.tree.style_mut(node).radius = CODE_RADIUS;
-            node
-        });
-        let color = self.styles.code_foreground;
-        let line_height = self.styles.line_height;
-        let mut atoms = Vec::new();
-        for line in lines {
+        let mut spans = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::line_break(style.clone(), color));
+            }
             if !line.is_empty() {
-                let node = self.tree.create(self.root, Role::Generic);
-                self.tree.style_mut(node).content = Content::Text { text: line.to_owned(), style: style.clone(), color, line_height };
-                atoms.push(Atom { kind: AtomKind::Word, node: Some(node), inner: None, width: measure_text(line, &style), height: line_height, space_before: false });
-            }
-            atoms.push(Atom { kind: AtomKind::Break, node: None, inner: None, width: 0.0, height: 0.0, space_before: false });
-        }
-        let space_width = measure_text(" ", &style);
-        self.blocks.push(Block { indent: ctx.indent, quote_bar: None, marker: None, atoms, line_height, preformatted: true, rule: None, background, space_width });
-        if let Some(block) = self.blocks.last_mut() {
-            while block.atoms.last().is_some_and(|atom| atom.kind == AtomKind::Break) {
-                block.atoms.pop();
+                spans.push(Span::text(*line, style.clone(), color));
             }
         }
+        if spans.is_empty() {
+            return;
+        }
+        let draft = Draft { indent: ctx.indent, quote_bar: None, marker: None, line_height: self.styles.line_height, spans, links: Vec::new() };
+        self.finish(draft, false, self.styles.code_background);
     }
 
     fn rule(&mut self, ctx: &Ctx) {
@@ -367,69 +378,51 @@ impl<'a> Builder<'a> {
         let node = self.tree.create(self.root, Role::Separator);
         self.tree.style_mut(node).background = Some(self.styles.foreground);
         self.tree.style_mut(node).opacity = 0.4;
-        let line_height = self.styles.line_height;
-        self.blocks.push(Block { indent: ctx.indent, quote_bar: None, marker: None, atoms: Vec::new(), line_height, preformatted: false, rule: Some(node), background: None, space_width: 0.0 });
+        self.blocks.push(Block { indent: ctx.indent, quote_bar: None, marker: None, node, line_height: self.styles.line_height, rule: true });
+    }
+
+    /// Acrescenta o trecho ao bloco em andamento; o número do link do `ctx` é o do destino na lista do bloco.
+    fn push_span(&mut self, mut span: Span, ctx: &Ctx) {
+        let draft = self.ensure_current(ctx);
+        if let Some(target) = &ctx.link {
+            let known = draft.links.iter().position(|link| Rc::ptr_eq(link, target));
+            let index = known.unwrap_or(draft.links.len());
+            if known.is_none() {
+                draft.links.push(target.clone());
+            }
+            span.link = Some(index as u32);
+        }
+        draft.spans.push(span);
     }
 
     fn push_break(&mut self, ctx: &Ctx) {
-        self.pending_space = false;
-        self.ensure_current(ctx).atoms.push(Atom { kind: AtomKind::Break, node: None, inner: None, width: 0.0, height: 0.0, space_before: false });
+        let span = Span::line_break(self.text_style(ctx), self.styles.foreground);
+        trim_trailing_space(&mut self.ensure_current(ctx).spans);
+        self.push_span(span, &Ctx { link: None, ..ctx.clone() });
+        self.trailing_space = true;
     }
 
-    /// Cria o nó de texto de uma palavra (com o papel e as cores de link quando dentro de um `a`).
-    fn word_node(&mut self, word: &str, style: &TextStyle, ctx: &Ctx, color: Rgba) -> NodeId {
-        let line_height = self.styles.line_height * f64::from(ctx.scale);
-        let node = self.tree.create(self.root, if ctx.link.is_some() { Role::Link } else { Role::Generic });
-        let node_style = self.tree.style_mut(node);
-        node_style.content = Content::Text { text: word.to_owned(), style: style.clone(), color, line_height };
-        if ctx.link.is_some() {
-            node_style.cursor = Some(Cursor::Pointer);
-        }
-        node
-    }
-
-    /// O espaço em branco que o DOM guarda entre as palavras como nó de texto: aqui cada palavra é um nó e o espaço é a folga
-    /// do layout, então o nó que vem depois de um espaço leva o atributo [`SPACE_BEFORE_ATTR`], que a concatenação dos textos
-    /// (`textContent`) lê para devolver o texto com os espaços.
-    fn mark_space_before(&mut self, node: NodeId, space_before: bool) {
-        if space_before {
-            self.tree.set_attribute(node, SPACE_BEFORE_ATTR, "true");
-        }
-    }
-
+    /// O texto com o `white-space: normal`: sequências de espaço viram um, e o espaço no começo do bloco é descartado.
     fn push_text(&mut self, text: &str, ctx: &Ctx) {
-        if text.chars().next().is_some_and(char::is_whitespace) {
-            self.pending_space = true;
-        }
-        let words: Vec<&str> = text.split_whitespace().collect();
-        for (index, word) in words.iter().enumerate() {
-            self.push_word(word, ctx);
-            if index + 1 < words.len() {
-                self.pending_space = true;
+        let mut collapsed = String::with_capacity(text.len());
+        let mut after_space = self.trailing_space;
+        for ch in text.chars() {
+            if matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{c}') {
+                if !after_space {
+                    collapsed.push(' ');
+                }
+                after_space = true;
+            } else {
+                collapsed.push(ch);
+                after_space = false;
             }
         }
-        if !words.is_empty() && text.chars().next_back().is_some_and(char::is_whitespace) {
-            self.pending_space = true;
+        if collapsed.is_empty() {
+            return;
         }
-    }
-
-    /// O espaço antes da próxima peça: só se havia espaço no texto e a linha já tem algo.
-    fn take_space(&mut self, ctx: &Ctx) -> bool {
-        let space = self.pending_space;
-        self.pending_space = false;
-        space && self.ensure_current(ctx).atoms.last().is_some_and(|atom| atom.kind != AtomKind::Break)
-    }
-
-    fn push_word(&mut self, word: &str, ctx: &Ctx) {
-        let space_before = self.take_space(ctx);
-        let style = self.text_style(ctx);
-        let color = if ctx.link.is_some() { self.styles.link_foreground } else { self.styles.foreground };
-        let node = self.word_node(word, &style, ctx, color);
-        self.tree.set_label(node, word);
-        self.mark_space_before(node, space_before);
-        self.attach_link(node, ctx);
-        let atom = Atom { kind: AtomKind::Word, node: Some(node), inner: None, width: measure_text(word, &style), height: self.styles.line_height * f64::from(ctx.scale), space_before };
-        self.ensure_current(ctx).atoms.push(atom);
+        self.trailing_space = after_space;
+        let span = Span::text(collapsed, self.text_style(ctx), self.text_color(ctx, self.styles.foreground));
+        self.push_span(span, ctx);
     }
 
     fn push_code(&mut self, text: &str, ctx: &Ctx) {
@@ -437,80 +430,77 @@ impl<'a> Builder<'a> {
         if text.is_empty() {
             return;
         }
-        let space_before = self.take_space(ctx);
-        let style = self.mono_style();
-        let text_width = measure_text(&text, &style);
-        let color = if ctx.link.is_some() { self.styles.link_foreground } else { self.styles.code_foreground };
-
-        let node = self.tree.create(self.root, if ctx.link.is_some() { Role::Link } else { Role::Generic });
-        let inner = self.tree.create(node, Role::Generic);
-        self.tree.style_mut(inner).content = Content::Text { text, style, color, line_height: CODE_LINE_HEIGHT };
-        {
-            let box_style = self.tree.style_mut(node);
-            box_style.background = self.styles.code_background;
-            box_style.radius = CODE_RADIUS;
-            box_style.border = self.styles.code_border.map(|color| Border { width: CODE_BORDER, color });
-            if ctx.link.is_some() {
-                box_style.cursor = Some(Cursor::Pointer);
-            }
-        }
-        self.mark_space_before(inner, space_before);
-        self.attach_link(node, ctx);
-        let width = text_width + 2.0 * (CODE_PADDING_X + CODE_BORDER);
-        let atom = Atom { kind: AtomKind::Word, node: Some(node), inner: Some((inner, text_width)), width, height: CODE_LINE_HEIGHT + 2.0 * CODE_BORDER, space_before };
-        self.ensure_current(ctx).atoms.push(atom);
+        let frame = SpanFrame {
+            inset_x: CODE_PADDING_X + CODE_BORDER,
+            inset_y: CODE_PADDING_Y + CODE_BORDER,
+            background: self.styles.code_background,
+            border: self.styles.code_border.map(|color| Border { width: CODE_BORDER, color }),
+            radius: CODE_RADIUS,
+        };
+        let span = Span::text(text, self.mono_style(), self.text_color(ctx, self.styles.code_foreground)).with_frame(frame);
+        self.trailing_space = false;
+        self.push_span(span, ctx);
     }
 
     fn push_codicon(&mut self, id: &str, ctx: &Ctx) {
-        let space_before = self.take_space(ctx);
-        let node = self.tree.create(self.root, Role::Generic);
-        let color = if ctx.link.is_some() { self.styles.link_foreground } else { self.styles.foreground };
-        self.tree.style_mut(node).content = Content::Codicon { id: id.to_owned(), size: CODICON_SIZE, color };
-        let atom = Atom { kind: AtomKind::Word, node: Some(node), inner: None, width: f64::from(CODICON_SIZE), height: f64::from(CODICON_SIZE), space_before };
-        self.ensure_current(ctx).atoms.push(atom);
+        let Some(glyph) = codicon_code_point(id) else { return };
+        let span = Span::icon(glyph, TextStyle::new(CODICON_FAMILY, CODICON_SIZE, 400), self.text_color(ctx, self.styles.foreground));
+        self.trailing_space = false;
+        self.push_span(span, ctx);
     }
 
-    /// Os ouvintes de um link (Click, Space e Enter ativam; o ponteiro sobre ele troca a cor).
-    fn attach_link(&mut self, node: NodeId, ctx: &Ctx) {
-        let Some(link) = &ctx.link else { return };
+    /// Os ouvintes dos links de um bloco: o clique sobre um trecho de link ativa o destino; o ponteiro sobre ele troca a cor e
+    /// o cursor.
+    fn attach_links(&mut self, node: NodeId, links: Vec<Rc<LinkTarget>>) {
+        let links = Rc::new(links);
         let ui = self.ui.clone();
-        let activate_click = link.activate.clone();
-        let href = link.href.clone();
         self.disposables.add(self.ui.listen(node, EventKind::Click, false, {
-            let href = href.clone();
+            let (ui, links) = (ui.clone(), links.clone());
             move |e| {
-                activate_click(&href);
+                let Some(pointer) = e.pointer else { return };
+                let Some(index) = ui.tree().paragraph_link_at(node, pointer.x, pointer.y) else { return };
+                let Some(link) = links.get(index as usize) else { return };
+                (link.activate)(&link.href);
                 e.prevent_default();
                 e.stop_propagation();
             }
         }));
-        let activate_key = link.activate.clone();
-        self.disposables.add(self.ui.listen(node, EventKind::KeyDown, false, move |e| {
-            let Some(key) = StandardKeyboardEvent::from_event(e) else { return };
-            if key.equals(KeyCode::Space.bits()) || key.equals(KeyCode::Enter.bits()) {
-                activate_key(&href);
-                e.prevent_default();
-                e.stop_propagation();
-            }
-        }));
-        let (active, normal) = (self.styles.link_active_foreground, self.styles.link_foreground);
-        for (kind, color) in [(EventKind::PointerEnter, active), (EventKind::PointerLeave, normal)] {
+        self.disposables.add(self.ui.listen(node, EventKind::PointerMove, false, {
             let ui = ui.clone();
-            self.disposables.add(self.ui.listen(node, kind, false, move |_| {
-                set_text_color(&mut ui.tree_mut(), node, color);
-            }));
+            move |e| {
+                let link = e.pointer.and_then(|pointer| ui.tree().paragraph_link_at(node, pointer.x, pointer.y));
+                set_hover_link(&mut ui.tree_mut(), node, link);
+            }
+        }));
+        self.disposables.add(self.ui.listen(node, EventKind::PointerLeave, false, move |_| {
+            set_hover_link(&mut ui.tree_mut(), node, None);
+        }));
+    }
+}
+
+/// Tira o espaço do fim do último trecho de texto (o `white-space: normal` descarta o espaço no fim da linha).
+fn trim_trailing_space(spans: &mut Vec<Span>) {
+    if let Some(last) = spans.last_mut()
+        && last.kind == SpanKind::Text
+        && last.frame.is_none()
+        && last.text.ends_with(' ')
+    {
+        last.text.pop();
+        if last.text.is_empty() {
+            spans.pop();
         }
     }
 }
 
-/// Troca a cor do texto de um nó (e a do texto dentro de uma caixa de código).
-fn set_text_color(tree: &mut Tree, node: NodeId, color: Rgba) {
-    let targets: Vec<NodeId> = std::iter::once(node).chain(tree.children(node).iter().copied()).collect();
-    for target in targets {
-        if let Content::Text { color: current, .. } = &mut tree.style_mut(target).content {
-            *current = color;
-        }
+/// O link sob o ponteiro: pinta com a cor ativa (`textLink.activeForeground`) e põe o cursor de mão.
+fn set_hover_link(tree: &mut Tree, node: NodeId, link: Option<u32>) {
+    let style = tree.style_mut(node);
+    if let Content::Paragraph(paragraph) = &mut style.content
+        && paragraph.hover_link != link
+    {
+        paragraph.hover_link = link;
     }
+    style.cursor = link.map(|_| Cursor::Pointer);
 }
 
 /// O id do codicon de um `span.codicon.codicon-<id>`.
@@ -559,7 +549,7 @@ impl MarkdownView {
             activate,
             blocks: Vec::new(),
             current: None,
-            pending_space: false,
+            trailing_space: true,
             pending_marker: None,
         };
         let ctx = builder.base_ctx();
@@ -606,12 +596,13 @@ impl MarkdownView {
         for (index, block) in self.blocks.iter().enumerate() {
             let top = y;
             let available = (width - block.indent).max(0.0);
-            if let Some(rule) = block.rule {
-                tree.set_bounds(rule, Rect::new(block.indent, y, block.indent + available, y + 1.0));
-                y += 1.0;
-            } else {
-                y = Self::layout_lines(&mut tree, block, available, y);
-            }
+            let height = match &tree.style(block.node).content {
+                _ if block.rule => 1.0,
+                Content::Paragraph(paragraph) => paragraph.height(available),
+                _ => 0.0,
+            };
+            tree.set_bounds(block.node, Rect::new(block.indent, y, block.indent + available, y + height));
+            y += height;
             let bottom = y;
             if let Some(marker) = &block.marker {
                 tree.set_bounds(marker.node, Rect::new((block.indent - marker.width - MARKER_GAP).max(0.0), top, (block.indent - MARKER_GAP).max(marker.width), top + block.line_height));
@@ -619,48 +610,12 @@ impl MarkdownView {
             if let Some(bar) = block.quote_bar {
                 tree.set_bounds(bar, Rect::new((block.indent - QUOTE_INDENT).max(0.0), top, (block.indent - QUOTE_INDENT).max(0.0) + QUOTE_BAR_WIDTH, bottom));
             }
-            if let Some(background) = block.background {
-                tree.set_bounds(background, Rect::new(block.indent, top, block.indent + available, bottom));
-            }
             if index + 1 < count {
                 y += BLOCK_MARGIN;
             }
         }
         tree.set_bounds(self.root, Rect::new(origin.x0, origin.y0, origin.x0 + width, origin.y0 + y));
         y
-    }
-
-    /// Quebra as peças de um bloco em linhas e devolve onde o bloco termina.
-    fn layout_lines(tree: &mut Tree, block: &Block, available: f64, top: f64) -> f64 {
-        let line_height = block.line_height;
-        let (mut x, mut line_y, mut used) = (0.0_f64, top, false);
-        for atom in &block.atoms {
-            if atom.kind == AtomKind::Break {
-                line_y += line_height;
-                x = 0.0;
-                used = false;
-                continue;
-            }
-            let mut gap = if atom.space_before && used { block.space_width } else { 0.0 };
-            if !block.preformatted && used && x + gap + atom.width > available {
-                line_y += line_height;
-                x = 0.0;
-                gap = 0.0;
-            }
-            x += gap;
-            if let Some(node) = atom.node {
-                let left = block.indent + x;
-                let offset = ((line_height - atom.height) / 2.0).max(0.0);
-                tree.set_bounds(node, Rect::new(left, line_y + offset, left + atom.width, line_y + offset + atom.height));
-                if let Some((inner, text_width)) = atom.inner {
-                    let inner_left = CODE_BORDER + CODE_PADDING_X;
-                    tree.set_bounds(inner, Rect::new(inner_left, CODE_BORDER, inner_left + text_width, CODE_BORDER + CODE_LINE_HEIGHT));
-                }
-            }
-            x += atom.width;
-            used = true;
-        }
-        line_y + line_height
     }
 
     /// A altura que o último [`MarkdownView::layout`] deu ao nó raiz.
