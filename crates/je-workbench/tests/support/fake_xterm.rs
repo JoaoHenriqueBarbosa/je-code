@@ -910,6 +910,8 @@ impl FakeXterm {
         self.texture_atlas_clears.take()
     }
 }
+
+impl workbench::ITerminal for FakeXterm {
     fn cols(&self) -> i32 {
         self.screen.cols
     }
