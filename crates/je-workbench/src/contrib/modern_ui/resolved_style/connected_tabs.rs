@@ -25,7 +25,8 @@ use je_theme::sizes::base_sizes::{
 
 use super::{BoxEdges, ClassList, CornerRadii, EditorTabState, HorizontalEdges, ModernUiStyle, css_rgb};
 use crate::browser::parts::editor::multi_editor_tabs_control::{
-    ModernSpacing, StrokeSide, TabBoxContext, TabCssClasses, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke,
+    ModernSpacing, StrokeSide, TabActionsContext, TabBoxContext, TabCssClasses, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke, tab_actions_block_border_color,
+    tab_actions_fade_content,
 };
 use crate::common::theme::{EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BORDER};
 use crate::services::themes::modern_tab_color_customizations::collect_modern_tab_color_customizations;
@@ -338,12 +339,18 @@ impl<'a> ModernUiStyle<'a> {
         self.connected_tab_fill_border_color(tab, StrokeSide::Top)
     }
 
+    /// `--modern-ui-editor-tab-<name>` do grupo da aba: a variável `unfocused-<name>` no grupo sem foco, que sem valor próprio
+    /// é um alias da focada (`tabs.css`, linhas 43 a 48). `transparent` quando nem o participante de tema a declara.
+    fn tab_group_variable(&self, group_active: bool, name: &str) -> Color {
+        let own = self.declared(&format!("--modern-ui-editor-tab-{name}"));
+        let color = if group_active { own } else { self.declared(&format!("--modern-ui-editor-tab-unfocused-{name}")).or(own) };
+        color.unwrap_or_else(Color::transparent_color)
+    }
+
     /// `--modern-ui-editor-tab-hover-border` e `--modern-ui-editor-tab-unfocused-hover-border` (`tabs.css`, linhas 47 e 48):
     /// `transparent` sem o participante de tema, e a do grupo sem foco é um alias da outra.
     fn tab_hover_border(&self, group_active: bool) -> Color {
-        let hover = self.declared("--modern-ui-editor-tab-hover-border");
-        let color = if group_active { hover } else { self.declared("--modern-ui-editor-tab-unfocused-hover-border").or(hover) };
-        color.unwrap_or_else(Color::transparent_color)
+        self.tab_group_variable(group_active, "hover-border")
     }
 
     /// `border-<lado>-color` do `.tab-fill` de uma aba conectada fora do alto contraste: a cascata de todas as regras que
@@ -1019,6 +1026,155 @@ pub struct ConnectedGroupFrame {
     pub radius: f64,
     /// `pointer-events: none`.
     pub pointer_events_none: bool,
+}
+
+/// O `::before` ou o `::after` do `.tab-fill` da aba ativa fora das abas conectadas (`tabs.css`, linhas 427 a 445): o traço de
+/// `strokeThickness` que acompanha a pílula, no alto (`::before`) ou na base (`::after`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabFillAccentLine {
+    pub content: &'static str,
+    /// `left` e `right`: o raio pequeno.
+    pub inset: f64,
+    pub height: f64,
+    /// `top` (no alto) ou `bottom` (na base): `calc(-1 * strokeThickness)`.
+    pub offset: f64,
+    pub background: Color,
+}
+
+/// O `::before` do `.tab-actions` (`tabs.css`, linhas 540 a 552): o degradê de saída da ação, uma faixa de `size160` à esquerda
+/// da ranhura (à direita, com `.tab-actions-left`) que existe só quando a ação sobrepõe uma aba limpa.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabActionsFade {
+    pub content: &'static str,
+    pub width: f64,
+    pub background_clip: &'static str,
+    /// `border-block: strokeThickness solid transparent`: só o de cima e o de baixo têm traço.
+    pub border_widths: BoxEdges,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// `::before` (`StrokeSide::Top`) e `::after` (`StrokeSide::Bottom`) do `.tab-fill` da aba ativa sem várias seleções,
+    /// fora das abas conectadas e do alto contraste (`tabs.css`, linhas 427 a 445). A cor é `--modern-ui-editor-tab-current-border-top`
+    /// ou `-bottom` do preenchimento, que o grupo com foco lê de `active-border-top` e `active-border` e o sem foco das variáveis
+    /// `unfocused-*` (linhas 403 a 415). `None` quando o pseudoelemento não existe (`content` é `none`).
+    pub fn tab_fill_accent_line(&self, tab: &TabElement, side: StrokeSide) -> Option<TabFillAccentLine> {
+        let name = match side {
+            StrokeSide::Top => "active-border-top",
+            StrokeSide::Bottom => "active-border",
+            StrokeSide::Left | StrokeSide::Right => return None,
+        };
+        if !(self.has("monaco-workbench") && self.has("modern-ui-tabs")) || self.connected_tabs() || self.high_contrast() || !tab.has("active") || tab.has("multi-selected") {
+            return None;
+        }
+        let stroke = self.size(STROKE_THICKNESS);
+        Some(TabFillAccentLine { content: "\"\"", inset: self.size(CORNER_RADIUS_SMALL), height: stroke, offset: -stroke, background: self.tab_group_variable(tab.group_active, name) })
+    }
+
+    /// As classes da raiz, da aba e do título que as regras do `.tab-actions` testam.
+    fn tab_actions_context(&self, tab: &TabElement) -> TabActionsContext {
+        TabActionsContext {
+            modern_ui_tabs: self.has("modern-ui-tabs"),
+            connected: self.connected_tabs(),
+            high_contrast: self.high_contrast(),
+            reserve_space: tab.title.contains("tab-actions-reserve-space"),
+            active: tab.has("active"),
+            selected: tab.has("selected"),
+            multi_selected: tab.has("multi-selected"),
+            dirty: tab.has("dirty"),
+            sticky: tab.has("sticky"),
+            close_action_off: tab.has("close-action-off"),
+            tab_border_top: tab.has("tab-border-top"),
+            interacting: tab.hovered || tab.focus_within,
+        }
+    }
+
+    /// `.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab >
+    /// .tab-actions` (`tabs.css`, linha 505): a ranhura das ações sobreposta à aba.
+    fn tab_actions_slot(&self, tab: &TabElement) -> bool {
+        self.has("monaco-workbench") && self.has("modern-ui-tabs") && tab.in_editor_group
+    }
+
+    /// `background-clip` do `.tab-actions` (`tabs.css`, linha 516): `padding-box`, para o fundo não passar sob a borda
+    /// transparente. Fora da ranhura vale o inicial, `border-box`.
+    pub fn tab_actions_background_clip(&self, tab: &TabElement) -> &'static str {
+        if self.tab_actions_slot(tab) { "padding-box" } else { "border-box" }
+    }
+
+    /// `border-*-width` do `.tab-actions` (`tabs.css`, linhas 514, 522 e 532): `strokeThickness` em cima e embaixo e no lado de
+    /// fora da aba (`border-right`, ou `border-left` com `.tab-actions-left`). Fora da ranhura não há borda.
+    pub fn tab_actions_border_widths(&self, tab: &TabElement) -> BoxEdges {
+        if !self.tab_actions_slot(tab) {
+            return BoxEdges { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 };
+        }
+        let stroke = self.size(STROKE_THICKNESS);
+        let left = tab.has("tab-actions-left");
+        BoxEdges { top: stroke, right: if left { 0.0 } else { stroke }, bottom: stroke, left: if left { stroke } else { 0.0 } }
+    }
+
+    /// `border-<lado>-color` do `.tab-actions`: `transparent` nos lados com traço (ver `tab_actions_border_widths`) e, em cima e
+    /// embaixo, o `--tab-border-top-color` da aba selecionada ou da ativa com várias seleções sob o ponteiro ou o foco
+    /// (`tab_actions_block_border_color`). `None` é `currentColor`, nos lados sem a declaração.
+    pub fn tab_actions_border_color(&self, tab: &TabElement, side: StrokeSide) -> Option<Color> {
+        if !self.tab_actions_slot(tab) {
+            return None;
+        }
+        let actions_left = tab.has("tab-actions-left");
+        match side {
+            StrokeSide::Top | StrokeSide::Bottom => Some(tab_actions_block_border_color(&self.tab_actions_context(tab), tab.border_top_color.as_ref())),
+            StrokeSide::Right => (!actions_left).then(Color::transparent_color),
+            StrokeSide::Left => actions_left.then(Color::transparent_color),
+        }
+    }
+
+    /// O `::before` do `.tab-actions` (`tabs.css`, linhas 540 a 552), ou `None` quando ele não é gerado (`content: none`, ver
+    /// `tab_actions_fade_content`).
+    pub fn tab_actions_fade(&self, tab: &TabElement) -> Option<TabActionsFade> {
+        let content = tab_actions_fade_content(&self.tab_actions_context(tab));
+        if content == "none" || !self.tab_actions_slot(tab) {
+            return None;
+        }
+        let stroke = self.size(STROKE_THICKNESS);
+        Some(TabActionsFade {
+            content,
+            width: self.size(SPACING_SIZE160),
+            background_clip: "padding-box",
+            border_widths: BoxEdges { top: stroke, right: 0.0, bottom: stroke, left: 0.0 },
+        })
+    }
+
+    /// `box-shadow` do `.tabs-and-actions-container` (`tabs.css`, linhas 165 a 167): na barra das abas fixadas (a primeira de
+    /// `.title.two-tab-bars`) o divisor horizontal reaproveita `--modern-ui-editor-tab-last-pinned-border`. `none` nas demais.
+    pub fn tabs_and_actions_box_shadow(&self, placement: TabRowPlacement) -> String {
+        if !(self.has("monaco-workbench") && self.has("modern-ui-tabs") && placement.two_tab_bars && placement.first_tab_bar) {
+            return "none".to_owned();
+        }
+        let color = self.declared("--modern-ui-editor-tab-last-pinned-border").unwrap_or_else(Color::transparent_color);
+        format!("{} 0px -{}px 0px 0px inset", css_rgb(&color), self.size(STROKE_THICKNESS))
+    }
+
+    /// `--modern-ui-editor-tab-action-button-background` da aba (`tabs.css`, linhas 655 a 669): a cor de fundo do botão de ação
+    /// sob o ponteiro, que é a customização do estado (`custom-action-hover-background` na aba, `custom-action-active-background`
+    /// na ativa, `custom-action-active-hover-background` na ativa sob o ponteiro e `custom-action-selected-background` na
+    /// selecionada inativa) e, sem ela, `--vscode-toolbar-hoverBackground`.
+    pub fn tab_action_button_background(&self, tab: &TabElement) -> Option<Color> {
+        if !self.has("modern-ui-tabs") {
+            return None;
+        }
+        let (active, selected) = (tab.has("active"), tab.has("selected"));
+        // As especificidades contam as classes e pseudoclasses de cada seletor, na ordem do arquivo.
+        let mut declarations: Vec<(u32, &str)> = vec![(5, "action-hover-background")];
+        if active {
+            declarations.push((6, "action-active-background"));
+        }
+        if active && tab.hovered {
+            declarations.push((7, "action-active-hover-background"));
+        }
+        if selected && !active {
+            declarations.push((7, "action-selected-background"));
+        }
+        let suffix = cascade(declarations)?;
+        self.tab_custom(suffix).or_else(|| self.variable("--vscode-toolbar-hoverBackground"))
+    }
 }
 
 /// `display` do `> .title` e do `> .editor-container` de um `.editor-group-container` (`editorgroupview.css`, linhas 217 a
