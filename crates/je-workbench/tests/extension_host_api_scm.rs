@@ -90,7 +90,7 @@ exports.activate = (context) => {
   });
   command('t.scmDispose', () => { globalThis.__control.dispose(); return 'ok'; });
   command('t.scmIdentity', (control, group) => JSON.stringify({ control: control === globalThis.__control, group: group === globalThis.__changes }));
-  command('t.scmState', (state) => JSON.stringify({ path: state.resourceUri.path, context: state.contextValue }));
+  command('t.scmState', (state) => JSON.stringify({ path: state.resourceUri.path, context: state.contextValue, same: state === globalThis.__changes.resourceStates[0] }));
 };
 "#;
 
@@ -426,12 +426,12 @@ fn command_arguments_are_the_same_objects_the_extension_created() {
         let group = marshalled(MarshalledId::ScmResourceGroup, vec![("sourceControlHandle", number(control)), ("groupHandle", number(changes))]);
         assert_eq!(workbench.execute("t.scmIdentity", vec![provider, group]), Dynamic::string(r#"{"control":true,"group":true}"#));
 
-        // `ScmResource`: o estado que a extensão atribuiu ao grupo, com as propriedades dela.
+        // `ScmResource`: o estado que a extensão atribuiu ao grupo, o MESMO objeto (`===`), com as propriedades dela.
         let state = marshalled(
             MarshalledId::ScmResource,
             vec![("sourceControlHandle", number(control)), ("groupHandle", number(changes)), ("handle", number(resource))],
         );
-        assert_eq!(workbench.execute("t.scmState", vec![state]), Dynamic::string(r#"{"path":"/repo/b.txt","context":"modified"}"#));
+        assert_eq!(workbench.execute("t.scmState", vec![state]), Dynamic::string(r#"{"path":"/repo/b.txt","context":"modified","same":true}"#));
     });
 }
 

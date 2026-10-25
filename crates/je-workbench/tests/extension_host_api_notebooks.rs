@@ -111,6 +111,8 @@ exports.activate = (context) => {
       owner: second.notebook.uri.toString(),
       listed: vscode.workspace.notebookDocuments.map((item) => item.uri.path),
       ranged: document.getCells(new vscode.NotebookRange(0, 1)).length,
+      sameCell: document.cellAt(1) === second && document.getCells()[1] === second,
+      sameNotebook: second.notebook === document && vscode.workspace.notebookDocuments[0] === document,
     });
   });
 
@@ -666,7 +668,7 @@ fn open_notebook_document_exposes_the_notebook_its_cells_and_the_open_and_close_
             Dynamic::string(concat!(
                 r#"{"uri":"file:///proj/a.ipynb","type":"test-notebook","version":0,"count":2,"dirty":false,"untitled":false,"closed":false,"#,
                 r#""kinds":[1,2],"languages":["markdown","javascript"],"text":"let a = 1;\nlet b = 2;","index":1,"owner":"file:///proj/a.ipynb","#,
-                r#""listed":["/proj/a.ipynb"],"ranged":1}"#
+                r#""listed":["/proj/a.ipynb"],"ranged":1,"sameCell":true,"sameNotebook":true}"#
             ))
         );
         assert_eq!(panel.lines(), strings(&["open:file:///proj/a.ipynb"]));
