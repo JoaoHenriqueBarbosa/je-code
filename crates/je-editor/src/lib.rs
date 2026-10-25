@@ -262,3 +262,7 @@ pub mod get_links;
 pub mod inlay_hints;
 pub mod goto_symbol;
 pub mod rename;
+pub mod semantic_tokens;
+pub mod semantic_tokens_provider_styling;
+pub mod semantic_tokens_styling;
+pub mod semantic_tokens_styling_service;
