@@ -1738,7 +1738,7 @@ impl Shell {
             Command::PromptRename(path) => self.open_prompt(PromptAction::Rename(path)),
             Command::ConfirmDelete(path) => self.confirm_delete(path),
             Command::Prompt(action, text) => self.run_prompt(action, &text),
-            Command::DeletePath(path) => match file_ops::trash(&path) {
+            Command::DeletePath(path) => match file_ops::delete(&path) {
                 Ok(()) => {
                     // Fecha as abas dos arquivos apagados.
                     while let Some(i) = self.editors.iter().position(|e| e.path.as_deref().is_some_and(|p| p.starts_with(&path))) {
@@ -2286,11 +2286,20 @@ impl Shell {
         self.needs_render = true;
     }
 
-    /// A confirmação de apagar (`explorer.confirmDelete`): o diálogo de mover para a lixeira.
+    /// A confirmação de apagar (`explorer.confirmDelete`): o diálogo de mover para a lixeira ou, sem lixeira (navegador),
+    /// o de apagar de vez (`getDeleteMessage` e `deleteDetail` de `fileActions.ts`).
     fn confirm_delete(&mut self, path: PathBuf) {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (button, detail) = if cfg!(windows) { ("&&Move to Recycle Bin", "You can restore this file from the Recycle Bin.") } else { ("&&Move to Trash", "You can restore this file from the Trash.") };
-        self.show_dialog(&format!("Are you sure you want to delete '{name}'?"), Some(detail), je_widgets::dialog::DialogType::Question, vec![(button, Command::DeletePath(path)), ("Cancel", Command::CloseDialog)]);
+        let (message, button, detail) = if !file_ops::TRASH_SUPPORTED {
+            let message = if path.is_dir() { format!("Are you sure you want to permanently delete '{name}' and its contents?") } else { format!("Are you sure you want to permanently delete '{name}'?") };
+            let detail = if path.is_dir() { "This action is irreversible!" } else { "You can restore this file using the Undo command." };
+            (message, "&&Delete", detail)
+        } else if cfg!(windows) {
+            (format!("Are you sure you want to delete '{name}'?"), "&&Move to Recycle Bin", "You can restore this file from the Recycle Bin.")
+        } else {
+            (format!("Are you sure you want to delete '{name}'?"), "&&Move to Trash", "You can restore this file from the Trash.")
+        };
+        self.show_dialog(&message, Some(detail), je_widgets::dialog::DialogType::Question, vec![(button, Command::DeletePath(path)), ("Cancel", Command::CloseDialog)]);
     }
 
     fn close_context_menu(&mut self) {
