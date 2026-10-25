@@ -1257,10 +1257,103 @@ fn wrapped_terminal_fit_tabs_leave_room_for_editor_actions_without_an_add_tab_co
 }
 
 // `modern editor headers retain an opaque backing during narrow and wide layouts` e `editor group owns the header backing
-// while Modern UI can toggle without an important override` (linhas 573 e 604) dependem do `editorGroupView` (o
-// `titleContainer.style.backgroundColor` e a cor de tema resolvida do cabeçalho), que ainda não tem porte em `je-workbench`.
-// O ponto de parada, na ordem do original, é o caso `connected labels use end ellipsis before the badge and action`
-// (linha 642) e os que o seguem.
+// while Modern UI can toggle without an important override` (linhas 573 e 604) não são portáveis ainda: o `EditorGroupView`
+// de `je-workbench` é só o modelo e o ciclo de vida do grupo, sem `titleContainer`, sem `updateStyles` e sem a cor de tema
+// resolvida do cabeçalho (`editorGroupHeader.tabsBackground`, `noTabsBackground`, `--modern-ui-editor-title-background`),
+// e o `createEditorPart`/`enforcePartOptions` do original também não têm porte. A produção que esses casos pedem é o
+// `updateStyles` do grupo, que é trabalho do `editor_group_view.rs`, não do controle de abas.
+
+#[test]
+fn connected_labels_use_end_ellipsis_before_the_badge_and_action() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.update_options(|options| {
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 20.0;
+        options.tab_sizing_fixed_max_width = 20.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+        options.has_icons = true;
+        options.show_tab_index = true;
+    });
+    fx.layout(200.0);
+    // Os rótulos de recurso são redesenhados na entrada do modo conectado.
+    fx.layout(200.0);
+
+    let summary = |fx: &Fixture| {
+        let tab = &fx.state.tabs[0];
+        let label = &tab.state.label;
+        let name = format!("{}{}", label.name_prefix.as_deref().unwrap_or(""), label.name.as_deref().unwrap_or(""));
+        (name, tab.state.has_icon && !label.hide_icon, label.description.clone())
+    };
+
+    let (name, icon_visible, suffix) = summary(&fx);
+    let geometry = fx.geometry();
+    let truncated = name.chars().count() as f64 * CHAR_WIDTH > geometry.widths[0];
+    assert_eq!((name.as_str(), icon_visible, suffix.as_str(), truncated), ("1: file0.txt", true, "", true));
+    assert!(fx.state.tabs[0].state.aria_label.as_deref().is_some_and(|label| label.contains("file0.txt")));
+    // O `text-overflow: ellipsis`, o `::after` do selo e a ordem do rótulo antes da ação são pintura da renderização nativa.
+
+    fx.set_connected(false);
+    fx.layout(200.0);
+    let (name, icon_visible, _) = summary(&fx);
+    assert_eq!((name.as_str(), icon_visible), ("1: file0.txt", true));
+
+    fx.set_parent(TabsParentTraits { in_modern_ui_tabs: false, ..fx.parent });
+    fx.layout(200.0);
+    let (name, icon_visible, _) = summary(&fx);
+    assert_eq!((name.as_str(), icon_visible), ("1: file0.txt", true));
+}
+
+#[test]
+fn modern_tabs_preserve_file_icons_across_styles_sizing_modes_and_wrapping() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    let editor_names: Vec<String> = (0..8).map(|index| format!("filename-for-layout-{index}.ts")).collect();
+    fx.open_named_editors(&editor_names);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        tab_sizing: TabSizing,
+        wrap_tabs: bool,
+        width: f64,
+        all_icons_visible: bool,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        fx.set_connected(connected);
+        for tab_sizing in [TabSizing::Fit, TabSizing::Fixed, TabSizing::Shrink] {
+            for wrap_tabs in [false, true] {
+                for width in [420.0, 1200.0] {
+                    fx.update_options(|options| {
+                        options.tab_sizing = tab_sizing;
+                        options.wrap_tabs = wrap_tabs;
+                        options.tab_sizing_fixed_min_width = 80.0;
+                        options.tab_sizing_fixed_max_width = 130.0;
+                        options.editor_actions_location = EditorActionsLocation::Hidden;
+                        options.has_icons = true;
+                    });
+                    fx.layout(width);
+                    results.push(Row {
+                        connected,
+                        tab_sizing,
+                        wrap_tabs,
+                        width,
+                        all_icons_visible: fx.state.tabs.iter().all(|tab| tab.state.has_icon && !tab.state.label.hide_icon),
+                    });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results.iter().map(|result| Row { all_icons_visible: true, ..*result }).collect();
+    assert_eq!(results, expected);
+}
+
+// `connected shrink tabs preserve icons as the editor width changes` (linha 720) fica para o próximo lote: `trimmedNames`
+// depende de a aba `shrink` conectada comprimir abaixo do `min-width` de 80px de `tabs.css`, regra que o `Layout` ainda não
+// modela (a largura de `shrink` aqui não acompanha o contêiner), e conferir isso sem a regra seria assumir.
 
 //#region Alt (#331979), os quatro últimos casos do original
 
