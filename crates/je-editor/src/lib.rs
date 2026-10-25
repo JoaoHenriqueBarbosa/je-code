@@ -254,6 +254,7 @@ pub mod get_icon_classes;
 
 pub mod codelens;
 pub mod color;
+pub mod color_detector;
 pub mod format;
 pub mod formatting_edit;
 pub mod editor_context_keys;
