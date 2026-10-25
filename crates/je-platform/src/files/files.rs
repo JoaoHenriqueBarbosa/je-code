@@ -176,6 +176,9 @@ pub enum FileKind {
     RootFolder,
 }
 
+/// `FILES_ASSOCIATIONS_CONFIG`: a chave de configuração das associações de arquivo a idioma.
+pub const FILES_ASSOCIATIONS_CONFIG: &str = "files.associations";
+
 // region: opções
 
 /// `IFileAtomicOptions`.

@@ -2085,7 +2085,7 @@ struct StubContextViewService {
 impl IContextViewService for StubContextViewService {
     fn show_context_view(&self, _delegate: Rc<dyn IContextViewDelegate>, _container: Option<Rc<ViewElement>>, _shadow_root: bool) {}
 
-    fn hide_context_view(&self, _data: Option<bool>) {}
+    fn hide_context_view(&self, _data: Option<je_platform::contextview::context_view::HideData>) {}
 
     fn layout(&self) {}
 

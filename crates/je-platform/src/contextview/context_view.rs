@@ -2,12 +2,15 @@
 //! (`HTMLElement | StandardMouseEvent | IAnchor`), a animação de fechamento, o `IDelegate` e o serviço.
 //!
 //! Divergências:
-//! - **`onHide(data)`.** O `data: unknown` que o `ActionWidgetService` passa é o `didCancel`, então é `Option<bool>`.
+//! - **`onHide(data)` e `hideContextView(data)`.** O `data: any` do original é o [`HideData`] (`Rc<dyn Any>`): quem esconde
+//!   (o `ActionWidgetService` com o `didCancel`, as migalhas com `{ source, didPick, sideBySide }`) entrega o valor que
+//!   o `onHide` do delegado lê de volta com [`hide_data_to`], que é o `data?.didPick` do original.
 //! - **`IOpenContextView`.** O `showContextView` devolve `{ close }` no original; o `ActionWidgetService` descarta o retorno,
 //!   então o contrato não o devolve.
 //! - **`onDOMEvent`, `useWindowContainerForShadowRoot`.** Os eventos de DOM do contêiner e a raiz de sombra não existem na
 //!   árvore nativa; entram com os widgets que os usam.
 
+use std::any::Any;
 use std::rc::Rc;
 
 use je_base::layout::{AnchorAlignment, AnchorAxisAlignment, AnchorPosition, IAnchor, IRect};
@@ -49,6 +52,14 @@ pub fn has_required_ancestor_classes(element: &Rc<ViewElement>, class_names: &[V
         candidate = current.parent_element();
     }
     false
+}
+
+/// O `data?: any` de `hideContextView` e de `onHide`.
+pub type HideData = Rc<dyn Any>;
+
+/// Lê o `data` como `T` (o valor que quem escondeu entregou), ou `None` se faltar ou for de outro tipo.
+pub fn hide_data_to<T: Any + Clone>(data: Option<&HideData>) -> Option<T> {
+    data.and_then(|data| data.downcast_ref::<T>()).cloned()
 }
 
 /// `HTMLElement | StandardMouseEvent | IAnchor`.
@@ -99,7 +110,7 @@ pub trait IContextViewDelegate {
     }
     fn focus(&self) {}
     /// `onHide(data)`.
-    fn on_hide(&self, _did_cancel: Option<bool>) {}
+    fn on_hide(&self, _data: Option<HideData>) {}
     fn close_animation(&self) -> Option<IContextViewCloseAnimation> {
         None
     }
@@ -114,7 +125,7 @@ pub trait IContextViewService {
     /// `showContextView(delegate, container, shadowRoot)`.
     fn show_context_view(&self, delegate: Rc<dyn IContextViewDelegate>, container: Option<Rc<ViewElement>>, shadow_root: bool);
     /// `hideContextView(data)`.
-    fn hide_context_view(&self, data: Option<bool>);
+    fn hide_context_view(&self, data: Option<HideData>);
     fn layout(&self);
     /// `getContextViewElement()`.
     fn get_context_view_element(&self) -> Rc<ViewElement>;

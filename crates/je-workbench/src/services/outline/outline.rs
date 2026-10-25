@@ -4,11 +4,11 @@
 //! Notas de tradução:
 //! - **O elemento `E`.** `IOutline<E>` é genérico no original, e os consumidores (as migalhas, o painel de estrutura)
 //!   o usam como `IOutline<unknown>` ou `IOutline<any>`. Aqui o elemento é o [`OutlineElement`] (`Rc<dyn Any>`): quem cria
-//!   o outline sabe o tipo concreto e quem o consome só o repassa de volta.
-//! - **O que é interface fica de fora de [`IOutlineListConfig`].** `treeDataSource` (`IDataSource` da árvore),
-//!   `delegate` (`IListVirtualDelegate`), `renderers` (`ITreeRenderer`) e `options` (`IWorkbenchDataTreeOptions`) são
-//!   contratos dos widgets de árvore e lista, que o je-code desenha nativamente; os três contratos de dados
-//!   (`breadcrumbsDataSource`, `comparator` e `quickPickDataSource`) ficam.
+//!   o outline sabe o tipo concreto e quem o consome só o repassa de volta. Como elemento de árvore ele vai embrulhado no
+//!   [`OutlineTreeElement`] (igualdade e hash por identidade do objeto).
+//! - **`IOutlineListConfig`.** `treeDataSource` (`IDataSource` da árvore), `delegate` (`IListVirtualDelegate`), `renderers`
+//!   (`ITreeRenderer`) e `options` (`IWorkbenchDataTreeOptions`, aqui uma função) são os contratos dos widgets de árvore e
+//!   lista sobre o [`OutlineTreeElement`]; entram com o `BreadcrumbsOutlinePicker`, que os entrega à árvore.
 //! - **`OutlineTarget`** é um `const enum` de bandeiras (1, 2 e 4): é [`OutlineTarget`], com `BitOr` e
 //!   [`OutlineTarget::contains`].
 //! - **`matches(candidate): candidate is P`** de `IOutlineCreator` não tem tipo de guarda em Rust: o criador recebe o
@@ -25,11 +25,16 @@ use std::rc::Rc;
 
 use je_base::cancellation::CancellationToken;
 use je_base::event::Event;
+use je_base::filters::FuzzyScore;
 use je_base::lifecycle::{DisposableRef, IDisposable};
 use je_base::promise::{MaybePromise, Promise};
 use je_base::uri::URI;
 use je_instantiation::service_id;
 use je_platform::opener::editor_types::EditorOptions;
+use je_widgets::list::list_types::IListVirtualDelegate;
+use je_widgets::tree::data_tree::DataTreeOptions;
+use je_widgets::tree::object_tree_model::ObjectTreeModel;
+use je_widgets::tree::tree_types::{IDataSource, ITreeRenderer};
 
 use crate::common::editor::IEditorPane;
 
@@ -111,12 +116,43 @@ pub trait IQuickPickDataSource {
     fn get_quick_pick_elements(&self) -> Vec<QuickPickOutlineElement>;
 }
 
-/// `IOutlineListConfig<E>`, sem os contratos dos widgets de árvore e lista (ver a nota do módulo).
+/// `IOutlineListConfig<E>`. `treeDataSource`, `delegate`, `renderers` e `options` (que o `BreadcrumbsOutlinePicker` entrega à
+/// `WorkbenchDataTree`) são os contratos da árvore sobre o [`OutlineTreeElement`]; `options` é uma função, porque o
+/// `IWorkbenchDataTreeOptions` é consumido pela árvore (o original o espalha com `...config.options` a cada criação).
 #[derive(Clone)]
 pub struct IOutlineListConfig {
     pub breadcrumbs_data_source: Rc<dyn IBreadcrumbsDataSource>,
+    pub delegate: Rc<dyn IListVirtualDelegate<OutlineTreeElement>>,
+    pub renderers: Vec<Rc<dyn ITreeRenderer<ObjectTreeModel<OutlineTreeElement, FuzzyScore>>>>,
+    pub tree_data_source: Rc<dyn IDataSource<Rc<dyn IOutline>, OutlineTreeElement>>,
     pub comparator: Rc<dyn IOutlineComparator>,
+    pub options: Rc<dyn Fn() -> DataTreeOptions<OutlineTreeElement, FuzzyScore>>,
     pub quick_pick_data_source: Rc<dyn IQuickPickDataSource>,
+}
+
+/// O elemento de um outline como elemento de árvore (`Eq` e `Hash` que as árvores exigem): o mesmo [`OutlineElement`],
+/// igual quando é o mesmo objeto (a identidade de referência que o `ObjectTreeModel` do original usa nos `Map`s).
+#[derive(Clone)]
+pub struct OutlineTreeElement(pub OutlineElement);
+
+impl OutlineTreeElement {
+    fn address(&self) -> *const () {
+        Rc::as_ptr(&self.0).cast()
+    }
+}
+
+impl PartialEq for OutlineTreeElement {
+    fn eq(&self, other: &Self) -> bool {
+        self.address() == other.address()
+    }
+}
+
+impl Eq for OutlineTreeElement {}
+
+impl std::hash::Hash for OutlineTreeElement {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.address().hash(state);
+    }
 }
 
 /// `OutlineChangeEvent`.
