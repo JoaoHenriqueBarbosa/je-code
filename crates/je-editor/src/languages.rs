@@ -104,6 +104,12 @@ pub trait ITokenizationSupport {
     ) -> Option<Rc<dyn IBackgroundTokenizer>> {
         None
     }
+
+    /// O suporte como `Any`, para o `instanceof` do original (o `MonarchTokenizer` consulta o suporte aninhado).
+    /// `None` quando o suporte não oferece a conversão.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
 }
 
 /// `IBackgroundTokenizer`.
