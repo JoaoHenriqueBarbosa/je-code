@@ -2,8 +2,8 @@
 //! que a geração das regras de decoração lê (`getColorTheme` e `onDidColorThemeChange`).
 //!
 //! Diferenças do original:
-//! - `IColorTheme` traz `getColor(color, useDefault?)`, `semanticHighlighting` e `getTokenStyleMetadata`; `type`,
-//!   `label`, `defines`, `tokenColorMap` e `tokenFontMap` não têm leitor aqui. Os dois últimos (que a coloração
+//! - `IColorTheme` traz `getColor(color, useDefault?)`, `type` (`theme_type`, escuro por padrão), `semanticHighlighting`
+//!   e `getTokenStyleMetadata`; `label`, `defines`, `tokenColorMap` e `tokenFontMap` não têm leitor aqui. Os dois últimos (que a coloração
 //!   semântica lê) têm implementação padrão ("desligada" e "sem estilo"), que um tema com regras semânticas
 //!   sobrescreve; o [`ColorTheme`] concreto do `je-theme` ainda não as sobrescreve.
 //! - O `IThemeService` de `view_model_impl.rs` tem só o evento, sobre o `ColorTheme` concreto do `je-theme`.
@@ -16,7 +16,7 @@
 use std::rc::Rc;
 
 use je_base::event::Event;
-use je_theme::ColorTheme;
+use je_theme::{ColorTheme, ThemeType};
 use je_theme::color::Color;
 
 /// `ITokenStyle`: o estilo de um token semântico, com a cor como índice do `tokenColorMap`.
@@ -34,6 +34,11 @@ pub trait IColorTheme {
     /// `getColor(color, useDefault?)`.
     fn get_color(&self, color: &str, use_default: Option<bool>) -> Option<Color>;
 
+    /// `type`: o tipo do tema (`ColorScheme`). O padrão é escuro; o [`ColorTheme`] concreto devolve o tipo carregado.
+    fn theme_type(&self) -> ThemeType {
+        ThemeType::Dark
+    }
+
     /// `semanticHighlighting`: o tema liga a coloração semântica. O padrão é desligada, como a de um tema sem
     /// regras semânticas.
     fn semantic_highlighting(&self) -> bool {
@@ -50,6 +55,10 @@ pub trait IColorTheme {
 impl IColorTheme for ColorTheme {
     fn get_color(&self, color: &str, use_default: Option<bool>) -> Option<Color> {
         self.resolve_color(color, use_default.unwrap_or(true))
+    }
+
+    fn theme_type(&self) -> ThemeType {
+        self.theme_type
     }
 }
 
