@@ -68,6 +68,7 @@ use crate::api::progress::{self, ProgressReporters};
 use crate::api::quick_input;
 use crate::api::quick_session::{self, QuickSessions};
 use crate::api::terminal::{self, TerminalObjects};
+use crate::api::tabs::{self, TabsApi};
 use crate::api::text_editors::{self, TextEditorApi, TextObjects};
 use crate::api::tree_views::{self, TreeViewObjects};
 use crate::api::accessor_namespace;
@@ -94,6 +95,8 @@ pub struct WindowServices {
     /// Sem os clientes `MainThreadDocuments` e `MainThreadTextEditors` não há `activeTextEditor`, `visibleTextEditors`,
     /// `showTextDocument` nem os eventos de editor.
     pub text_editors: Option<TextEditorApi>,
+    /// Sem o cliente `MainThreadEditorTabs` não há `tabGroups`.
+    pub tabs: Option<TabsApi>,
 }
 
 /// `isMessageItem(item)`: um objeto com `title` não vazio.
@@ -447,6 +450,9 @@ pub fn namespace(runner: &NodeRunner, services: Rc<WindowServices>, table: &Rc<D
     }
     if let Some(views) = &services.tree_views {
         references.extend(tree_views::window_members(runner, &js, views, &state.tree_view_objects, table, events));
+    }
+    if let Some(tabs) = &services.tabs {
+        references.push(tabs::window_member(runner, tabs, table));
     }
     match accessor_namespace(runner, "window", methods, getters) {
         JsData::Object(mut fields) => {
