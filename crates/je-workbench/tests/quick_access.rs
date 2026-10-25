@@ -76,6 +76,7 @@ use je_platform::quickinput::quick_access_controller::QuickAccessController;
 use je_platform::quickinput::quick_input::{
     I_QUICK_INPUT_SERVICE, IKeyMods, IQuickInputService, IQuickItem, IQuickPick, IQuickPickDidAcceptEvent, IQuickPickItem, QuickInputRef, QuickPickInput,
 };
+use je_workbench::services::editor::editor_groups_service::IEditorPart;
 use je_workbench::browser::quickaccess::PickerEditorState;
 use je_workbench::common::editor::editor_input::EditorInput;
 use je_workbench::common::editor::{EditorsOrder, TextEditorOptions, UntypedEditorInput};
