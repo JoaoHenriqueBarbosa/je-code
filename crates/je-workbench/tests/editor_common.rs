@@ -20,18 +20,30 @@
 //!   lê, e `.editor-container` `style.width` é a propriedade `width` do contêiner do editor (o grupo não depende de ter um
 //!   editor aberto para escrevê-los); `classList.contains('editor-tabs-multiple')` é `container_has_class`.
 //!
-//! Fora deste arquivo (e por quê): `isEditorIdentifier` e `isEditorInputWithOptionsAndGroup` (checagens de forma sobre
-//! `unknown` que o sistema de tipos do Rust resolve em tempo de compilação: `EditorIdentifier` e `EditorInputWithOptions`
-//! já são o tipo) e os 6 `whenEditorClosed` (a função de `browser/editor.ts` não foi portada).
+//! - `isEditorIdentifier` e `isEditorInputWithOptionsAndGroup`: o porte não tem as funções de forma sobre `unknown`, porque
+//!   `EditorIdentifier`, `EditorInputWithOptions` e `EditorInputWithOptionsAndGroup` são tipos e o compilador decide a
+//!   forma. Os casos conferem a mesma decisão sobre os valores que a API aceita: `is_editor_input` (que recebe o valor
+//!   dinâmico, `EditorInputOrUntyped`) e os campos de cada estrutura. Não há API dinâmica onde aplicar o resto
+//!   (`undefined` e `'undefined'` não são representáveis no tipo).
+//! - `whenEditorClosed`: `createServices` é o `EditorServiceAccessor` (parte, `IEditorGroupsService` e `EditorService`
+//!   reais); os casos `async` rodam em `run_with_faked_timers` e o `await` é `.await.unwrap()`.
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
 mod editor_input_services;
+mod support;
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::rc::Rc;
 
-use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite};
+use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
+use je_instantiation::ServicesAccessor;
+use je_platform::opener::editor_types::EditorResolution;
+use je_workbench::browser::editor::when_editor_closed;
+use je_workbench::services::editor::editor_groups_service::EditorInputWithOptionsAndGroup;
+use je_workbench::common::editor::{EditorIdentifier, EditorInputWithOptions, is_editor_input};
+use je_workbench::test::browser::workbench_test_services::register_test_editor;
+use support::editor_service_support::{EditorServiceAccessor, register_test_file_editor, register_test_resource_editor, register_test_side_by_side_editor};
 use editor_input_services::{WorkbenchServices, uri_identity_service};
 use je_base::JsString;
 use je_base::dynamic::Dynamic;
@@ -540,6 +552,56 @@ fn editor_resource_accessor_untyped_inputs() {
 }
 
 #[test]
+fn is_editor_identifier() {
+    let disposables = ensure_no_disposables_are_leaked_in_test_suite();
+
+    let test_input1 = disposables.add_rc(TestFileEditorInput::new(uri_file("resource1"), "testTypeId"));
+    let editor: EditorInputRef = test_input1.clone();
+    assert!(!is_editor_input(None));
+    assert!(is_editor_input(Some(&typed(&test_input1))));
+
+    let identifier = EditorIdentifier { editor: editor.clone(), group_id: 3 };
+    assert_eq!(identifier.group_id, 3);
+    assert!(Rc::ptr_eq(&identifier.editor, &editor));
+}
+
+#[test]
+fn is_editor_input_with_options_and_group() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let disposables = guard.store();
+
+    run_with_faked_timers(async move {
+        disposables.add(register_test_file_editor());
+        disposables.add(register_test_side_by_side_editor());
+        disposables.add(register_test_resource_editor());
+        let accessor = EditorServiceAccessor::with_default_backup_service(&disposables);
+        accessor.part.when_ready().await.unwrap();
+
+        let test_input = disposables.add_rc(TestFileEditorInput::new(uri_file("resource1"), "testTypeId"));
+        let editor_input: EditorInputRef = test_input.clone();
+        assert!(is_editor_input(Some(&typed(&test_input))));
+
+        let exclusive_only = || {
+            let mut options = TextEditorOptions::default();
+            options.base.override_ = Some(EditorOverride::Resolution(EditorResolution::ExclusiveOnly));
+            options
+        };
+        let editor_input_with_options = EditorInputWithOptions { editor: editor_input.clone(), options: Some(exclusive_only()) };
+        assert!(Rc::ptr_eq(&editor_input_with_options.editor, &editor_input));
+        assert!(editor_input_with_options.options.is_some());
+
+        let service = accessor.editor_groups_service.clone();
+        let with_group = EditorInputWithOptionsAndGroup { editor: editor_input.clone(), options: Some(exclusive_only()), group: service.active_group() };
+        assert!(Rc::ptr_eq(&with_group.editor, &editor_input));
+        assert!(Rc::ptr_eq(&with_group.group, &service.active_group()));
+        assert!(with_group.options.is_some());
+
+        accessor.teardown().await.unwrap();
+        disposables.clear();
+    });
+}
+
+#[test]
 fn is_text_editor_view_state_cases() {
     let object = |entries: Vec<(&str, Dynamic)>| Dynamic::object(entries);
 
@@ -668,4 +730,83 @@ fn editor_tab_mode_class_follows_configured_and_enforced_part_options() {
     }
 
     assert_eq!(states, [false, true, false, false, false, false, false]);
+}
+
+/// `testWhenEditorClosed(sideBySide, custom, ...resources)`.
+fn test_when_editor_closed(side_by_side: bool, custom: bool, paths: &[&str]) {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let disposables = guard.store();
+    let resources: Vec<URI> = paths.iter().map(|path| uri_file(path)).collect();
+
+    run_with_faked_timers(async move {
+        // O `setup` da suíte: os painéis de arquivo, lado a lado e recurso, e o painel `MyTestEditorForEditors`.
+        disposables.add(register_test_file_editor());
+        disposables.add(register_test_side_by_side_editor());
+        disposables.add(register_test_resource_editor());
+        disposables.add(register_test_editor("MyTestEditorForEditors", vec![TypeId::of::<TestFileEditorInput>()], None));
+
+        // `createServices()`
+        let accessor = EditorServiceAccessor::with_default_backup_service(&disposables);
+        accessor.part.when_ready().await.unwrap();
+        let editor_service: Rc<dyn IEditorService> = accessor.editor_service.clone();
+        let pinned = || {
+            let mut options = TextEditorOptions::default();
+            options.base.pinned = Some(true);
+            options
+        };
+
+        for resource in &resources {
+            if custom {
+                let input: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                editor_service.open_editor_typed(&input, Some(pinned()), None).await.unwrap();
+            } else if side_by_side {
+                let primary: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let secondary: EditorInputRef = disposables.add_rc(TestFileEditorInput::new(resource.clone(), "testTypeId"));
+                let input: EditorInputRef = disposables.add_rc(SideBySideEditorInput::new(Some("testSideBySideEditor"), None, primary, secondary, editor_service.clone()));
+                editor_service.open_editor_typed(&input, Some(pinned()), None).await.unwrap();
+            } else {
+                let untyped = UntypedEditorInput { resource: Some(resource.clone()), options: Some(pinned()), ..UntypedEditorInput::default() };
+                editor_service.open_editor_in(untyped, None).await.unwrap();
+            }
+        }
+
+        let closed_promise = accessor.instantiation_service.invoke_function(|accessor: &ServicesAccessor| when_editor_closed(accessor, &resources));
+
+        let _closing = accessor.editor_groups_service.active_group().close_all_editors(None);
+
+        closed_promise.await.unwrap();
+
+        accessor.teardown().await.unwrap();
+        disposables.clear();
+    });
+}
+
+#[test]
+fn when_editor_closed_single_editor() {
+    test_when_editor_closed(false, false, &["/path/index.txt"]);
+}
+
+#[test]
+fn when_editor_closed_multiple_editor() {
+    test_when_editor_closed(false, false, &["/path/index.txt", "/test.html"]);
+}
+
+#[test]
+fn when_editor_closed_single_editor_diff_editor() {
+    test_when_editor_closed(true, false, &["/path/index.txt"]);
+}
+
+#[test]
+fn when_editor_closed_multiple_editor_diff_editor() {
+    test_when_editor_closed(true, false, &["/path/index.txt", "/test.html"]);
+}
+
+#[test]
+fn when_editor_closed_single_custom_editor() {
+    test_when_editor_closed(false, true, &["/path/index.txt"]);
+}
+
+#[test]
+fn when_editor_closed_multiple_custom_editor() {
+    test_when_editor_closed(false, true, &["/path/index.txt", "/test.html"]);
 }
