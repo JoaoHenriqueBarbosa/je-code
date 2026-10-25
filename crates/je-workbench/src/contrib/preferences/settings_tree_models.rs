@@ -479,6 +479,12 @@ impl SettingsTreeSettingElement {
         self.value.borrow().clone()
     }
 
+    /// `element.value = value`: o campo `value` do original é público e o `SettingMultilineTextRenderer` o atualiza antes de
+    /// medir a altura.
+    pub(crate) fn set_value(&self, value: Dynamic) {
+        *self.value.borrow_mut() = value;
+    }
+
     /// The value in the current settings scope.
     pub fn scope_value(&self) -> Dynamic {
         self.scope_value.borrow().clone()
