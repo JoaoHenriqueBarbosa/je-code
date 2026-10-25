@@ -696,7 +696,10 @@ impl HoverService {
         let weak = self.this.clone();
         let shown = hover.clone();
         let shown_options = options.clone();
-        let _ = disposable_timeout(
+        // O timer pertence ao `hoverDisposables` do hover: dispara e sai do store, ou é cancelado junto com o hover (clique,
+        // cancelamento, mouseout, dispose do serviço), sem deixar timer solto.
+        let store = hover.store.clone();
+        disposable_timeout(
             move || {
                 let Some(service) = weak.upgrade() else {
                     return;
@@ -707,7 +710,7 @@ impl HoverService {
                 }
             },
             delay,
-            None,
+            Some(store),
         );
 
         Some(hover.hover)
@@ -1147,13 +1150,16 @@ impl HoverService {
 
     fn do_hide_hover(&self) {
         // Pop and dispose the topmost hover
-        let top = self.state.borrow().hover_stack.last().map(|entry| entry.hover.clone());
+        // O tamanho é capturado antes do dispose, como `const length` no original: o dispose já tira o hover da pilha pelo
+        // `onDispose`, e truncar pelo tamanho atual removeria também o pai.
+        let (length, top) = {
+            let state = self.state.borrow();
+            (state.hover_stack.len(), state.hover_stack.last().map(|entry| entry.hover.clone()))
+        };
         if let Some(top) = top {
             top.dispose();
         }
-        let mut state = self.state.borrow_mut();
-        let length = state.hover_stack.len();
-        state.hover_stack.truncate(length.saturating_sub(1));
+        self.state.borrow_mut().hover_stack.truncate(length.saturating_sub(1));
     }
 
     pub fn show_and_focus_last_hover(&self) {
