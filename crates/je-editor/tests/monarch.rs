@@ -87,7 +87,8 @@ const SQL_QUERY_START: &str = "(SELECT|INSERT|UPDATE|DELETE|CREATE|REPLACE|ALTER
 fn register_sql(disposables: &DisposableStore, language_service: &Rc<LanguageService>, configuration_service: &Rc<StandaloneConfigurationService>) {
     disposables.add(language_service.register_language(LanguageExtensionPoint::new("sql")));
     let sql = create_monarch_tokenizer(language_service, "sql", MonarchLanguage::new(vec![("root", vec![rule(".", str_action("token"))])]), configuration_service);
-    disposables.add(tokenization_registry().register("sql", disposables.add_rc(sql)));
+    let sql = disposables.add_rc(sql);
+    disposables.add(tokenization_registry().register("sql", sql));
 }
 
 fn embedded_sql_lines() -> [&'static str; 6] {
