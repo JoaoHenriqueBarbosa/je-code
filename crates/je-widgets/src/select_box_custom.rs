@@ -12,8 +12,8 @@
 //!   que no original é filho do contêiner; aqui é do próprio nó, o que é igual quando o contêiner abraça a
 //!   caixa, como no item de uma barra de ações). O que o navegador faz sozinho vira estado do widget:
 //!   [`SelectBoxList::selected_index`] (`selectedIndex`), [`SelectBoxList::aria_expanded`] (`aria-expanded`),
-//!   [`SelectBoxList::tab_index`], `disabled` (por [`SelectBoxList::set_enabled`]; um `select` desabilitado não
-//!   recebe clique nem tecla). Um clique no nó (evento `Click`) abre ou fecha a lista.
+//!   [`SelectBoxList::tab_index`], `disabled` (por [`SelectBoxList::set_enabled`], que também grava o atributo `disabled` no nó, como o
+//!   `selectElement.disabled` reflete no DOM; um `select` desabilitado não recebe clique nem tecla). Um clique no nó (evento `Click`) abre ou fecha a lista.
 //! - O contêiner da lista (`.monaco-select-box-dropdown-container`) é um nó destacado que o `render` da visão de
 //!   contexto anexa. O CSS `display: none` / `.visible` é `style.visible` mais a classe `visible`. Sem motor de
 //!   layout, o tamanho (largura ótima, altura da lista, altura do painel de detalhes) é calculado como o
@@ -604,6 +604,15 @@ impl ISelectBoxDelegate for SelectBoxList {
 
     fn set_enabled(&self, enable: bool) {
         self.enabled.set(enable);
+        {
+            // `selectElement.disabled = !enable`: o atributo booleano `disabled` do `<select>`.
+            let mut tree = self.ui.tree_mut();
+            if enable {
+                tree.remove_attribute(self.select_element, "disabled");
+            } else {
+                tree.set_attribute(self.select_element, "disabled", "");
+            }
+        }
         self.refresh_select_style();
     }
 

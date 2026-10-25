@@ -17,9 +17,9 @@
 //!   subárvore e a concatenação dos textos dos nós; `aria-label` é o rótulo do nó; `element.click()` e o `dblclick` são o evento
 //!   `Click` e `DoubleClick` despachados no nó.
 //! - `querySelector('[role="checkbox"]').getAttribute('aria-checked')` e `aria-disabled` são os atributos do nó do `Checkbox`
-//!   (`Tree::attribute`). O `<select>` do enum é o `SelectBox` customizado (ver `select_box.rs`), que não tem o atributo
-//!   `disabled`: o `select:disabled` é o efeito que ele pinta, `opacity` abaixo de 1, e `selectedOptions[0].text` é
-//!   `selected_option_text`.
+//!   (`Tree::attribute`). O `<select>` do enum é o `SelectBox` customizado (ver `select_box.rs`), que grava o atributo
+//!   `disabled` no nó (`querySelector('select').disabled` é `Tree::attribute(..., "disabled").is_some()`), e
+//!   `selectedOptions[0].text` é `selected_option_text`.
 //! - `mock<ITreeNode>() { element }` é o `TreeNode` com o elemento e os demais campos zerados.
 //! - A propriedade `AgentSandboxRetryWithAllowNetworkRequests` não está entre as que `terminal_chat_agent_tools_*` devolve (só as
 //!   de apresentação gerenciada), então a mensagem de depreciação é o texto do original (`markdownDeprecationMessage`).
@@ -567,7 +567,7 @@ fn renders_managed_state_and_unlocks_each_sandbox_setting_after_policy_removal()
             row.render();
             let (disabled, value) = if is_enabled {
                 let template = row.template.downcast_ref::<ISettingEnumItemTemplate>().expect("o template do enum");
-                (ui.tree().style(template.select_element).opacity < 1.0, s(&template.select_box.selected_option_text().expect("uma opção selecionada")))
+                (ui.tree().attribute(template.select_element, "disabled").is_some(),s(&template.select_box.selected_option_text().expect("uma opção selecionada")))
             } else {
                 let template = row.template.downcast_ref::<ISettingBoolItemTemplate>().expect("o template do bool");
                 let node = template.checkbox.dom_node();

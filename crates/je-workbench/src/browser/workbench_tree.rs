@@ -47,14 +47,14 @@ use je_platform::list::list_service::{
 use je_ui::{EventKind, NodeId, Ui};
 use je_widgets::list::list_styles::IListStyles;
 use je_widgets::list::list_types::IListVirtualDelegate;
-use je_widgets::tree::abstract_tree::{AbstractTree, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick, TreeFindMatchType, TreeFindMode};
+use je_widgets::tree::abstract_tree::{AbstractTree, AbstractTreeOptions, AbstractTreeOptionsUpdate, ExpandOnlyOnTwistieClick, TreeFindMatchType, TreeFindMode};
 use je_widgets::tree::async_data_tree::{AsyncDataTree, AsyncDataTreeBackend, ObjectBackend};
 use je_widgets::tree::async_data_tree_node::{AsyncDataTreeOptions, AsyncNode, IAsyncDataTreeRenderer};
 use je_widgets::tree::compressible_async_data_tree::{CompressibleAsyncDataTreeOptions, CompressibleBackend, ICompressibleAsyncDataTreeRenderer, ITreeCompressionDelegate};
-use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeOptions};
-use je_widgets::tree::object_tree_model::ObjectTreeModel;
+use je_widgets::tree::object_tree::{ObjectTree, ObjectTreeModelLike, ObjectTreeOptions};
+use je_widgets::tree::object_tree_model::{ObjectTreeModel, ObjectTreeModelOptions};
 use je_widgets::tree::tree_renderer::RenderIndentGuides;
-use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeModel, ITreeRenderer, TreeEvent, TreeMouseEvent, TreeNodeApi};
+use je_widgets::tree::tree_types::{IAsyncDataSource, ITreeModel, ITreeRenderer, ITreeSorter, TreeEvent, TreeMouseEvent, TreeNodeApi};
 
 use crate::browser::parts::editor::editor_group_view::ContextKeyTarget;
 use crate::browser::resource_navigator::{IOpenEvent, IResourceNavigatorOptions, ResourceNavigator};
@@ -715,8 +715,9 @@ fn navigator_options(workbench: &IWorkbenchTreeOptions, services: &WorkbenchTree
     }
 }
 
-/// `WorkbenchObjectTree<T, TFilterData>`.
-pub type WorkbenchObjectTree<T, F = ()> = WorkbenchTree<ObjectTree<T, F>, T>;
+/// `WorkbenchObjectTree<T, TFilterData>`. O terceiro parâmetro é o modelo que o `createModel` sobrescrito devolve
+/// ([`WorkbenchTree::with_model`]); sem subclasse é o `ObjectTreeModel`.
+pub type WorkbenchObjectTree<T, F = (), M = ObjectTreeModel<T, F>> = WorkbenchTree<ObjectTree<T, F, M>, T>;
 
 impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> WorkbenchTree<ObjectTree<T, F>, T> {
     #[allow(clippy::too_many_arguments)]
@@ -726,18 +727,37 @@ impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static> WorkbenchTree<ObjectTre
         container: NodeId,
         delegate: Rc<dyn IListVirtualDelegate<T>>,
         renderers: Vec<Rc<dyn ITreeRenderer<ObjectTreeModel<T, F>>>>,
-        mut options: ObjectTreeOptions<T, F>,
+        options: ObjectTreeOptions<T, F>,
+        workbench: IWorkbenchTreeOptions,
+        services: &WorkbenchTreeServices,
+    ) -> Rc<Self> {
+        Self::with_model(user, ui, container, delegate, renderers, options.tree, options.sorter, ObjectTreeModel::new, workbench, services)
+    }
+}
+
+impl<T: Clone + Eq + Hash + 'static, F: Clone + 'static, M: ObjectTreeModelLike<T, F>> WorkbenchTree<ObjectTree<T, F, M>, T> {
+    /// O construtor com o `createModel(user, options)` sobrescrito da subclasse (ver [`ObjectTree::with_model`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_model(
+        user: &str,
+        ui: &Ui,
+        container: NodeId,
+        delegate: Rc<dyn IListVirtualDelegate<T>>,
+        renderers: Vec<Rc<dyn ITreeRenderer<M>>>,
+        mut options: AbstractTreeOptions<M>,
+        sorter: Option<Rc<dyn ITreeSorter<T>>>,
+        create_model: impl FnOnce(&str, ObjectTreeModelOptions<T, F>) -> M,
         workbench: IWorkbenchTreeOptions,
         services: &WorkbenchTreeServices,
     ) -> Rc<Self> {
         let internals_options = WorkbenchTreeInternalsOptions {
-            multiple_selection_support: options.tree.update.multiple_selection_support,
-            find_widget_enabled: options.tree.find_widget_enabled,
-            overrides: TreeOptionOverrides::of(&options.tree.update),
+            multiple_selection_support: options.update.multiple_selection_support,
+            find_widget_enabled: options.find_widget_enabled,
+            overrides: TreeOptionOverrides::of(&options.update),
         };
-        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.tree.update, &mut options.tree.keyboard_support);
+        workbench_tree_data_preamble(services.configuration_service.as_ref(), &mut options.update, &mut options.keyboard_support);
 
-        let tree = ObjectTree::new(user, ui, container, delegate, renderers, options);
+        let tree = ObjectTree::with_model(user, ui, container, delegate, renderers, options, sorter, create_model);
 
         let host: Rc<dyn WorkbenchTreeHost> = Rc::new(AbstractTreeHost { tree: tree.abstract_tree().clone(), to_user: Rc::new(|element: &T| Rc::new(element.clone()) as Rc<dyn Any>), input: None });
 
