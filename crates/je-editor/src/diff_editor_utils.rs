@@ -24,10 +24,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use je_base::lifecycle::{Disposable, DisposableRef, DisposableStore, IDisposable, to_disposable};
+use je_base::observable::base::ObservableRef;
 use je_base::observable::observables::observable_value::{ObservableValue, observable_value_owned};
 use je_base::observable::change_tracker::FnChangeTracker;
 use je_base::observable::{
-    AnyObservable, DebugNameOptions, DebugOwner, DerivedOptions, IObservable, IReader, Observable, ObservableRef, SettableExt, StrictEquals,
+    AnyObservable, DebugNameOptions, DebugOwner, DerivedOptions, IObservable, IReader, Observable, SettableExt, StrictEquals,
     autorun_handle_changes, autorun_opts, autorun_with_store, derived_opts, transaction,
 };
 

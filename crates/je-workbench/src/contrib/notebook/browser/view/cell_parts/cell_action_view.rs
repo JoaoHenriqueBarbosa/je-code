@@ -25,7 +25,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use je_base::actions::ActionRef;
+use je_base::actions::{ActionRef, IAction};
 use je_base::dynamic::{Dynamic, ObjectRef};
 use je_base::lifecycle::IDisposable;
 use je_platform::action::Icon;
