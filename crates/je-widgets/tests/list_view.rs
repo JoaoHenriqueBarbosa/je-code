@@ -1,9 +1,9 @@
 //! Porte de `src/vs/base/test/browser/ui/list/listView.test.ts` (suíte `ListView`), caso a caso e na mesma ordem.
 //!
-//! Adaptado: `recovers when rendering collapses the viewport (horizontal: false, dynamic: false|true)` perde
-//! o `dnd` do original (`draggable`, `getDragURI` e a lista `dragURIs`: arrastar e soltar não existe no
-//! `ListView`); o resto do caso (a reentrada de `layout(0, ...)` dentro de `renderElement`, as linhas
-//! renderizadas e descartadas, a contagem de templates) está igual. O `textContent` da linha é o `label` do nó.
+//! Adaptado: `recovers when rendering collapses the viewport (horizontal: false, dynamic: false|true)` lê o
+//! `draggable` da linha como o atributo `draggable` do nó (`row.draggable` do DOM); o `dnd` do original é o
+//! `Dnd` abaixo, ligado por `ListView::set_dnd` (a `ListViewOptions` do `je-widgets` não tem o tipo do elemento).
+//! O `textContent` da linha é o `label` do nó.
 //!
 //! Pendente: `recovers when rendering collapses the viewport (horizontal: true, dynamic: false)` precisa de
 //! `horizontalScrolling`, que o `ListView` não tem (mede a largura de conteúdo dos nós; `content_width` é 0).
@@ -31,6 +31,8 @@ use std::rc::Rc;
 
 use je_base::lifecycle::IDisposable;
 use je_ui::{NodeId, Ui};
+use je_widgets::dnd::{DragEvent, IDragAndDropData};
+use je_widgets::list::list_dnd::{IListDragAndDrop, IListViewDragAndDrop, ListDragOverResult, ListViewTargetSector};
 use je_widgets::list::list_types::{IListRenderer, IListVirtualDelegate, ListElementRenderDetails, TemplateData};
 use je_widgets::list::list_view::{ListView, ListViewOptions};
 use support::{create_container, ensure_no_disposables_are_leaked_in_test_suite, query_all};
@@ -106,16 +108,47 @@ fn row_count(ui: &Ui, container: NodeId) -> usize {
     query_all(&ui.tree(), container, &["monaco-list-row"]).len()
 }
 
+/// O `dnd` do original: `getDragURI` registra o valor e só o 42 é arrastável (`'test:42'`), os outros dão `null`.
+struct Dnd {
+    drag_uris: Rc<RefCell<Vec<i64>>>,
+}
+
+impl IListDragAndDrop<i64> for Dnd {
+    fn get_drag_uri(&self, value: &i64) -> Option<String> {
+        self.drag_uris.borrow_mut().push(*value);
+        (*value == 42).then(|| "test:42".to_owned())
+    }
+
+    fn on_drag_over(&self, _: &Rc<dyn IDragAndDropData>, _: Option<&i64>, _: Option<usize>, _: Option<ListViewTargetSector>, _: &DragEvent) -> ListDragOverResult {
+        ListDragOverResult::Bool(false)
+    }
+
+    fn drop(&self, _: &Rc<dyn IDragAndDropData>, _: Option<&i64>, _: Option<usize>, _: Option<ListViewTargetSector>, _: &DragEvent) {}
+}
+
+impl IListViewDragAndDrop<i64> for Dnd {
+    fn get_drag_elements(&self, value: &i64, _index: usize) -> Vec<i64> {
+        vec![*value]
+    }
+}
+
+/// O `row.draggable` do DOM: o atributo `draggable` do nó vale `"true"`.
+fn is_draggable(ui: &Ui, row: NodeId) -> bool {
+    ui.tree().attribute(row, "draggable") == Some("true")
+}
+
 fn recovers_when_rendering_collapses_the_viewport(support_dynamic_heights: bool) {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let ui = Ui::new();
     let element = create_container(&ui, 0.0, 0.0);
     let delegate = Delegate { height: 20.0, dynamic_height: Some(20.0) };
     let (rendered, disposed) = (Rc::new(RefCell::new(Vec::new())), Rc::new(RefCell::new(Vec::new())));
+    let drag_uris = Rc::new(RefCell::new(Vec::new()));
     let templates = Rc::new(Cell::new(0));
     let list_view_ref: ListViewRef = Rc::default();
     let renderer = Renderer { ui: ui.clone(), list_view: list_view_ref.clone(), templates: templates.clone(), rendered: rendered.clone(), disposed: disposed.clone(), collapse_on_render: Rc::new(Cell::new(true)) };
     let list_view = guard.add_rc(ListView::new(&ui, element, Rc::new(delegate), vec![Rc::new(renderer)], ListViewOptions { support_dynamic_heights, ..Default::default() }));
+    list_view.set_dnd(Rc::new(Dnd { drag_uris: drag_uris.clone() }));
     *list_view_ref.borrow_mut() = Some(list_view.clone());
     list_view.layout(Some(200.0), Some(200.0));
     list_view.splice(0, 0, &[42]);
@@ -125,18 +158,23 @@ fn recovers_when_rendering_collapses_the_viewport(support_dynamic_heights: bool)
     assert_eq!(row_count(&ui, element), 0);
     assert_eq!(*rendered.borrow(), [42]);
     assert_eq!(*disposed.borrow(), [42]);
+    assert_eq!(*drag_uris.borrow(), Vec::<i64>::new());
 
     list_view.layout(Some(200.0), Some(200.0));
     let row = list_view.dom_element(0).expect("a linha existe");
     assert_eq!(text_of(&ui, row).as_deref(), Some("42"));
+    assert!(is_draggable(&ui, row));
     assert_eq!(*rendered.borrow(), [42, 42]);
+    assert_eq!(*drag_uris.borrow(), [42]);
     assert_eq!(templates.get(), 1);
 
     list_view.splice(0, 1, &[7]);
     assert_eq!(list_view.dom_element(0), Some(row), "a linha foi reaproveitada");
     assert_eq!(text_of(&ui, row).as_deref(), Some("7"));
+    assert!(!is_draggable(&ui, row));
     assert_eq!(*rendered.borrow(), [42, 42, 7]);
     assert_eq!(*disposed.borrow(), [42, 42]);
+    assert_eq!(*drag_uris.borrow(), [42, 7]);
 
     list_view.dispose();
     assert_eq!(templates.get(), 0);

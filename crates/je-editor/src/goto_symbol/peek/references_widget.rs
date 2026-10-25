@@ -37,9 +37,8 @@
 //!   [`references_tree_styles`]. `keyboardSupport` é `AsyncDataTreeOptions::keyboard_support`.
 //! - `ReferencesDragAndDrop` é o `dnd` da árvore (`AsyncDataTreeOptions::dnd`): `getDragURI`, `getDragLabel`, `onDragStart`
 //!   (grava `ResourceURLs` e `text/plain` no `dataTransfer` do arrasto), `onDragOver` que recusa e `drop` vazio. O
-//!   `AccessibilityProvider` entra em `AsyncDataTreeOptions::accessibility_provider`. O `dragstart` da linha só chega à
-//!   árvore quando o `je-ui` entregar os eventos de arrastar e soltar (ver `je_widgets::dnd::listen_drag_event`); a opção
-//!   já está ligada.
+//!   `AccessibilityProvider` entra em `AsyncDataTreeOptions::accessibility_provider`. O `dragstart` da linha chega à
+//!   árvore pelo `je_widgets::dnd::listen_drag_event` (o `draggable` da linha é atributo do nó); a opção está ligada.
 //! - `async revealReference`, `_revealReference` e `setSelection().then(...)` são [`Promise`]s; o que o original roda antes do
 //!   primeiro `await` roda dentro da chamada. `this._tree.rerender(reference)` de uma referência cuja árvore ainda não a tem
 //!   (um arquivo recolhido) lançaria `Data tree node not found` dentro de um ouvinte; aqui o ouvinte confere antes

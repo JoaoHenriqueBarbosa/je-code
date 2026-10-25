@@ -24,11 +24,11 @@ use std::rc::{Rc, Weak};
 use je_base::async_::TimeoutTimer;
 use je_base::event::{Emitter, Event as BaseEvent};
 use je_base::lifecycle::{Disposable, DisposableRef, IDisposable, to_disposable};
-use je_ui::Ui;
+use je_ui::{DropEffect, EffectAllowed, EventKind, Ui};
 
 use super::ListView;
 use crate::common::{registered_emitter, throw};
-use crate::dnd::{DataTransfers, DragEvent, DragEventKind, DragHandler, IDragAndDropData, listen_drag_event};
+use crate::dnd::{DataTransfers, DragEvent, DragHandler, IDragAndDropData, listen_drag_event};
 use crate::drag_image::{DragImageStyle, apply_drag_image, discard_drag_image};
 use crate::list::list_dnd::{
     ElementsDragAndDropData, ExternalElementsDragAndDropData, IListDragAndDrop, IListViewDragAndDrop, ListDragOverEffectPosition, ListDragOverEffectType, ListDragOverResult, ListViewTargetSector,
@@ -145,19 +145,17 @@ impl<T: Clone + 'static> ListView<T> {
 
     /// Instala os ouvintes de `dragover`, `drop`, `dragleave` e `dragend` do `domNode`.
     pub(super) fn install_drag_listeners(&self) {
-        let handlers: [(DragEventKind, fn(&ListView<T>, &DragEvent) -> bool); 4] = [
-            (DragEventKind::DragOver, ListView::<T>::handle_drag_over),
-            (DragEventKind::Drop, ListView::<T>::handle_drop),
-            (DragEventKind::DragLeave, ListView::<T>::handle_drag_leave),
-            (DragEventKind::DragEnd, ListView::<T>::handle_drag_end),
+        let handlers: [(EventKind, fn(&ListView<T>, &DragEvent) -> bool); 4] = [
+            (EventKind::DragOver, ListView::<T>::handle_drag_over),
+            (EventKind::Drop, ListView::<T>::handle_drop),
+            (EventKind::DragLeave, ListView::<T>::handle_drag_leave),
+            (EventKind::DragEnd, ListView::<T>::handle_drag_end),
         ];
 
         for (kind, handle) in handlers {
             let weak = self.weak_self.clone();
             let handler: DragHandler = Rc::new(move |event: &DragEvent| weak.upgrade().is_some_and(|this| handle(&this, event)));
-            if let Some(listener) = listen_drag_event(&self.ui, self.dom_node, kind, handler) {
-                self.base.register(listener);
-            }
+            self.base.register(listen_drag_event(&self.ui, self.dom_node, kind, handler));
         }
     }
 
@@ -189,8 +187,8 @@ impl<T: Clone + 'static> ListView<T> {
                 }
                 false
             });
-            let listener = listen_drag_event(&self.ui, dom_node, DragEventKind::DragStart, handler);
-            self.items.borrow_mut()[index].drag_start_disposable = listener;
+            let listener = listen_drag_event(&self.ui, dom_node, EventKind::DragStart, handler);
+            self.items.borrow_mut()[index].drag_start_disposable = Some(listener);
         }
     }
 
@@ -208,7 +206,7 @@ impl<T: Clone + 'static> ListView<T> {
         let dnd = self.drag.dnd.borrow().clone();
         let elements = dnd.get_drag_elements(element, index);
 
-        event.data_transfer.set_effect_allowed("copyMove");
+        event.data_transfer.set_effect_allowed(EffectAllowed::CopyMove);
         event.data_transfer.set_data(DataTransfers::TEXT, uri);
 
         let label = dnd.get_drag_label(&elements, event).unwrap_or_else(|| elements.len().to_string());
@@ -269,7 +267,7 @@ impl<T: Clone + 'static> ListView<T> {
         }
 
         let effect = result.effect();
-        event.data_transfer.set_drop_effect(if effect.is_some_and(|effect| effect.kind == ListDragOverEffectType::Copy) { "copy" } else { "move" });
+        event.data_transfer.set_drop_effect(if effect.is_some_and(|effect| effect.kind == ListDragOverEffectType::Copy) { DropEffect::Copy } else { DropEffect::Move });
 
         let mut feedback: Vec<i64> = match result.feedback() {
             Some(feedback) => feedback.clone(),

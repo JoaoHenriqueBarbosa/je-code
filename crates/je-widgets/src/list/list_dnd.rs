@@ -21,7 +21,11 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::dnd::{DataTransfer, DragEvent, DragFile, IDragAndDropData};
+use std::path::PathBuf;
+
+use je_ui::DataTransfer;
+
+use crate::dnd::{DragEvent, IDragAndDropData};
 
 /// `ListViewTargetSector`: a posição do ponteiro relativa ao topo do item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,11 +253,11 @@ impl<T: Clone + 'static> IDragAndDropData for ExternalElementsDragAndDropData<T>
     }
 }
 
-/// O que `NativeDragAndDropData.getData()` devolve: `{ types, files }`.
+/// O que `NativeDragAndDropData.getData()` devolve: `{ types, files }` (os arquivos são os caminhos do sistema).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeDragData {
     pub types: Vec<String>,
-    pub files: Vec<DragFile>,
+    pub files: Vec<PathBuf>,
 }
 
 /// `NativeDragAndDropData`.
@@ -272,7 +276,9 @@ impl IDragAndDropData for NativeDragAndDropData {
     fn update(&self, data_transfer: &DataTransfer) {
         let mut data = self.data.borrow_mut();
         data.types = data_transfer.types();
-        data.files = data_transfer.files().into_iter().filter(|file| file.size != 0 || !file.mime_type.is_empty()).collect();
+        // `files.filter(f => f.size > 0 || f.type)`: tira as pastas, que o navegador entrega como `File` sem tamanho
+        // e sem tipo. Aqui o arquivo é lido do sistema: só os arquivos regulares ficam.
+        data.files = data_transfer.files().into_iter().filter(|file| std::fs::metadata(file).is_ok_and(|metadata| metadata.is_file())).collect();
     }
 
     fn get_data(&self) -> Rc<dyn Any> {

@@ -18,8 +18,8 @@
 //! dinâmica pela caixa da linha (`offsetHeight`). A altura dinâmica fornecida pelo delegate
 //! (`getDynamicHeight`) funciona, com o mesmo `_rerender` do original.
 //!
-//! A arrastar e soltar (`dnd`) está em `list_view/dnd.rs`: a lógica é a do original; só a escuta dos eventos
-//! `drag*` do DOM espera o `je-ui` (ver `crate::dnd::listen_drag_event`).
+//! A arrastar e soltar (`dnd`) está em `list_view/dnd.rs`: a lógica é a do original, e os eventos `drag*` entram
+//! pelo `je-ui` (ver `crate::dnd::listen_drag_event`).
 
 mod dnd;
 

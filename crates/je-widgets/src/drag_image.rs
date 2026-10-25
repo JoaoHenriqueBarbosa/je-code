@@ -14,9 +14,8 @@
 
 use je_render::Rgba;
 use je_render::kurbo::Rect;
-use je_ui::{Border, NodeId, PointerEvents, Role, Ui};
+use je_ui::{Border, DataTransfer, NodeId, PointerEvents, Role, Ui};
 
-use crate::dnd::DataTransfer;
 use crate::dom::create_el;
 use crate::list::list_styles::LIST_FALLBACK_FOREGROUND;
 use crate::text::{ellipsize, measure_text, natural_line_height, set_node_text, ui_font};
@@ -95,9 +94,10 @@ pub fn apply_drag_image(ui: &Ui, data_transfer: &DataTransfer, container: NodeId
 }
 
 /// Destrói a imagem de arrasto do `DataTransfer`, se há (o `dragImage.remove()` do original, que roda quando a
-/// operação de arrastar termina).
+/// operação de arrastar termina). Pode rodar mais de uma vez no mesmo arrasto (`drop` e `dragend`): remover um nó que
+/// já foi destruído não faz nada.
 pub fn discard_drag_image(ui: &Ui, data_transfer: &DataTransfer) {
-    if let Some(image) = data_transfer.take_drag_image() {
+    if let Some(image) = data_transfer.drag_image() {
         ui.remove(image.node);
     }
 }
