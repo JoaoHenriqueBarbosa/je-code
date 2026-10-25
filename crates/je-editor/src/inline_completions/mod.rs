@@ -42,7 +42,11 @@
 //!     substituição de linhas e lado a lado (`inline_edits_views/`, com o `NonOverflowOverlayWidget` que as views
 //!     compartilham; o lado a lado trouxe o `EmbeddedCodeEditorWidget`, em `embedded_code_editor_widget`).
 //!     Faltam: inserção em linha, inserção em várias linhas e long distance hint;
-//!   - 4c-3: o gutter indicator (`inlineEditsGutterIndicator` e as partes do gutter);
+//!   - 4c-3 (em andamento): o gutter indicator, em `view/inline_edits/components/`. Pronto: `gutterIndicatorView`
+//!     (`InlineEditsGutterIndicator`, `InlineEditsGutterIndicatorData`, `InlineSuggestionGutterMenuData`,
+//!     `SimpleInlineSuggestModel`, o posicionamento na margem, o hover e o pulso). A abertura do menu e a altura do sticky
+//!     scroll chegam pelo contrato `IGutterIndicatorHost`. Falta: `gutterIndicatorMenu` (`GutterIndicatorMenuContent`),
+//!     que implementa `IGutterIndicatorHost::show_menu` (conteúdo, `createFocusTracker` e `showInstantHover`);
 //!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
 //!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
 //!     (`hintsWidget/*`, com o `StatusBarViewItem`);
