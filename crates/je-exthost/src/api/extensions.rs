@@ -70,7 +70,7 @@ impl ExtensionServiceSlot {
         self.service.borrow().as_ref().map_or_else(Vec::new, |service| service.my_registry().get_all_extension_descriptions())
     }
 
-    fn service(&self) -> Result<Rc<ExtHostExtensionService>, String> {
+    pub(crate) fn service(&self) -> Result<Rc<ExtHostExtensionService>, String> {
         self.service.borrow().clone().ok_or_else(|| "vscode.extensions: o serviço de extensões do host ainda não foi iniciado".to_owned())
     }
 }
@@ -87,7 +87,7 @@ pub(crate) fn json_to_js(value: &serde_json::Value) -> JsData {
     }
 }
 
-fn instance(id: &str) -> JsData {
+pub(crate) fn instance(id: &str) -> JsData {
     JsData::Object(vec![(CLASS_KEY.to_owned(), JsData::Str("Extension".to_owned())), ("_id".to_owned(), JsData::Str(id.to_owned()))])
 }
 

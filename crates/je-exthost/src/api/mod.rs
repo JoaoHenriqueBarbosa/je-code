@@ -22,6 +22,8 @@ pub mod debug;
 pub mod disposable;
 pub mod enums;
 pub mod env;
+pub mod environment_variable_collection;
+pub mod extension_context;
 pub mod events;
 pub mod extensions;
 pub mod file_system;

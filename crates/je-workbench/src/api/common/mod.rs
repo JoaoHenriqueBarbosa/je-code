@@ -19,6 +19,8 @@ pub mod ext_host_editors;
 pub mod ext_host_languages;
 pub mod ext_host_window;
 pub mod ext_host_storage;
+pub mod ext_host_memento;
+pub mod ext_host_secrets;
 pub mod ext_host_api_deprecation_service;
 pub mod ext_host_commands;
 pub mod ext_host_comments;

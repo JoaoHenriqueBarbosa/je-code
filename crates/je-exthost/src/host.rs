@@ -57,6 +57,11 @@ use je_workbench::services::extensions::extensions::IExtensionService;
 use zjsc::api::embed_node::{JsData, NodeRunner};
 
 use crate::api::env::EnvServices;
+use crate::api::extension_context::ExtensionContextServices;
+use crate::api::environment_variable_collection;
+use crate::extension_storage_paths::ExtensionStoragePaths;
+use je_workbench::api::common::ext_host_protocol::{ExtHostSecretStateShape, ExtHostStorageShape};
+use je_workbench::api::common::ext_host_storage::{ExtHostSecretState, ExtHostStorage};
 use crate::api::events::EventTables;
 use crate::api::extensions::ExtensionServiceSlot;
 use crate::api::languages::{LanguagesServices, LanguagesState};
@@ -248,6 +253,8 @@ struct BridgedServices {
     terminal: Option<Rc<WorkerExtHostTerminalService>>,
     tree_views: Option<Rc<ExtHostTreeViews>>,
     debug: Option<Rc<ExtHostDebugServiceBase>>,
+    /// Os serviços de que o `ExtensionContext` de cada extensão depende (ver `crate::api::extension_context`).
+    context: ExtensionContextServices,
     main_thread: Vec<Rc<dyn IDisposable>>,
 }
 
@@ -525,10 +532,28 @@ impl ExtensionHost {
                 bridged.progress = Some(progress);
             }
 
+            // `ExtensionContext.globalState` e `workspaceState` pedem o cliente `MainThreadStorage`, `secrets` pede `MainThreadSecretState`, e os
+            // URIs de armazenamento e de log pedem o ambiente que o binder entrega.
+            if provided(MainContext::MAIN_THREAD_STORAGE.sid) {
+                let storage = ExtHostStorage::new(bridged_ref, log_service.clone());
+                let storage_shape: Rc<dyn ExtHostStorageShape> = storage.clone();
+                late.storage.0.bind(storage_shape);
+                bridged.context.storage = Some(storage);
+            }
+            if provided(MainContext::MAIN_THREAD_SECRET_STATE.sid) {
+                let secret_state = ExtHostSecretState::new(bridged_ref);
+                let secret_state_shape: Rc<dyn ExtHostSecretStateShape> = secret_state.clone();
+                late.secret_state.0.bind(secret_state_shape);
+                bridged.context.secret_state = Some(secret_state);
+            }
+            bridged.context.storage_paths = binder.extension_storage_environment().map(|environment| Rc::new(ExtensionStoragePaths::new(environment)));
+
             if provided(MainContext::MAIN_THREAD_TERMINAL_SERVICE.sid) {
                 let terminal = WorkerExtHostTerminalService::new_local(commands.clone(), bridged_ref);
                 let terminal_shape: Rc<dyn ExtHostTerminalServiceShape> = terminal.clone();
                 late.terminal_service.0.bind(terminal_shape);
+                environment_variable_collection::define_class(runner, &table, terminal.clone(), extension_slot.clone());
+                bridged.context.environment_variable_collection = true;
                 bridged.terminal = Some(terminal);
             }
 
@@ -699,6 +724,7 @@ impl ExtensionHost {
 
     /// Liga o `ExtHostExtensionService` ao `vscode.extensions` (o serviço nasce depois do objeto `vscode`).
     pub fn bind_extension_service(&self, service: Rc<ExtHostExtensionService>) {
+        service.bind_context_services(self.bridged.context.clone());
         self.extension_slot.bind(service);
     }
 
