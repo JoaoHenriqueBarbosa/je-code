@@ -506,7 +506,7 @@ impl GlobalActivityCore {
         let this = Rc::new(Self { composite, menu_id, context_menu_actions_provider, context_menu_alignment_options, services, menu_hooks: RefCell::new(None) });
         this.update_item_activity();
         let weak = Rc::downgrade(&this);
-        let listener = this.services.activity_service.on_did_change_activity_target().listen(move |target| {
+        let listener = this.services.activity_service.on_did_change_activity().listen(move |target| {
             let Some(this) = weak.upgrade() else { return };
             if let ActivityChangeTarget::Id(id) = target {
                 if *id == this.composite.composite_bar_action_item().id {

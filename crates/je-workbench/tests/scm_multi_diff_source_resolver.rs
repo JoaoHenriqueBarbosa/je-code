@@ -31,7 +31,7 @@ use je_workbench::contrib::multi_diff_editor::browser::multi_diff_source_resolve
 use je_workbench::contrib::multi_diff_editor::browser::scm_multi_diff_source_resolver::{ScmHistoryItemResolver, ScmMultiDiffSourceResolver};
 use je_workbench::contrib::scm::common::history::ISCMHistoryItemChange;
 use je_workbench::contrib::scm::common::scm::{ISCMHistoryProvider, ISCMInput, ISCMProvider, ISCMRepository, ISCMResource, ISCMResourceGroup, ISCMService};
-use je_workbench::services::activity::activity::{IActivity, IActivityService};
+use je_workbench::services::activity::activity::{ActivityChangeTarget, IActivity, IActivityService};
 
 /// `new class extends mock<ISCMResource>() { sourceUri; multiDiffEditorModifiedUri = this.sourceUri }`.
 struct StubResource {
@@ -174,12 +174,17 @@ impl ISCMService for StubScmService {
     }
 }
 
-/// `onDidChangeActivity = Event.None; getViewContainerActivities() { return []; }`.
+/// `onDidChangeActivity = Event.None; getViewContainerActivities() { return []; }`: os outros membros do `mock<IActivityService>()`
+/// lançam se chamados.
 struct StubActivityService;
 
 impl IActivityService for StubActivityService {
-    fn on_did_change_activity(&self) -> Event<()> {
+    fn on_did_change_activity(&self) -> Event<ActivityChangeTarget> {
         Event::none()
+    }
+
+    fn show_view_container_activity(&self, _view_container_id: &str, _badge: IActivity) -> DisposableRef {
+        panic!("showViewContainerActivity is not a function");
     }
 
     fn get_view_container_activities(&self, _view_container_id: &str) -> Vec<IActivity> {
@@ -188,6 +193,18 @@ impl IActivityService for StubActivityService {
 
     fn show_view_activity(&self, _view_id: &str, _badge: IActivity) -> DisposableRef {
         panic!("o caso não mostra atividade");
+    }
+
+    fn show_accounts_activity(&self, _activity: IActivity) -> DisposableRef {
+        panic!("showAccountsActivity is not a function");
+    }
+
+    fn show_global_activity(&self, _activity: IActivity) -> DisposableRef {
+        panic!("showGlobalActivity is not a function");
+    }
+
+    fn get_activity(&self, _id: &str) -> Vec<IActivity> {
+        panic!("getActivity is not a function");
     }
 }
 
