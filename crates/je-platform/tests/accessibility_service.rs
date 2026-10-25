@@ -209,7 +209,7 @@ fn is_motion_reduced_adds_css_classes_to_new_containers() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let env = create_service(&guard, &[motion("off")]);
     let auxiliary_container = ViewElement::new();
-    env.on_did_add_container.fire(LayoutAddContainerEvent { container: auxiliary_container.clone(), disposables: DisposableStore::new() });
+    env.on_did_add_container.fire(LayoutAddContainerEvent { container: auxiliary_container.clone(), disposables: guard.add_rc(DisposableStore::new()) });
 
     assert_eq!(
         (auxiliary_container.class_list_contains("monaco-reduce-motion"), auxiliary_container.class_list_contains("monaco-enable-motion")),
