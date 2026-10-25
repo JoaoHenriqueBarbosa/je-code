@@ -12,6 +12,7 @@ pub mod onboarding_presentation;
 pub mod run_onboarding_step;
 pub mod sequence_presentation;
 pub mod onboarding_tryout_actions;
+pub mod onboarding_sample_presentation;
 pub mod guided_tryout_presentation;
 pub mod onboarding_tryout_service;
 pub mod onboarding_scenario_service;

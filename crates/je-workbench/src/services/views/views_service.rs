@@ -61,6 +61,18 @@ pub trait IViewsService {
     /// `openView(id, focus)`.
     fn open_view(&self, id: &str, focus: bool) -> Promise<()>;
 
+    /// `openView(id, focus)` conferindo o resultado: se a view abriu (`true`) ou se o original devolveria `null`
+    /// (`false`). Corpo padrão que lança `TypeError: openView is not a function`.
+    fn try_open_view(&self, _id: &str, _focus: bool) -> Promise<bool> {
+        not_a_function("openView")
+    }
+
+    /// `openViewContainer(id, focus)`: se o contêiner abriu (`true`) ou se o original devolveria `null` (`false`). Corpo
+    /// padrão que lança `TypeError: openViewContainer is not a function`.
+    fn open_view_container(&self, _id: &str, _focus: bool) -> Promise<bool> {
+        not_a_function("openViewContainer")
+    }
+
     /// `openView<ExplorerView>(id, focus)`: a view aberta, ou `None` (o `null` do original). Corpo padrão que lança
     /// `TypeError: openView is not a function` (o dublê que só define os outros membros).
     fn open_explorer_view(&self, _id: &str, _focus: bool) -> Promise<Option<Rc<dyn IExplorerViewPane>>> {
