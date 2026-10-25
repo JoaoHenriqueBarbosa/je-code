@@ -856,6 +856,12 @@ impl TestLifecycleService {
         self.on_before_shutdown.event()
     }
 
+    /// `_onWillShutdown`: o emissor privado de `onWillShutdown`, que o teste do `XtermTerminal` lê para contar os ouvintes
+    /// (`(emitter as unknown as { _size: number })._size`).
+    pub fn on_will_shutdown_emitter(&self) -> Rc<Emitter<WillShutdownEvent>> {
+        self.on_will_shutdown.clone()
+    }
+
     /// `fireShutdown(reason = ShutdownReason.QUIT)`.
     pub fn fire_shutdown(&self, reason: Option<ShutdownReason>) {
         self.shutdown_joiners.borrow_mut().clear();

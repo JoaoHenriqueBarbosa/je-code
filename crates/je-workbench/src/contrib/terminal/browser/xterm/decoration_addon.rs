@@ -289,6 +289,11 @@ impl DecorationAddon {
         self.decorations.borrow().contains_key(&(marker_id as i64))
     }
 
+    /// `this._decorations.get(markerId)?.decoration`: a decoração guardada para o marcador, que o teste compara por identidade.
+    pub fn decoration(&self, marker_id: f64) -> Option<Rc<dyn IXtermDecoration>> {
+        self.decorations.borrow().get(&(marker_id as i64)).map(|entry| entry.decoration.clone())
+    }
+
     fn terminal(&self) -> Option<Rc<dyn IDecorationAddonTerminal>> {
         self.terminal.borrow().clone()
     }

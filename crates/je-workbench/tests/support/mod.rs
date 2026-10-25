@@ -97,6 +97,10 @@ pub mod terminal_service_support;
 pub mod fake_xterm_decoration;
 pub mod terminal_decoration_support;
 
+// Porte de `xtermTestUtils.ts` e de `testThemeService.ts`: o `TestWebglAddon`, o `TestXtermAddonImporter`, o `TestColorTheme` e o
+// `TestThemeService`, usados por `xtermTerminal.test.ts`.
+pub mod xterm_test_utils;
+
 // Porte de `TestEditorGroupView` (`workbenchTestServices.ts`), usado por `openEditorsView.test.ts`.
 pub mod test_editor_group_view;
 // Porte de `searchResult.test.ts` e `searchViewlet.test.ts`: o `setup` e os `aSearchResult`, `aFileMatch` e `aFolderMatch`.
