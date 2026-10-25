@@ -91,7 +91,8 @@
 //!   `addOverlayWidget`, `layoutOverlayWidget` e `removeOverlayWidget` existem e guardam os widgets e a última
 //!   posição de cada um (`_contentWidgets`, `_overlayWidgets`); a chamada à `View` (`hasRealView`) não existe. Os
 //!   tipos estão em `editor_browser` e não têm `getDomNode()`.
-//! - Widgets de margem de glifos: `addGlyphMarginWidget`, `layoutGlyphMarginWidget`, `removeGlyphMarginWidget`.
+//! - Widgets de margem de glifos: `addGlyphMarginWidget`, `layoutGlyphMarginWidget` e `removeGlyphMarginWidget` existem e
+//!   guardam os widgets e a última posição de cada um (`_glyphMarginWidgets`), como os de overlay; o tipo está em `editor_browser`.
 //! - Eventos que só a `View` produz: `onMouseUp`, `onMouseDown`, `onMouseDrag`, `onMouseDrop`,
 //!   `onMouseDropCanceled`, `onContextMenu`, `onMouseWheel`, `onMouseMove`, `onMouseLeave`, `onKeyDown` e `onKeyUp`
 //!   existem, e quem tem a `View` (ou o host nativo que a substitui) os dispara por `fire_mouse_up`,
@@ -149,8 +150,8 @@ use crate::cursor_common::CursorSimpleModel;
 use crate::cursor_events::{CursorChangeReason, ICursorPositionChangedEvent, ICursorSelectionChangedEvent};
 use crate::cursor_word_operations::WordOperations;
 use crate::editor_browser::{
-    ContentWidgetPosition, EditorMouseEvent, IContentWidget, IOverlayWidget, IViewZoneChangeAccessor, MouseWheelEvent,
-    OverlayWidgetPosition, PartialEditorMouseEvent,
+    ContentWidgetPosition, EditorMouseEvent, GlyphMarginWidgetPosition, IContentWidget, IGlyphMarginWidget, IOverlayWidget, IViewZoneChangeAccessor,
+    MouseWheelEvent, OverlayWidgetPosition, PartialEditorMouseEvent,
 };
 use crate::edit_operation::SingleEditOperation;
 use crate::edits::text_edit::TextEdit;
@@ -1080,6 +1081,13 @@ pub struct OverlayWidgetData {
     pub position: Option<OverlayWidgetPosition>,
 }
 
+/// `IGlyphMarginWidgetData`: o widget da margem de glifos e a última posição que ele deu.
+#[derive(Clone)]
+pub struct GlyphMarginWidgetData {
+    pub widget: Rc<dyn IGlyphMarginWidget>,
+    pub position: GlyphMarginWidgetPosition,
+}
+
 /// `CodeEditorWidget`.
 pub struct CodeEditorWidget {
     me: Weak<CodeEditorWidget>,
@@ -1111,6 +1119,8 @@ pub struct CodeEditorWidget {
     content_widgets: RefCell<Vec<(String, ContentWidgetData)>>,
     /// `_overlayWidgets`, na mesma forma.
     overlay_widgets: RefCell<Vec<(String, OverlayWidgetData)>>,
+    /// `_glyphMarginWidgets`, na mesma forma.
+    glyph_margin_widgets: RefCell<Vec<(String, GlyphMarginWidgetData)>>,
 }
 
 impl CodeEditorWidget {
@@ -1176,6 +1186,7 @@ impl CodeEditorWidget {
             instantiation_service: RefCell::new(None),
             content_widgets: RefCell::new(Vec::new()),
             overlay_widgets: RefCell::new(Vec::new()),
+            glyph_margin_widgets: RefCell::new(Vec::new()),
         });
 
         this.register_listener(this.configuration.on_did_change(), |editor, e| {
@@ -1398,6 +1409,41 @@ impl CodeEditorWidget {
     /// `_overlayWidgets`: os widgets de overlay registrados, na ordem de inserção (a `View` os lê).
     pub fn overlay_widgets(&self) -> Vec<OverlayWidgetData> {
         self.overlay_widgets.borrow().iter().map(|(_, data)| data.clone()).collect()
+    }
+
+    /// `addGlyphMarginWidget(widget)`. Sem `View` real, o widget só fica registrado (e guarda a posição).
+    pub fn add_glyph_margin_widget(&self, widget: Rc<dyn IGlyphMarginWidget>) {
+        let id = widget.get_id();
+        let data = GlyphMarginWidgetData { position: widget.get_position(), widget };
+        let mut widgets = self.glyph_margin_widgets.borrow_mut();
+        match widgets.iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            Some((_, existing)) => {
+                eprintln!("Overwriting a glyph margin widget with the same id.");
+                *existing = data;
+            }
+            None => widgets.push((id, data)),
+        }
+    }
+
+    /// `layoutGlyphMarginWidget(widget)`: relê a posição do widget registrado com o mesmo id.
+    pub fn layout_glyph_margin_widget(&self, widget: &Rc<dyn IGlyphMarginWidget>) {
+        let id = widget.get_id();
+        // `getPosition` roda fora do empréstimo: o widget pode ler o editor.
+        let position = widget.get_position();
+        if let Some((_, data)) = self.glyph_margin_widgets.borrow_mut().iter_mut().find(|(widget_id, _)| *widget_id == id) {
+            data.position = position;
+        }
+    }
+
+    /// `removeGlyphMarginWidget(widget)`.
+    pub fn remove_glyph_margin_widget(&self, widget: &Rc<dyn IGlyphMarginWidget>) {
+        let id = widget.get_id();
+        self.glyph_margin_widgets.borrow_mut().retain(|(widget_id, _)| *widget_id != id);
+    }
+
+    /// `_glyphMarginWidgets`: os widgets da margem de glifos registrados, na ordem de inserção (a `View` os lê).
+    pub fn glyph_margin_widgets(&self) -> Vec<GlyphMarginWidgetData> {
+        self.glyph_margin_widgets.borrow().iter().map(|(_, data)| data.clone()).collect()
     }
 
     /// `changeViewZones(callback)`: `this._modelData.view.change(callback)`, que chama `ViewZones.changeViewZones`
@@ -1840,6 +1886,7 @@ impl IDisposable for CodeEditorWidget {
         self.actions.borrow_mut().clear();
         self.content_widgets.borrow_mut().clear();
         self.overlay_widgets.borrow_mut().clear();
+        self.glyph_margin_widgets.borrow_mut().clear();
 
         let detached_model = self.detach_model();
         self.post_detach_model_cleanup(detached_model);
