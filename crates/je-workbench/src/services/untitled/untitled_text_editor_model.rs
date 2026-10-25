@@ -547,6 +547,10 @@ impl IEditorModel for UntitledTextEditorModel {
     fn is_disposed(&self) -> bool {
         self.base.is_disposed()
     }
+
+    fn into_text_editor_model(self: Rc<Self>) -> Option<Rc<dyn ITextEditorModel>> {
+        Some(self)
+    }
 }
 
 impl ITextEditorModel for UntitledTextEditorModel {

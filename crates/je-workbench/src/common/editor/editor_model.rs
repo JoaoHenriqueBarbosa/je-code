@@ -17,6 +17,8 @@ use je_base::event::{Emitter, Event};
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
 
+use crate::services::textmodel_resolver::resolver_service::ITextEditorModel;
+
 /// O contrato de um modelo de editor: `EditorModel` e `IResolvableEditorModel` (`IDisposable` com `resolve` e `isResolved`).
 pub trait IEditorModel: IDisposable {
     /// Para o `instanceof` do original: o tipo concreto do modelo.
@@ -33,6 +35,12 @@ pub trait IEditorModel: IDisposable {
 
     /// Find out if this model has been disposed.
     fn is_disposed(&self) -> bool;
+
+    /// `model instanceof BaseTextEditorModel`: os modelos que herdam da `BaseTextEditorModel` (que o porte tem como o
+    /// contrato [`ITextEditorModel`]) devolvem a si mesmos; os demais, `None` (o padrão).
+    fn into_text_editor_model(self: Rc<Self>) -> Option<Rc<dyn ITextEditorModel>> {
+        None
+    }
 }
 
 /// `EditorModel`.

@@ -2,6 +2,9 @@
 
 pub mod statusbar;
 
+// O banner (`banner/bannerPart.ts`).
+pub mod banner;
+
 // A janela alvo, o tema e a decisão de inatividade que as partes compartilham.
 pub mod part_support;
 

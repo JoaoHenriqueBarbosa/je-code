@@ -59,6 +59,7 @@ pub mod editor_model;
 pub mod filtered_editor_group_model;
 pub mod resource_editor_input;
 pub mod side_by_side_editor_input;
+pub mod text_diff_editor_model;
 pub mod text_editor_model;
 pub mod text_resource_editor_input;
 pub mod text_resource_editor_model;

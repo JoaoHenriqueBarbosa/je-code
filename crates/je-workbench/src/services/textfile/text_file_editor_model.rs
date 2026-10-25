@@ -1390,6 +1390,10 @@ impl IEditorModel for TextFileEditorModel {
     fn is_disposed(&self) -> bool {
         self.base.is_disposed()
     }
+
+    fn into_text_editor_model(self: Rc<Self>) -> Option<Rc<dyn crate::services::textmodel_resolver::resolver_service::ITextEditorModel>> {
+        Some(self)
+    }
 }
 
 impl IWorkingCopy for TextFileEditorModel {

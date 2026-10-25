@@ -8,10 +8,11 @@
 //! - **`readonly original`/`modified`** são [`DiffEditorInput::original`] e [`DiffEditorInput::modified`].
 //! - **Rótulos.** `shorten` é o de `je_base::labels` com o separador de caminho nativo.
 //!
+//! - **`modifiedEditorModel instanceof BaseTextEditorModel`.** É [`IEditorModel::into_text_editor_model`]: os modelos que herdam
+//!   da `BaseTextEditorModel` devolvem a si mesmos como `ITextEditorModel`, e o `TextDiffEditorModel` é criado sobre eles.
+//!
 //! Fora deste módulo (e por quê): `DiffEditorInputSerializer` (depende do `IInstantiationService`, do `IEditorSerializer` e
-//! do `Registry` de plataforma) e o ramo do `createModel` que devolve um `TextDiffEditorModel` quando os dois lados são
-//! `BaseTextEditorModel` (`textEditorModel.ts` e `textDiffEditorModel.ts` dependem do `IModelService`, do `ILanguageService`
-//! e do `ILanguageDetectionService`, que ainda não foram portados): aqui o `resolve` sempre devolve o `DiffEditorModel`.
+//! do `Registry` de plataforma).
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -30,6 +31,7 @@ use crate::common::editor::diff_editor_model::DiffEditorModel;
 use crate::common::editor::editor_input::{EditorInput, EditorInputBase, UntypedEditorOptions};
 use crate::common::editor::editor_model::IEditorModel;
 use crate::common::editor::side_by_side_editor_input::SideBySideEditorInput;
+use crate::common::editor::text_diff_editor_model::TextDiffEditorModel;
 use crate::common::editor::{
     BINARY_DIFF_EDITOR_ID, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef, GroupIdentifier, IEditorDescriptor, MoveResult, RevertOptions,
     SaveOptions, TEXT_DIFF_EDITOR_ID, UntypedEditorInput, Verbosity,
@@ -81,7 +83,7 @@ pub struct DiffEditorInput {
     original: EditorInputRef,
     modified: EditorInputRef,
     force_open_as_binary: Option<bool>,
-    cached_model: Rc<RefCell<Option<Rc<DiffEditorModel>>>>,
+    cached_model: Rc<RefCell<Option<Rc<dyn IEditorModel>>>>,
     labels: DiffEditorInputLabels,
 }
 
@@ -255,15 +257,20 @@ impl EditorInput for DiffEditorInput {
 
         // Join resolve call over two inputs and build diff editor model
         Promise::all(vec![self.original.resolve(), self.modified.resolve()]).then(move |models| {
-            // Otherwise return normal diff model
-            let resolved_model = DiffEditorModel::new(models[0].clone(), models[1].clone());
+            // If both are text models, return textdiffeditor model
+            let text_models = models[0].clone().and_then(|model| model.into_text_editor_model()).zip(models[1].clone().and_then(|model| model.into_text_editor_model()));
+            let resolved_model: Rc<dyn IEditorModel> = match text_models {
+                Some((original_model, modified_model)) => TextDiffEditorModel::new(original_model, modified_model),
+
+                // Otherwise return normal diff model
+                None => DiffEditorModel::new(models[0].clone(), models[1].clone()),
+            };
 
             let previous_model = cached_model.borrow_mut().replace(resolved_model.clone());
             if let Some(previous_model) = previous_model {
                 previous_model.dispose();
             }
 
-            let resolved_model: Rc<dyn IEditorModel> = resolved_model;
             Some(resolved_model)
         })
     }
