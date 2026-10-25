@@ -2,10 +2,9 @@
 //!
 //! Divergências:
 //! - O contrato traz o que as partes e as ações do workbench usam: os eventos, `getActivePaneComposite`, `openPaneComposite`,
-//!   `getRegistryId`, `getPartId`, as listas de identificadores (fixados, visíveis e todos), `hideActivePaneComposite` e
-//!   `getLastActivePaneCompositeId`. Ficam de fora `getPaneComposite`, `getPaneComposites` (devolvem o
-//!   `PaneCompositeDescriptor` de `browser/panecomposite.ts`, sem porte) e `getProgressIndicator` (precisa do
-//!   `IPaneComposite` completo, com partes de DOM) e entram com o porte das partes de painéis.
+//!   `getRegistryId`, `getPartId`, as listas de identificadores (fixados, visíveis e todos), `hideActivePaneComposite`,
+//!   `getLastActivePaneCompositeId`, `getPaneComposite(s)` (com implementação padrão sobre o registro do
+//!   `PaneCompositeDescriptor` de `browser/pane_composite`, pelo `getRegistryId`) e `getProgressIndicator`.
 //! - `openPaneComposite(id: string | undefined, ...)` recebe `Option<&str>`; o `focus?` ausente é `false`.
 //! - `IPaneComposite` é o trait [`IPaneComposite`] com o que o computador de estado pergunta do painel: o
 //!   `panel instanceof AbstractTextEditor` seguido de `isCodeEditor(panel.getControl())` é
@@ -16,9 +15,11 @@ use std::rc::Rc;
 
 use je_base::event::Event;
 use je_base::promise::Promise;
+use je_editor::code_action::platform::IProgressIndicator;
 use je_editor::code_editor_widget::CodeEditorWidget;
 use je_instantiation::service_id;
 
+use crate::browser::pane_composite::{PaneCompositeDescriptor, pane_composite_registry};
 use crate::common::views::ViewContainerLocation;
 use crate::services::layout::layout_service::Parts;
 
@@ -75,6 +76,19 @@ pub trait IPaneCompositePartService {
 
     /// `getLastActivePaneCompositeId(viewContainerLocation)`.
     fn get_last_active_pane_composite_id(&self, view_container_location: ViewContainerLocation) -> String;
+
+    /// `getPaneComposite(id, viewContainerLocation)`: o descritor registrado no registro da localização.
+    fn get_pane_composite(&self, id: &str, view_container_location: ViewContainerLocation) -> Option<PaneCompositeDescriptor> {
+        pane_composite_registry(&self.get_registry_id(view_container_location)).get_pane_composite(id)
+    }
+
+    /// `getPaneComposites(viewContainerLocation)`.
+    fn get_pane_composites(&self, view_container_location: ViewContainerLocation) -> Vec<PaneCompositeDescriptor> {
+        pane_composite_registry(&self.get_registry_id(view_container_location)).get_pane_composites()
+    }
+
+    /// `getProgressIndicator(id, viewContainerLocation)`.
+    fn get_progress_indicator(&self, id: &str, view_container_location: ViewContainerLocation) -> Option<Rc<dyn IProgressIndicator>>;
 }
 
 service_id!(pub I_PANE_COMPOSITE_PART_SERVICE: dyn IPaneCompositePartService = "paneCompositePartService");

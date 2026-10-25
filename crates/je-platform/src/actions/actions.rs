@@ -334,6 +334,13 @@ pub struct MenuItemHide {
     pub toggle: ActionRef,
 }
 
+thread_local! {
+    /// A `SubmenuItemAction` dona de cada `SubmenuAction` de base, pelo endereço da base: quem recebe só o `IAction` (os
+    /// submenus aninhados dentro de `actions`) recupera o item com [`SubmenuItemAction::from_action`], que no original é o
+    /// `instanceof SubmenuItemAction`.
+    static SUBMENU_ITEM_OWNERS: RefCell<HashMap<usize, std::rc::Weak<SubmenuItemAction>>> = RefCell::new(HashMap::new());
+}
+
 /// `SubmenuItemAction`: uma `SubmenuAction` com o item e as ações de esconder.
 pub struct SubmenuItemAction {
     base: Rc<SubmenuAction>,
@@ -348,7 +355,19 @@ impl SubmenuItemAction {
             Title::Localized(title) => title.value.clone(),
         };
         let base = SubmenuAction::new(&format!("submenuitem.{}", item.submenu.id), &label, actions, Some("submenu"));
-        Rc::new(Self { base, item, hide_actions })
+        let key = Rc::as_ptr(&base) as usize;
+        Rc::new_cyclic(|weak| {
+            SUBMENU_ITEM_OWNERS.with(|owners| owners.borrow_mut().insert(key, weak.clone()));
+            Self { base, item, hide_actions }
+        })
+    }
+
+    /// A `SubmenuItemAction` a que a ação pertence, se ela é a `SubmenuAction` de base de uma (`action instanceof
+    /// SubmenuItemAction`).
+    pub fn from_action(action: &ActionRef) -> Option<Rc<SubmenuItemAction>> {
+        let submenu = action.as_any().downcast_ref::<SubmenuAction>()?;
+        let key = submenu as *const SubmenuAction as usize;
+        SUBMENU_ITEM_OWNERS.with(|owners| owners.borrow().get(&key).and_then(std::rc::Weak::upgrade))
     }
 
     /// A `SubmenuAction` por baixo, como `IAction`.
@@ -358,6 +377,14 @@ impl SubmenuItemAction {
 
     pub fn actions(&self) -> &[ActionRef] {
         self.base.actions()
+    }
+}
+
+impl Drop for SubmenuItemAction {
+    fn drop(&mut self) {
+        let key = Rc::as_ptr(&self.base) as usize;
+        // `try_with`: a thread pode estar encerrando e a tabela já ter sido destruída.
+        let _ = SUBMENU_ITEM_OWNERS.try_with(|owners| owners.borrow_mut().remove(&key));
     }
 }
 

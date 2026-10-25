@@ -19,8 +19,9 @@
 //!   `mainWindow.vscodeWindowId` é [`MAIN_WINDOW`].
 //! - **`toJSON`** devolve o [`ActivitybarPartJson`].
 //! - **Menu compacto, teclado e menu de contexto.** O `CustomMenubarControl` é o trait [`ICustomMenubarControl`] (o corpo da
-//!   classe, que liga o `MenuBar` aos menus do `MenuId.MenubarMain`, entra com o porte da barra de título) e o
-//!   `createInstance(CustomMenubarControl)` é a [`MenubarFactory`]. `getMenuBarVisibility` é o `get_menu_bar_visibility` do
+//!   classe, que liga o `MenuBar` aos menus do `MenuId.MenubarMain`, está em `titlebar::menubar_control`) e o
+//!   `createInstance(CustomMenubarControl)` é a [`MenubarFactory`]. O contêiner do menu ([`MenuBarContainer`]) leva o nó da
+//!   árvore de widgets ligado por `attach`, que o dono da barra faz antes do `create`. `getMenuBarVisibility` é o `get_menu_bar_visibility` do
 //!   `TitleBarHost`. As dependências que a `ActivityBarCompositeBar` injeta (`IConfigurationService`, `IMenuService`,
 //!   `IContextKeyService`, `IWorkbenchLayoutService`, `IInstantiationService`) são o [`ActivityBarServices`], e o
 //!   `super(location, {...options, fillExtraContextMenuActions})` é o [`ActivityBarCompositeBar::with_services`], que monta a
@@ -30,8 +31,7 @@
 //! - **Regras de tema em CSS** (`registerThemingParticipant`). A UI nativa não tem folha de estilo: o que cada regra
 //!   escolheria é o [`ActivityBarItemThemeRules`], calculado por [`activity_bar_item_theme_rules`] e lido pelo desenho dos
 //!   itens, com as mesmas precedências (cor de contraste, depois a borda de foco).
-//! - **Ainda não portado**: a base `PaneCompositeBar`/`GlobalCompositeBar` em si (só o contrato, ver `pane_composite_bar`) e o
-//!   corpo do `CustomMenubarControl`.
+//! - **Ainda não portado**: a base `PaneCompositeBar`/`GlobalCompositeBar` em si (só o contrato, ver `pane_composite_bar`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,6 +57,7 @@ use je_platform::configuration::service::{IConfigurationService, I_CONFIGURATION
 use je_platform::contextkey::contextkey::{ContextKeyExpr, ContextKeyExpression, IContextKeyService};
 use je_theme::color::Color;
 use je_theme::color::format::css::format_rgb;
+use je_ui::{NodeId, Ui};
 use je_widgets::action_bar::ActionsOrientation;
 use je_widgets::dom::StandardKeyboardEvent;
 use je_widgets::gridview::ViewDimensions;
@@ -723,11 +724,26 @@ impl IDisposable for ActivitybarPart {
     }
 }
 
-/// O `{ width, height }` que `ActivityBarCompositeBar.layout` desconta do menu compacto: `clientWidth` e `clientHeight`.
+/// O contêiner do menu compacto: o `{ width, height }` que `ActivityBarCompositeBar.layout` desconta (`clientWidth` e
+/// `clientHeight`) e o nó da árvore de widgets onde o `MenuBar` é montado (o `HTMLElement` do original), que quem posiciona
+/// a barra liga com [`MenuBarContainer::attach`].
 #[derive(Default)]
 pub struct MenuBarContainer {
     pub client_width: Cell<f64>,
     pub client_height: Cell<f64>,
+    target: RefCell<Option<(Ui, NodeId)>>,
+}
+
+impl MenuBarContainer {
+    /// Liga o contêiner ao nó da árvore de widgets.
+    pub fn attach(&self, ui: &Ui, node: NodeId) {
+        *self.target.borrow_mut() = Some((ui.clone(), node));
+    }
+
+    /// A árvore e o nó ligados por [`MenuBarContainer::attach`], se houver.
+    pub fn target(&self) -> Option<(Ui, NodeId)> {
+        self.target.borrow().clone()
+    }
 }
 
 /// O que a `ActivityBarCompositeBar` injeta do construtor além da base: `IConfigurationService`, `IMenuService`,
