@@ -80,3 +80,48 @@ pub fn has_multiple_document_formatting_provider() -> RawContextKey {
 pub fn has_multiple_document_selection_formatting_provider() -> RawContextKey {
     HAS_MULTIPLE_DOCUMENT_SELECTION_FORMATTING_PROVIDER.with(Clone::clone)
 }
+
+/// Declara, de uma lista só, as chaves de contexto do editor de diff (`EditorContextKeys.isEmbeddedDiffEditor` e as demais que o
+/// `DiffEditorWidget` escreve): a chave `thread_local` e a função que devolve uma cópia.
+macro_rules! diff_editor_context_keys {
+    ($($(#[$doc:meta])* $static_name:ident, $getter:ident, $key:literal, $default:expr, $description:literal;)*) => {
+        thread_local! {
+            $(static $static_name: RawContextKey = RawContextKey::new($key, $default, ContextKeyMeta::Description($description.to_owned()));)*
+        }
+
+        $(
+            $(#[$doc])*
+            pub fn $getter() -> RawContextKey {
+                $static_name.with(Clone::clone)
+            }
+        )*
+    };
+}
+
+diff_editor_context_keys! {
+    /// `EditorContextKeys.isEmbeddedDiffEditor`.
+    IS_EMBEDDED_DIFF_EDITOR, is_embedded_diff_editor, "isEmbeddedDiffEditor", false, "Whether the context is an embedded diff editor";
+    /// `EditorContextKeys.hasChanges`.
+    HAS_CHANGES, has_changes, "diffEditorHasChanges", false, "Whether the diff editor has changes";
+    /// `EditorContextKeys.comparingMovedCode`.
+    COMPARING_MOVED_CODE, comparing_moved_code, "comparingMovedCode", false, "Whether a moved code block is selected for comparison";
+    /// `EditorContextKeys.diffEditorRenderSideBySideInlineBreakpointReached`.
+    DIFF_EDITOR_RENDER_SIDE_BY_SIDE_INLINE_BREAKPOINT_REACHED, diff_editor_render_side_by_side_inline_breakpoint_reached,
+        "diffEditorRenderSideBySideInlineBreakpointReached", false, "Whether the diff editor render side by side inline breakpoint is reached";
+    /// `EditorContextKeys.diffEditorInlineMode`.
+    DIFF_EDITOR_INLINE_MODE, diff_editor_inline_mode, "diffEditorInlineMode", false, "Whether inline mode is active";
+    /// `EditorContextKeys.diffEditorTemporaryInlineMode`.
+    DIFF_EDITOR_TEMPORARY_INLINE_MODE, diff_editor_temporary_inline_mode, "diffEditorTemporaryInlineMode", false,
+        "Whether inline mode is temporarily active after manually resizing the diff editor";
+    /// `EditorContextKeys.diffEditorAutomaticRenderSideBySide`.
+    DIFF_EDITOR_AUTOMATIC_RENDER_SIDE_BY_SIDE, diff_editor_automatic_render_side_by_side, "diffEditorAutomaticRenderSideBySide", true,
+        "Whether automatic diff editor layout would render side by side";
+    /// `EditorContextKeys.diffEditorOriginalWritable`.
+    DIFF_EDITOR_ORIGINAL_WRITABLE, diff_editor_original_writable, "diffEditorOriginalWritable", false, "Whether modified is writable in the diff editor";
+    /// `EditorContextKeys.diffEditorModifiedWritable`.
+    DIFF_EDITOR_MODIFIED_WRITABLE, diff_editor_modified_writable, "diffEditorModifiedWritable", false, "Whether modified is writable in the diff editor";
+    /// `EditorContextKeys.diffEditorOriginalUri`.
+    DIFF_EDITOR_ORIGINAL_URI, diff_editor_original_uri, "diffEditorOriginalUri", String::new(), "The uri of the original document";
+    /// `EditorContextKeys.diffEditorModifiedUri`.
+    DIFF_EDITOR_MODIFIED_URI, diff_editor_modified_uri, "diffEditorModifiedUri", String::new(), "The uri of the modified document";
+}
