@@ -1,5 +1,5 @@
 //! Porte parcial de `src/vs/base/node/processes.ts`: `findExecutable` (com o `fileExistsDefault` que ele
-//! usa). O resto do original (`getWindowsShell`, `createQueuedSender`, `killTree`) não tem consumidor ainda.
+//! usa) e `getWindowsShell`. O resto do original (`createQueuedSender`, `killTree`) não tem consumidor ainda.
 //!
 //! Divergências:
 //! - O `fileExists` opcional é uma função que devolve um futuro local ([`FileExists`]); o `await` do original é
@@ -47,6 +47,15 @@ fn get_case_insensitive(target: &ProcessEnvironment, key: &str) -> Option<String
 /// `env['NAME']` do `processCommon.env`, quando nenhum `env` é dado.
 fn process_env_var(name: &str) -> Option<String> {
     env_var(name).or_else(|| if Platform::detect().is_windows { env_var(&format!("{}{}", &name[..1], name[1..].to_lowercase())) } else { None })
+}
+
+/// `getWindowsShell(env)`: `env['comspec'] || 'cmd.exe'`. Sem `env`, vale o ambiente do processo (o `processCommon.env`).
+pub fn get_windows_shell(env: Option<&ProcessEnvironment>) -> String {
+    let comspec = match env {
+        Some(env) => env.get("comspec").cloned(),
+        None => process_env_var("comspec"),
+    };
+    comspec.filter(|value| !value.is_empty()).unwrap_or_else(|| "cmd.exe".to_owned())
 }
 
 pub async fn find_executable(

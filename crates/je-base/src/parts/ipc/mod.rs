@@ -66,6 +66,12 @@ pub trait IServerChannel {
     fn listen(&self, ctx: &Marshalled, event: &str, arg: Marshalled) -> Event<Marshalled>;
 }
 
+/// `IChannelClient`: quem entrega o canal de um nome (o [`ChannelClient`], o [`IPCClient`] e o que os imita).
+pub trait IChannelClient {
+    /// `getChannel`.
+    fn get_channel(&self, channel_name: &str) -> Rc<dyn IChannel>;
+}
+
 mod request_type {
     pub const PROMISE: i32 = 100;
     pub const PROMISE_CANCEL: i32 = 101;
@@ -1152,6 +1158,18 @@ impl IPCClient {
 
     pub fn register_channel(&self, channel_name: &str, channel: Rc<dyn IServerChannel>) {
         self.channel_server.register_channel(channel_name, channel);
+    }
+}
+
+impl IChannelClient for IPCClient {
+    fn get_channel(&self, channel_name: &str) -> Rc<dyn IChannel> {
+        IPCClient::get_channel(self, channel_name)
+    }
+}
+
+impl IChannelClient for ChannelClient {
+    fn get_channel(&self, channel_name: &str) -> Rc<dyn IChannel> {
+        ChannelClient::get_channel(self, channel_name)
     }
 }
 
