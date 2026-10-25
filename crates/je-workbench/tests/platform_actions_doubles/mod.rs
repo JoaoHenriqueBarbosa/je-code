@@ -17,10 +17,22 @@ use je_platform::contextview::context_view::{ContextMenuRequest, IContextMenuSer
 use je_platform::telemetry::{CommonPropertyValue, ITelemetryData, ITelemetryService, NullTelemetryServiceShape, TelemetryLevel};
 
 /// Um evento de `publicLog2`: `{ name, data }`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct TelemetryEvent {
     pub name: String,
     pub data: Option<Dynamic>,
+}
+
+/// O `assert.deepStrictEqual` do original compara os eventos pela estrutura, não pela identidade do objeto `data`.
+impl PartialEq for TelemetryEvent {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && match (&self.data, &other.data) {
+                (Some(a), Some(b)) => je_base::equals::structural_equals(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 impl TelemetryEvent {
