@@ -18,11 +18,12 @@
 //!   do [`Layout`].
 //! - **`ModifierKeyEmitter` e `hostService.setFocus`** chegam como `set_alt_pressed` e `handle_window_focus_change`.
 //!
-//! Casos que não têm estado do controle para conferir (só pintura ou geometria CSS do botão) e portanto ficam de fora, na
-//! posição do original: `Add Tab spacing matches adjacent tab fill insets ...` (folgas, margens e raio do `::before`),
-//! `modern editor headers retain an opaque backing ...` e `editor group owns the header backing ...` (cores de fundo
-//! computadas). No caso `scrolling tab content is clipped before the rounded sticky Add control` a conferência de
-//! `rtlCapAtBoundary` e `oppositeShoulderPresentWhenVisible` (sobreposição e `::before`) também é pintura e não entra.
+//! Casos que ficam de fora, na posição do original: `modern editor headers retain an opaque backing ...` e `editor group owns
+//! the header backing ...` (a cor resolvida do cabeçalho vem do `editorGroupView`, ainda sem porte). Nos casos
+//! `Add Tab spacing ...`, `scrolling tab content is clipped ...` e `wrapped Add Tab stays unobscured ...` só a pintura sai
+//! (`::before` do botão, raio, fundo do contêiner, centralização vertical do botão com o toolbar). As medidas de largura,
+//! margem e folga do `Layout` vêm das regras de `multieditortabscontrol.css`, `tabs.css` e `connectedEditorTabs.css` com as
+//! variáveis que `connectedGroup()` declara (raio médio 6px, traço 1px, `size20` 2px, `size40` 4px).
 
 #[path = "../../je-base/tests/common/mod.rs"]
 mod common;
@@ -184,8 +185,17 @@ const CHAR_WIDTH: f64 = 7.0;
 const TAB_PADDING: f64 = 16.0;
 const ACTION_COLUMN: f64 = 28.0;
 const ADD_TAB_WIDTH: f64 = 28.0;
-/// `margin-inline-end` da última aba conectada: o ombro do terminal.
-const SHOULDER_MARGIN: f64 = 8.0;
+/// `--modern-ui-connected-tab-shoulder-radius`: o raio médio de `connectedGroup()` (6px) mais o traço (1px). É a largura do
+/// `::before` e do `::after` da aba ativa, e portanto o `shoulderExtent` que o controle lê.
+const SHOULDER_RADIUS: f64 = 7.0;
+/// `--vscode-strokeThickness` de `connectedGroup()`.
+const STROKE: f64 = 1.0;
+/// `--vscode-spacing-size20` de `connectedGroup()`: a folga da ponta do preenchimento das abas inativas e do botão de nova aba.
+const SPACING_SIZE20: f64 = 2.0;
+/// `--vscode-spacing-size40`: o `--modern-ui-tab-terminal-gutter` do Modern UI sem o estilo conectado.
+const TAB_GUTTER: f64 = 4.0;
+/// `margin-inline-end` da última aba conectada fora da quebra: o ombro do terminal (`shoulder-radius + strokeThickness`).
+const SHOULDER_MARGIN: f64 = SHOULDER_RADIUS + STROKE;
 /// O espaçamento vertical do `tabs-and-actions-container` no Modern UI.
 const ROW_PADDING: f64 = 3.0;
 
@@ -261,6 +271,33 @@ impl Layout {
         state.fit_width.unwrap_or(natural)
     }
 
+    /// `margin-inline-end` da última aba, como as regras de `multieditortabscontrol.css`, `tabs.css` e `connectedEditorTabs.css`
+    /// a declaram: fora da quebra só o estilo conectado reserva o ombro; na quebra a aba reserva a região do toolbar
+    /// (`--last-tab-margin-right`, a não ser que o botão de nova aba a assuma) mais o `--modern-ui-tab-terminal-gutter`.
+    fn terminal_margin(&self, container: &TabsContainerView) -> f64 {
+        let parent = self.parent.get();
+        if !container.wrapping {
+            return if parent.in_connected_editor_tabs { SHOULDER_MARGIN } else { 0.0 };
+        }
+        let toolbar_region = if container.has_add_tab { 0.0 } else { container.last_tab_margin_right };
+        let gutter = match (parent.in_modern_ui_tabs, parent.in_connected_editor_tabs && !container.connected_tab_upper_bar) {
+            (false, _) => 0.0,
+            (true, true) => SHOULDER_RADIUS,
+            (true, false) => TAB_GUTTER,
+        };
+
+        toolbar_region + gutter
+    }
+
+    /// A ponta do botão de nova aba do lado da última aba (`getBoundingClientRect()` do `.action-label`, em px da tela) com a
+    /// aba terminal em `tab` (`(left, right)`): a aba de nova aba começa depois da margem do terminal e o rótulo recua
+    /// `size20 - shoulder-radius - strokeThickness` (`connectedEditorTabs.css`, regra fora da quebra).
+    fn add_button_near_edge(&self, tab: (f64, f64), terminal_margin: f64) -> f64 {
+        let zoom = self.zoom.get();
+        let offset = (terminal_margin + SPACING_SIZE20 - SHOULDER_RADIUS - STROKE) * zoom;
+        if self.rtl.get() { tab.0 - offset } else { tab.1 + offset }
+    }
+
     fn tab_height(&self) -> f64 {
         compute_tab_height(self.options.borrow().tab_height == TabHeight::Compact, self.parent.get(), false)
     }
@@ -279,15 +316,8 @@ impl Layout {
             total - toolbar - add_width
         };
 
-        let margins: Vec<f64> = (0..tabs.len())
-            .map(|index| {
-                if index + 1 != tabs.len() {
-                    return 0.0;
-                }
-                let shoulder = if connected { SHOULDER_MARGIN } else { 0.0 };
-                shoulder + if container.wrapping && container.add_tab != AddTabPresence::Visible { container.last_tab_margin_right } else { 0.0 }
-            })
-            .collect();
+        let terminal_margin = self.terminal_margin(container);
+        let margins: Vec<f64> = (0..tabs.len()).map(|index| if index + 1 == tabs.len() { terminal_margin } else { 0.0 }).collect();
         let widths: Vec<f64> = tabs
             .iter()
             .enumerate()
@@ -319,6 +349,8 @@ impl Layout {
                     cursor = 0.0;
                 }
                 tops.push(row as f64 * tab_height);
+                // Na quebra cada linha recomeça na borda de início.
+                offsets[index] = cursor;
                 cursor += size;
             }
             if add_width > 0.0 && cursor > 0.0 && cursor + add_width > visible_width {
@@ -454,7 +486,7 @@ impl TabsMeasurer for Layout {
             tab_border: String::new(),
             overflow_top_border: String::new(),
             overflow_top_background: String::new(),
-            shoulder_extent: 6.0,
+            shoulder_extent: SHOULDER_RADIUS,
         })
     }
 
@@ -771,18 +803,80 @@ fn keeps_connected_layout_current_when_an_add_tab_toolbar_follows_the_editor_tab
     assert_eq!(results, expected);
 }
 
-// `Add Tab spacing matches adjacent tab fill insets without losing the terminal shoulder`: sem estado do controle, ver o
-// cabeçalho do arquivo.
+#[test]
+fn add_tab_spacing_matches_adjacent_tab_fill_insets_without_losing_the_terminal_shoulder() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.create_control(true);
 
-/// A leitura de `readClipping(direction, zoom)` que cabe ao controle.
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        active_index: usize,
+        rtl: bool,
+        width: f64,
+        gap: f64,
+        expected_gap: f64,
+        terminal_margin: f64,
+        opposite_margin: f64,
+        terminal_is_last: bool,
+    }
+
+    let mut results = Vec::new();
+    for active_index in [0usize, 1] {
+        for rtl in [false, true] {
+            fx.layout.rtl.set(rtl);
+            let editor = fx.model.get_editor_by_index(active_index as i64).expect("editor");
+            fx.model.set_active(Some(&editor));
+            fx.state.set_active(); // control.setActive(true)
+            fx.open_editors(); // control.openEditor(model.activeEditor)
+            for width in [500.0, 300.0, 500.0] {
+                fx.layout(width);
+                let geometry = fx.geometry();
+                let last = fx.state.tabs.len() - 1;
+                let zoom = fx.layout.zoom.get();
+                let (left, right) = fx.layout.tab_rect(&geometry, last, 0.0);
+                // `.tab-fill` com `inset-inline` de `--modern-ui-connected-tab-fill-inline-inset`: 0 na aba ativa, `size20` nas demais.
+                let fill_inset = if fx.state.tabs[last].state.active { 0.0 } else { SPACING_SIZE20 } * zoom;
+                let (fill_left, fill_right) = (left + fill_inset, right - fill_inset);
+                let button_edge = fx.layout.add_button_near_edge((left, right), geometry.margins[last]);
+                let (gap, expected_inset) = if rtl { (fill_left - button_edge, fill_left - left) } else { (button_edge - fill_right, right - fill_right) };
+                results.push(Row {
+                    active_index,
+                    rtl,
+                    width,
+                    gap,
+                    expected_gap: expected_inset + SPACING_SIZE20 * zoom,
+                    terminal_margin: geometry.margins[last],
+                    opposite_margin: geometry.margins[0],
+                    terminal_is_last: fx.state.tabs[last].state.connected_tab_last,
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row { gap: result.expected_gap, terminal_margin: 8.0, opposite_margin: 0.0, terminal_is_last: true, ..*result })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+// A parte de `Add Tab spacing` que confere o `::before` do botão (largura igual à do botão, raio de 4px, contêiner sem fundo)
+// é pintura do botão nativo e não é estado do controle.
+
+/// A leitura de `readClipping(direction, zoom)`.
 #[derive(Debug, PartialEq)]
 struct ClippingRead {
     has_clipped_tab: bool,
     has_clipped_active: bool,
+    rtl_cap_at_boundary: bool,
+    opposite_shoulder_present_when_visible: bool,
     matching_clip: bool,
 }
 
-/// `readClipping(direction, zoom)`, sem o que é pintura (sobreposição e ombros).
+/// `readClipping(direction, zoom)`. O `overlay` é o `ConnectedOverflowEdge` do contêiner e o ombro oposto da aba ativa é o
+/// que `connectedEditorTabs.css` deixa existir: o `::before` (início) some na primeira aba e quando o controle marca
+/// `connected-tab-left-edge`; o `::after` (fim) não tem regra que o suprima.
 fn read_clipping(fx: &Fixture, rtl: bool, zoom: f64) -> ClippingRead {
     let geometry = fx.geometry();
     let scroll = fx.state.container.scroll_left;
@@ -791,9 +885,22 @@ fn read_clipping(fx: &Fixture, rtl: bool, zoom: f64) -> ClippingRead {
     let rects: Vec<(f64, f64)> = (0..fx.state.tabs.len()).map(|index| fx.layout.tab_rect(&geometry, index, scroll)).collect();
     let clipped = |(left, right): (f64, f64)| if rtl { left < boundary } else { right > boundary };
 
+    let tabs_right = geometry.visible_width * zoom;
+    let active_index = fx.state.tabs.iter().position(|tab| tab.state.active).expect("aba ativa");
+    let (fill_left, fill_right) = rects[active_index];
+    let shoulder_width = SHOULDER_RADIUS * zoom;
+    let active_visible_width = fill_right.min(tabs_right) - fill_left.max(boundary);
+    let rtl_cap_expected = rtl && active_visible_width > shoulder_width;
+    let overlay = &fx.state.container.overflow_edge;
+    let overlay_left = overlay.left.unwrap_or(0.0) * zoom;
+    let opposite_shoulder_outside_viewport = if rtl { fill_right + shoulder_width > tabs_right } else { fill_left - shoulder_width < 0.0 };
+    let opposite_shoulder_exists = rtl || !(active_index == 0 || fx.state.tabs[active_index].state.connected_clipping.left_edge);
+
     ClippingRead {
         has_clipped_tab: rects.iter().any(|rect| clipped(*rect)),
         has_clipped_active: fx.state.tabs.iter().zip(&rects).any(|(tab, rect)| tab.state.active && clipped(*rect)),
+        rtl_cap_at_boundary: !rtl || if rtl_cap_expected { (overlay_left - boundary).abs() < 1.0 / 32.0 } else { !overlay.left_clipped },
+        opposite_shoulder_present_when_visible: opposite_shoulder_outside_viewport || opposite_shoulder_exists,
         matching_clip: fx.state.tabs.iter().zip(&rects).all(|(tab, &(left, right))| {
             let expected = ((if rtl { boundary - left } else { right - boundary }) / zoom).max(0.0);
             let clip = tab.state.clip_path;
@@ -848,7 +955,13 @@ fn scrolling_tab_content_is_clipped_before_the_rounded_sticky_add_control() {
     fx.layout(300.0);
     let wrapped_clipping_cleared = fx.clip_paths().iter().all(Option::is_none);
 
-    let expected_read = || ClippingRead { has_clipped_tab: true, has_clipped_active: true, matching_clip: true };
+    let expected_read = || ClippingRead {
+        has_clipped_tab: true,
+        has_clipped_active: true,
+        rtl_cap_at_boundary: true,
+        opposite_shoulder_present_when_visible: true,
+        matching_clip: true,
+    };
     let expected: Vec<(bool, f64, ClippingRead, ClippingRead)> =
         results.iter().map(|(rtl, zoom, _, _)| (*rtl, *zoom, expected_read(), expected_read())).collect();
     assert_eq!(results, expected);
@@ -945,9 +1058,209 @@ fn add_menu_visibility_updates_wrapped_width_and_scrolling_clipping_without_resi
     assert_eq!(results, expected);
 }
 
-// O ponto de parada, na ordem do original, é o caso `wrapped fit check includes the terminal gutter and the independent
-// controls row` (linha 458): os casos seguintes dependem do modelo de linhas e margens do `Layout` com o limiar de
-// quebra calculado do estilo computado da aba terminal.
+/// `openNamedEditors(['F.ts', `a-${'long-label-'.repeat(25)}.ts`])`.
+fn open_short_and_oversized(fx: &mut Fixture) {
+    let oversized = format!("a-{}.ts", "long-label-".repeat(25));
+    fx.open_named_editors(&["F.ts".to_string(), oversized]);
+}
+
+/// `partOptions = { ...partOptions, wrapTabs: true, tabSizing: 'fit', tabActionReserveSpace: false }`.
+fn wrap_fit_without_reserved_actions(fx: &mut Fixture) {
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fit;
+        options.tab_action_reserve_space = false;
+    });
+}
+
+#[test]
+fn wrapped_fit_check_includes_the_terminal_gutter_and_the_independent_controls_row() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        has_add: bool,
+        connected: bool,
+        rtl: bool,
+        delta: f64,
+        wrapped: bool,
+    }
+
+    let mut results = Vec::new();
+    for has_add in [false, true] {
+        fx.create_control(has_add);
+        open_short_and_oversized(&mut fx);
+        wrap_fit_without_reserved_actions(&mut fx);
+        fx.layout.toolbar.set(56.0); // toolbar.style.width = '56px'
+        for connected in [false, true] {
+            fx.set_connected(connected);
+            for rtl in [false, true] {
+                fx.layout.rtl.set(rtl);
+                fx.layout(300.0);
+                let geometry = fx.geometry();
+                let toolbar = fx.layout.toolbar.get();
+                let add_width = if has_add { geometry.add_width } else { 0.0 };
+                let terminal_margin = *geometry.margins.last().expect("aba terminal");
+                let gutter = terminal_margin - if has_add { 0.0 } else { toolbar };
+                let threshold = if has_add { 80f64.max(toolbar + add_width) } else { 80.0 + toolbar } + gutter;
+                for delta in [-2.0, 2.0, -2.0, 2.0] {
+                    fx.layout(threshold + delta);
+                    results.push(Row { has_add, connected, rtl, delta, wrapped: fx.state.container.wrapping });
+                }
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results.iter().map(|result| Row { wrapped: result.delta > 0.0, ..*result }).collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn wrapped_add_tab_stays_unobscured_beside_the_terminal_tab_or_on_its_own_final_row() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.create_control(true);
+    open_short_and_oversized(&mut fx);
+    wrap_fit_without_reserved_actions(&mut fx);
+    fx.layout.toolbar.set(56.0);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        rtl: bool,
+        compact: bool,
+        width: f64,
+        wrapped: bool,
+        same_row: bool,
+        adjacent_gap: Option<bool>,
+        separate_row: Option<bool>,
+        contained: bool,
+        visible_button_gap: Option<bool>,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        for rtl in [false, true] {
+            for tab_height in [TabHeight::Default, TabHeight::Compact] {
+                fx.update_options(|options| options.tab_height = tab_height);
+                fx.layout.rtl.set(rtl);
+                fx.set_connected(connected);
+                for width in [320.0, 900.0, 320.0, 1500.0] {
+                    fx.layout(width);
+                    let geometry = fx.geometry();
+                    let last = fx.state.tabs.len() - 1;
+                    let terminal = &fx.state.tabs[last];
+                    let (left, right) = fx.layout.tab_rect(&geometry, last, 0.0);
+                    let same_row = geometry.tops[last] == geometry.add_top;
+                    // O botão de nova aba na quebra: depois da margem do terminal na mesma linha, ou no início da linha final.
+                    let add_width = geometry.add_width;
+                    let margin = geometry.margins[last];
+                    let (add_left, add_right) = match (same_row, rtl) {
+                        (true, false) => (right + margin, right + margin + add_width),
+                        (true, true) => (left - margin - add_width, left - margin),
+                        (false, false) => (0.0, add_width),
+                        (false, true) => (geometry.visible_width - add_width, geometry.visible_width),
+                    };
+                    // `.tab-fill` com `inset-inline` 0 na aba ativa fora da linha superior e `size20` nas demais.
+                    let fill_inset = if connected && terminal.state.active && !terminal.state.connected_tab_top_row { 0.0 } else { SPACING_SIZE20 };
+                    // O `.action-label` recua `size20 - shoulder-radius` no estilo conectado da quebra.
+                    let label_start = SPACING_SIZE20 - SHOULDER_RADIUS;
+                    let (fill_left, fill_right) = (left + fill_inset, right - fill_inset);
+                    let button_gap = if rtl { fill_left - (add_right - label_start) } else { (add_left + label_start) - fill_right };
+                    let adjacent_gap = (if rtl { left - add_right } else { add_left - right } - if connected { 7.0 } else { 4.0 }).abs() <= 1.0 / 32.0;
+                    results.push(Row {
+                        connected,
+                        rtl,
+                        compact: tab_height == TabHeight::Compact,
+                        width,
+                        wrapped: fx.state.container.wrapping,
+                        same_row,
+                        adjacent_gap: same_row.then_some(adjacent_gap),
+                        separate_row: (!same_row).then(|| geometry.add_top > geometry.tops[last] && (!connected || terminal.state.connected_tab_top_row)),
+                        contained: add_left >= -1.0 / 64.0 && add_right <= fx.layout.width.get() + 1.0 / 64.0,
+                        visible_button_gap: same_row.then(|| !connected || (button_gap - fill_inset - SPACING_SIZE20).abs() <= 1.0 / 32.0),
+                    });
+                }
+            }
+        }
+    }
+
+    // O alinhamento vertical do botão com o centro do toolbar (`toolbarAligned`) é centralização de linha flex do navegador,
+    // sem estado no controle: o que o controle decide aqui é a linha do botão (`add_top`), conferida em `same_row` e
+    // `separate_row`.
+    let expected: Vec<Row> = results
+        .iter()
+        .map(|result| Row {
+            wrapped: true,
+            adjacent_gap: result.same_row.then_some(true),
+            separate_row: (!result.same_row).then_some(true),
+            contained: true,
+            visible_button_gap: result.same_row.then_some(true),
+            ..*result
+        })
+        .collect();
+    assert_eq!(results, expected);
+}
+
+#[test]
+fn wrapped_terminal_fit_tabs_leave_room_for_editor_actions_without_an_add_tab_control() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    open_short_and_oversized(&mut fx);
+    wrap_fit_without_reserved_actions(&mut fx);
+    fx.layout.toolbar.set(56.0);
+
+    #[derive(Debug, PartialEq)]
+    struct Row {
+        connected: bool,
+        rtl: bool,
+        width: f64,
+        wrapped: bool,
+        before_toolbar: bool,
+        close_clickable: bool,
+        no_add_tab: bool,
+    }
+
+    let mut results = Vec::new();
+    for connected in [false, true] {
+        for rtl in [false, true] {
+            fx.layout.rtl.set(rtl);
+            fx.set_connected(connected);
+            for width in [300.0, 600.0, 300.0] {
+                fx.layout(width);
+                let geometry = fx.geometry();
+                let last = fx.state.tabs.len() - 1;
+                let (left, right) = fx.layout.tab_rect(&geometry, last, 0.0);
+                // O `.action-label` fecha a aba na borda de fim, dentro do preenchimento da aba.
+                let close_width = ACTION_COLUMN - TAB_PADDING / 2.0;
+                let (close_left, close_right) = if rtl { (left + TAB_PADDING / 2.0, left + TAB_PADDING / 2.0 + close_width) } else { (right - TAB_PADDING / 2.0 - close_width, right - TAB_PADDING / 2.0) };
+                // O toolbar ocupa a borda de fim da linha: `(total - toolbar, total)` no texto da esquerda, `(0, toolbar)` no inverso.
+                let toolbar = fx.layout.toolbar.get();
+                let (toolbar_left, toolbar_right) = if rtl { (0.0, toolbar) } else { (width - toolbar, width) };
+                let center = (close_left + close_right) / 2.0;
+                results.push(Row {
+                    connected,
+                    rtl,
+                    width,
+                    wrapped: fx.state.container.wrapping,
+                    before_toolbar: if rtl { close_left >= toolbar_right } else { close_right <= toolbar_left },
+                    close_clickable: !(center >= toolbar_left && center <= toolbar_right),
+                    no_add_tab: fx.state.container.add_tab == AddTabPresence::None,
+                });
+            }
+        }
+    }
+
+    let expected: Vec<Row> = results.iter().map(|result| Row { wrapped: true, before_toolbar: true, close_clickable: true, no_add_tab: true, ..*result }).collect();
+    assert_eq!(results, expected);
+}
+
+// `modern editor headers retain an opaque backing during narrow and wide layouts` e `editor group owns the header backing
+// while Modern UI can toggle without an important override` (linhas 573 e 604) dependem do `editorGroupView` (o
+// `titleContainer.style.backgroundColor` e a cor de tema resolvida do cabeçalho), que ainda não tem porte em `je-workbench`.
+// O ponto de parada, na ordem do original, é o caso `connected labels use end ellipsis before the badge and action`
+// (linha 642) e os que o seguem.
 
 //#region Alt (#331979), os quatro últimos casos do original
 
