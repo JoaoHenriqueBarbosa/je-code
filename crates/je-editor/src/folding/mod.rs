@@ -1,11 +1,11 @@
 //! Porte do que o dobramento de código (`src/vs/editor/contrib/folding/browser`) precisa de
 //! `folding.ts` para os provedores de intervalo: `RangeProvider`, `FoldingLimitReporter` e
-//! `SelectedLines`. O controlador, as ações e o restante de `folding.ts` não fazem parte desta fatia.
+//! `SelectedLines`. O controlador e as ações de `folding.ts` estão em [`folding_controller`].
 //!
 //! Os módulos filhos são `foldingRanges.ts` ([`folding_ranges`]), `indentRangeProvider.ts`
 //! ([`indent_range_provider`]), `foldingModel.ts` ([`folding_model`]), `hiddenRangeModel.ts`
-//! ([`hidden_range_model`]) e `syntaxRangeProvider.ts` ([`syntax_range_provider`]). `foldingDecorations.ts` não foi portado: depende de `ICodeEditor`, do registro
-//! de cores e de ícones (`registerColor`, `registerIcon`) e de `Codicon`, que não existem.
+//! ([`hidden_range_model`]), `syntaxRangeProvider.ts` ([`syntax_range_provider`]) e `foldingDecorations.ts`
+//! ([`folding_decorations`]).
 //!
 //! Decisões de tradução:
 //! - `number | false` de `FoldingLimitReporter.update` é `Option<usize>` (`None` é `false`).
@@ -25,6 +25,8 @@ pub mod indent_range_provider;
 pub mod folding_model;
 pub mod hidden_range_model;
 pub mod syntax_range_provider;
+pub mod folding_decorations;
+pub mod folding_controller;
 
 use folding_ranges::FoldingRegions;
 
