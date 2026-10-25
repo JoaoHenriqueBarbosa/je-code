@@ -514,7 +514,9 @@ fn advance_only_consumes_mouse_and_keyboard_activation_while_keeping_the_acknowl
             },
         );
         let next = env.container.buttons().last().cloned().expect("o botão Próximo");
-        let visible = visible_buttons(&env.container);
+        // No original o alvo ("Archive", `target.label = 'Archive'`) é um `.monaco-button` do mesmo contêiner e vem antes
+        // dos três botões do balão; aqui o alvo vive fora de `container.buttons()`, então entra na frente da lista.
+        let visible: Vec<String> = std::iter::once("Archive".to_string()).chain(visible_buttons(&env.container)).collect();
         next.key_down(OnboardingKey::Tab, false);
         let target_focused = env.window.document().active_element() == Some(target.element.clone());
         target.element.click();
