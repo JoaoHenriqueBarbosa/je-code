@@ -584,6 +584,7 @@ impl ExtensionHost {
                 late.terminal_service.0.bind(terminal_shape);
                 environment_variable_collection::define_class(runner, &table, terminal.clone(), extension_slot.clone());
                 bridged.context.environment_variable_collection = true;
+                env_services.shell_changes = Some(terminal.on_did_change_shell());
                 // `Terminal#shellIntegration` e os eventos de execução pedem também o cliente `MainThreadTerminalShellIntegration`; o
                 // serviço é ligado depois do de terminais, que precisa já conhecer os terminais abertos que a integração anuncia.
                 if provided(MainContext::MAIN_THREAD_TERMINAL_SHELL_INTEGRATION.sid) {
