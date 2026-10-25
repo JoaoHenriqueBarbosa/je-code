@@ -332,7 +332,7 @@ impl<T: Clone + 'static> IListDragAndDrop<T> for ListViewDragAndDrop<T> {
     }
 
     fn drop(&self, data: &Rc<dyn IDragAndDropData>, target_element: Option<&T>, target_index: Option<usize>, target_sector: Option<ListViewTargetSector>, original_event: &DragEvent) {
-        self.dnd.drop(data, target_element, target_index, target_sector, original_event);
+        (*self.dnd).drop(data, target_element, target_index, target_sector, original_event);
     }
 
     fn dispose(&self) {

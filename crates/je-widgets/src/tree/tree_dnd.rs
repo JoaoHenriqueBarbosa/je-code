@@ -166,7 +166,7 @@ impl<M: ITreeModel> IListDragAndDrop<Rc<M::Node>> for TreeNodeListDragAndDrop<M>
         *self.auto_expand_node.borrow_mut() = None;
 
         let target_element = target_node.map(|node| node.element());
-        self.dnd.drop(&as_tree_drag_and_drop_data::<M>(data), target_element.as_ref(), target_index, target_sector, original_event);
+        (*self.dnd).drop(&as_tree_drag_and_drop_data::<M>(data), target_element.as_ref(), target_index, target_sector, original_event);
     }
 
     fn on_drag_end(&self, original_event: &DragEvent) {

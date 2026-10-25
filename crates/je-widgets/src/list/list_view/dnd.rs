@@ -401,7 +401,7 @@ impl<T: Clone + 'static> ListView<T> {
         drag_data.update(&event.data_transfer);
         let (element, index, sector) = self.drag_target(event);
         let dnd = self.drag.dnd.borrow().clone();
-        dnd.drop(&drag_data, element.as_ref(), index, sector, event);
+        (*dnd).drop(&drag_data, element.as_ref(), index, sector, event);
         true
     }
 

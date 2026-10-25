@@ -671,7 +671,7 @@ impl<TInput: Clone + 'static, T: Clone + 'static> IListDragAndDrop<Option<AsyncN
         original_event: &DragEvent,
     ) {
         let target_element = target_node.and_then(|node| node.as_ref()).map(|node| node.element_t());
-        self.0.drop(&as_async_data_tree_drag_and_drop_data::<TInput, T>(data), target_element.as_ref(), target_index, target_sector, original_event);
+        (*self.0).drop(&as_async_data_tree_drag_and_drop_data::<TInput, T>(data), target_element.as_ref(), target_index, target_sector, original_event);
     }
 
     fn on_drag_end(&self, original_event: &DragEvent) {
