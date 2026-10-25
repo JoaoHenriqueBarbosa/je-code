@@ -969,8 +969,9 @@ impl HoverWidgetFactory {
     }
 }
 
-impl IHoverWidgetFactory for HoverWidgetFactory {
-    fn create(&self, options: &mut IHoverOptions) -> Rc<dyn IHoverWidgetHandle> {
+impl HoverWidgetFactory {
+    /// O `createInstance(HoverWidget, options)` com o tipo concreto (o ponteiro e o conteúdo, que o handle não expõe).
+    pub fn create_widget(&self, options: &mut IHoverOptions) -> Rc<HoverWidget> {
         let widget = HoverWidget::new(options, self.dom.clone(), self.host.clone());
         // O `offsetWidth` e o `offsetHeight` do `domNode` são os do contêiner medido.
         let weak = Rc::downgrade(&widget);
@@ -979,6 +980,12 @@ impl IHoverWidgetFactory for HoverWidgetFactory {
             None => ISize { width: 0.0, height: 0.0 },
         }));
         widget
+    }
+}
+
+impl IHoverWidgetFactory for HoverWidgetFactory {
+    fn create(&self, options: &mut IHoverOptions) -> Rc<dyn IHoverWidgetHandle> {
+        self.create_widget(options)
     }
 }
 

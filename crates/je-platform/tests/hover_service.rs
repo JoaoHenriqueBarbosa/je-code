@@ -1,25 +1,42 @@
-//! Porte de `src/vs/platform/hover/test/browser/hoverService.test.ts` (suíte `HoverService`), caso a caso e na mesma ordem,
-//! até onde o `HoverService` sozinho responde.
+//! Porte de `src/vs/platform/hover/test/browser/hoverService.test.ts` (suíte `HoverService`), caso a caso e na mesma ordem.
 //!
 //! Notas de tradução:
 //! - **DOM.** `document.body.contains(domNode)` é a cadeia de `parent_element` até o `fixture` (`is_ancestor`), que o `render`
 //!   do hover cria ao pôr o nó na visão de contexto e a destruição desfaz. `dispatchEvent(new MouseEvent(...))` é
 //!   `FakeDom::dispatch` (o evento sobe pela cadeia de pais e termina no `document`) e `document.dispatchEvent` é
-//!   `FakeDom::dispatch_document`. `querySelectorAll('.monaco-hover').length` é o número de hovers vivos na árvore.
+//!   `FakeDom::dispatch_document`. `querySelectorAll('.monaco-hover')` é `Env::live_hover_nodes` e `.length` é o número de
+//!   hovers vivos na árvore. `element.textContent` é `FakeDom::text_content`, sobre os textos que o teste registra.
 //! - **Serviços.** `TestInstantiationService.stub(...)` vira o `HoverServiceDeps`: `TestConfigurationService` com
 //!   `workbench.hover.delay` e `reducedDelay` em 0, o `MockKeybindingService`, o `FakeLayoutService` do teste do
 //!   `actionWidget` (o `fixture` como todos os contêineres), um `IAccessibilityService` sem leitor de tela e a
 //!   `ContextViewService` real, uma por hover (o `new ContextView(container, ABSOLUTE)` do original).
-//! - **Widget.** O `HoverWidget` posicionado (`platform/hover/browser/hoverWidget.ts`) é outro arquivo do oráculo; aqui
-//!   entra o `FakeHoverWidget`, que guarda `isLocked`, `isDisposed`, as classes adicionais e o nó na visão de contexto.
+//! - **Dois ambientes.** `setup` monta o serviço com o `FakeHoverWidget`, que guarda `isLocked`, `isDisposed`, as classes
+//!   adicionais e o nó na visão de contexto, e basta aos casos que só o `HoverService` responde. `setup_real` monta o
+//!   `HoverWidget` real (`HoverWidgetFactory`) e o `ManagedHoverWidget` real (`ManagedHoverWidgetFactory`), para os casos de
+//!   geometria, de rastreador de mouse e de hover gerenciável que abre o hover de verdade.
+//! - **Medidas do navegador.** O `TestHost` (`IHoverWidgetHost`) é o que o original simula com `getBoundingClientRect` do
+//!   alvo (`set_rect`), `Object.defineProperty(domNode, 'clientWidth', ...)` (`set_client_width` e o getter da largura
+//!   restrita), a altura do conteúdo rolável (`contents_height`) e `window.innerHeight` (800, a `Viewport` do layout). O resto
+//!   (`x`, `max-width`, `max-height`, `top` e `left` do ponteiro) é calculado pelo `HoverWidget` e lido dos estilos dos
+//!   `ViewElement`s, como o original lê do DOM. A barra de status das ações soma `STATUS_BAR_HEIGHT` ao que fica fora do
+//!   conteúdo, e `statusBarIsVisible` é "o conteúdo limitado mais o que fica fora cabe na altura do hover".
+//! - **`WorkbenchHoverDelegate`.** `WorkbenchDelegate` reproduz `showHover` (`hideOnKeyDown`, `id` pelo texto, `compact`, o
+//!   `overrideOptions` de `persistence`) e é o `IHoverShower` do `ManagedHoverWidget`. O fechamento por `Escape` no alvo não
+//!   existe (nenhum caso o exercita). Como o `IHoverDelegate` da plataforma não carrega `showHover`, a `DelegateRoutingFactory`
+//!   entrega à fábrica real o delegate que o `ManagedHoverWidget` recebeu.
+//! - **Ações do hover.** Quem desenha as ações é o pintor nativo, então `.hover-row.status-bar .action-container` é a lista de
+//!   rótulos que a fábrica real recebeu nas opções de cada hover vivo (`Env::live_action_labels`).
+//! - **`sinon.spy(hover, 'layout')`.** O `layout` do `HoverWidget` termina sempre em `IHoverWidgetHost::on_contents_changed`,
+//!   e o `TestHost` conta essas chamadas.
+//! - **`await hover.update(...)`.** O conteúdo gerenciado é síncrono, então a promessa já volta resolvida.
+//! - **`mouseout`.** Nem o serviço nem o widget ouvem `mouseout` (só `mouseleave`), então o evento do caso `mouseleave closes
+//!   the rendered hover` não tem efeito e fica só a espera.
 //! - **Timers.** `runWithFakedTimers({ useFakeTimers: true }, ...)` é `run_with_faked_timers`.
 //!
-//! Casos que ficam para quando o `HoverWidget` posicionado for portado (dependem de geometria, de `ResizeObserver`, do
-//! rastreador de mouse ou do `ManagedHoverWidget` renderizando de verdade): os nove primeiros de `showInstantHover`
-//! (alinhamento à direita, centro do ponteiro, recorte, caixa de borda, largura restrita, conteúdo rolável e conteúdo curto),
-//! `should apply additional classes to hover DOM`, os casos de `setupManagedHover` que abrem o hover real (`updates a pinned
-//! hover`, `forwards onDidShow`, `should update options dynamically`, `managed HTML content`, `mouseleave`, `focus an already
-//! visible`, `retain replacement`, os dois `should not re-show`) e a suíte `layout and resize` salvo `clicking outside`.
+//! Caso que fica de fora: `should size the hover pointer as a border box so its centre matches the pointer size`, que lê o
+//! estilo calculado do `::after` do ponteiro (`box-sizing`, `width`, `height`, `transform-origin` de `hover.css`). O pintor
+//! nativo não tem CSS; o que o caso protege (o centro do ponteiro a 3px da borda) é medido por `should centre the hover
+//! pointer on its target for odd and even hover widths` e pelo caso vertical, que fixam a meia largura do ponteiro em 3.
 
 mod common;
 
@@ -29,9 +46,10 @@ use std::rc::{Rc, Weak};
 use common::keybinding::MockKeybindingService;
 use common::{LeakGuard, ensure_no_disposables_are_leaked_in_test_suite, run_with_faked_timers};
 use je_base::async_::timeout;
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::event::{Emitter, Event};
-use je_base::layout::AnchorPosition;
+use je_base::layout::{AnchorAlignment, AnchorPosition};
 use je_base::lifecycle::{DisposableRef, IDisposable, none, to_disposable};
 use je_base::promise::Promise;
 use je_instantiation::Injectable;
@@ -42,11 +60,14 @@ use je_platform::contextview::context_view::{IContextViewDelegate, IContextViewS
 use je_platform::contextview::context_view_service::ContextViewService;
 use je_platform::contextview::view_element::ViewElement;
 use je_platform::hover::hover_service::{
-    HoverContent, HoverDelay, HoverDelegateTarget, HoverDomEvent, HoverDomEventKind, HoverDomHandler, HoverDomTarget, HoverService, HoverServiceDeps, HoverTarget,
-    IHoverContextView, IHoverContextViewFactory, IHoverDelegate, IHoverDom, IHoverLifecycleOptions, IHoverOptions, IHoverPersistenceOptions, IHoverWidget,
-    IHoverWidgetFactory, IHoverWidgetHandle, IManagedHover, IManagedHoverWidget, IManagedHoverWidgetFactory, ManagedHoverContentOrFactory,
+    HoverContent, HoverDelay, HoverDelegateTarget, HoverDomEvent, HoverDomEventKind, HoverDomHandler, HoverDomTarget, HoverPlacement, HoverPosition, HoverPositionOption,
+    HoverService, HoverServiceDeps, HoverTarget, IHoverAction, IHoverAppearanceOptions, IHoverContextView, IHoverContextViewFactory, IHoverDelegate, IHoverDom,
+    IHoverLifecycleOptions, IHoverOptions, IHoverPersistenceOptions, IHoverPositionOptions, IHoverWidget, IHoverWidgetFactory, IHoverWidgetHandle, IManagedHover,
+    IManagedHoverOptions, IManagedHoverWidget, IManagedHoverWidgetFactory, ManagedHoverContent, ManagedHoverContentOrFactory, ManagedHoverTooltip,
     StructuredHoverTarget, is_ancestor,
 };
+use je_platform::hover::hover_widget::{HoverContentMetrics, HoverMeasureRequest, HoverWidget, HoverWidgetFactory, IHoverWidgetHost};
+use je_platform::hover::updatable_hover_widget::{IHoverShower, ManagedHoverWidgetFactory};
 use je_platform::keybinding::keybinding::IKeybindingService;
 use je_platform::layout::layout_service::{ILayoutService, LayoutContainerEvent, Viewport};
 
@@ -125,6 +146,7 @@ struct FakeDom {
     listeners: RefCell<Vec<Listener>>,
     attributes: RefCell<Vec<(usize, String, String)>>,
     active: RefCell<Option<Rc<ViewElement>>>,
+    texts: RefCell<Vec<(Rc<ViewElement>, String)>>,
 }
 
 fn key(element: &Rc<ViewElement>) -> usize {
@@ -133,7 +155,17 @@ fn key(element: &Rc<ViewElement>) -> usize {
 
 impl FakeDom {
     fn new() -> Rc<Self> {
-        Rc::new_cyclic(|this| Self { this: this.clone(), next_id: Cell::new(1), listeners: RefCell::new(Vec::new()), attributes: RefCell::new(Vec::new()), active: RefCell::new(None) })
+        Rc::new_cyclic(|this| Self { this: this.clone(), next_id: Cell::new(1), listeners: RefCell::new(Vec::new()), attributes: RefCell::new(Vec::new()), active: RefCell::new(None), texts: RefCell::new(Vec::new()) })
+    }
+
+    /// `element.textContent = text`.
+    fn set_text(&self, element: &Rc<ViewElement>, text: &str) {
+        self.texts.borrow_mut().push((element.clone(), text.to_owned()));
+    }
+
+    /// `node.textContent`: o texto dos elementos que estão dentro de `node`.
+    fn text_content(&self, node: &Rc<ViewElement>) -> String {
+        self.texts.borrow().iter().filter(|(element, _)| is_ancestor(element, node)).map(|(_, text)| text.as_str()).collect()
     }
 
     fn fire(&self, matches: impl Fn(&HoverDomTarget) -> bool, kind: HoverDomEventKind, event: &HoverDomEvent) {
@@ -360,15 +392,184 @@ impl IHoverDelegate for NativeDelegate {
     }
 }
 
+/// `window.innerHeight` do teste, a altura da `Viewport` do `FakeLayoutService`.
+const WINDOW_HEIGHT: f64 = 800.0;
+/// A borda do hover (`HOVER_BORDER_WIDTH`) que o `offsetHeight` do contêiner soma ao conteúdo.
+const HOVER_BORDER: f64 = 2.0;
+/// A altura da barra de status (`.hover-row.status-bar`) que as ações acrescentam ao que fica fora do conteúdo.
+const STATUS_BAR_HEIGHT: f64 = 27.0;
+
+/// `Object.defineProperty(domNode, 'clientWidth', { value })`.
+fn fixed_width(value: f64) -> Rc<dyn Fn(Option<f64>) -> f64> {
+    Rc::new(move |_| value)
+}
+
+/// As medidas do navegador que o original simula: `Object.defineProperty(domNode, 'clientWidth', ...)`, a altura do
+/// conteúdo (`scrollHeight`) e a janela. Tudo o mais que o `HoverWidget` lê, ele calcula.
+struct TestHost {
+    client_width: RefCell<Rc<dyn Fn(Option<f64>) -> f64>>,
+    contents_height: Cell<f64>,
+    contents_changed: Cell<usize>,
+}
+
+impl TestHost {
+    fn new() -> Rc<Self> {
+        Rc::new(Self { client_width: RefCell::new(fixed_width(200.0)), contents_height: Cell::new(20.0), contents_changed: Cell::new(0) })
+    }
+
+    /// `Object.defineProperty(domNode, 'clientWidth', { value })`.
+    fn set_client_width(&self, value: f64) {
+        *self.client_width.borrow_mut() = fixed_width(value);
+    }
+
+    /// `Object.defineProperty(domNode, 'clientWidth', { get })`: a largura depende do `max-width` em vigor.
+    fn set_client_width_getter(&self, getter: impl Fn(Option<f64>) -> f64 + 'static) {
+        *self.client_width.borrow_mut() = Rc::new(getter);
+    }
+
+    /// O que fica fora do conteúdo: a borda e, com ações, a barra de status.
+    fn outside_height(has_status_bar: bool) -> f64 {
+        HOVER_BORDER + if has_status_bar { STATUS_BAR_HEIGHT } else { 0.0 }
+    }
+}
+
+impl IHoverWidgetHost for TestHost {
+    fn window_inner_height(&self) -> f64 {
+        WINDOW_HEIGHT
+    }
+    fn document_client_width(&self) -> f64 {
+        1280.0
+    }
+    fn document_client_left(&self) -> f64 {
+        0.0
+    }
+    fn zoom_level(&self, _element: &Rc<ViewElement>) -> f64 {
+        1.0
+    }
+    fn measure(&self, request: &HoverMeasureRequest<'_>) -> HoverContentMetrics {
+        let client_width = self.client_width.borrow().clone();
+        HoverContentMetrics {
+            width: client_width(request.max_width),
+            contents_height: self.contents_height.get(),
+            outside_height: Self::outside_height(request.has_status_bar),
+            vertical_scrollbar_size: 10.0,
+        }
+    }
+    fn last_focusable_child(&self, _container: &Rc<ViewElement>) -> Option<Rc<ViewElement>> {
+        None
+    }
+    fn accessible_view_hint(&self) -> Option<String> {
+        None
+    }
+    fn announce(&self, _message: &str) {}
+    fn on_contents_changed(&self) {
+        self.contents_changed.set(self.contents_changed.get() + 1);
+    }
+}
+
+/// O que o teste guarda de cada `HoverWidget` real criado: o widget e os rótulos das ações (que o pintor nativo desenha).
+struct CreatedHover {
+    widget: Rc<HoverWidget>,
+    actions: Vec<String>,
+}
+
+/// A `HoverWidgetFactory` real, com o registro dos hovers criados.
+struct RealHoverWidgets {
+    factory: HoverWidgetFactory,
+    created: RefCell<Vec<CreatedHover>>,
+}
+
+impl IHoverWidgetFactory for RealHoverWidgets {
+    fn create(&self, options: &mut IHoverOptions) -> Rc<dyn IHoverWidgetHandle> {
+        let widget = self.factory.create_widget(options);
+        self.created.borrow_mut().push(CreatedHover { widget: widget.clone(), actions: options.actions.iter().map(|action| action.label.clone()).collect() });
+        widget
+    }
+}
+
+/// O `overrideOptions` do `WorkbenchHoverDelegate` em forma de função: só a parte de `persistence`, que é a que os casos usam.
+type PersistenceOverride = Rc<dyn Fn(&IHoverOptions, bool) -> IHoverPersistenceOptions>;
+
+/// `WorkbenchHoverDelegate` (`platform/hover/browser/hover.ts`): o delegate que mostra o hover pelo serviço, com o
+/// `hideOnKeyDown`, o `id` pelo texto, o `compact` e o que o chamador sobrescreve. É também o `IHoverShower` do
+/// `ManagedHoverWidget`.
+struct WorkbenchDelegate {
+    service: Weak<HoverService>,
+    placement: HoverPlacement,
+    overrides: PersistenceOverride,
+}
+
+impl IHoverDelegate for WorkbenchDelegate {
+    fn delay(&self) -> HoverDelay {
+        // `workbench.hover.delay` é 0 no teste e `instantHover` não está ligado.
+        HoverDelay::Fixed(0.0)
+    }
+    fn placement(&self) -> Option<HoverPlacement> {
+        Some(self.placement)
+    }
+}
+
+impl IHoverShower for WorkbenchDelegate {
+    fn show_hover(&self, options: IHoverOptions, focus: bool) -> Option<Rc<dyn IHoverWidget>> {
+        let service = self.service.upgrade()?;
+        let mut options = options;
+        let overrides = (self.overrides)(&options, focus);
+        options.persistence = Some(IHoverPersistenceOptions { hide_on_key_down: overrides.hide_on_key_down.or(Some(true)), ..overrides });
+        options.id = match &options.content {
+            HoverContent::Element(_) => None,
+            HoverContent::Text(text) => Some(text.clone()),
+            HoverContent::Markdown(markdown) => Some(markdown.value.to_string()),
+        };
+        let mut appearance = options.appearance.unwrap_or_default();
+        appearance.compact = Some(true);
+        appearance.skip_fade_in_animation = Some(false);
+        options.appearance = Some(appearance);
+        let hover = service.show_instant_hover(options, focus, false)?;
+        Some(hover as Rc<dyn IHoverWidget>)
+    }
+}
+
+/// `new ManagedHoverWidget(hoverDelegate, target, fadeInAnimation)` pela fábrica real, com o `IHoverShower` do delegate
+/// recebido (no original o `showHover` é do próprio delegate).
+struct DelegateRoutingFactory {
+    delegates: Rc<RefCell<Vec<Rc<WorkbenchDelegate>>>>,
+}
+
+impl IManagedHoverWidgetFactory for DelegateRoutingFactory {
+    fn create(&self, delegate: &Rc<dyn IHoverDelegate>, target: Rc<HoverDelegateTarget>, fade_in_animation: bool) -> Rc<dyn IManagedHoverWidget> {
+        let shower = self
+            .delegates
+            .borrow()
+            .iter()
+            .find(|candidate| std::ptr::addr_eq(Rc::as_ptr(*candidate), Rc::as_ptr(delegate)))
+            .cloned()
+            .expect("o delegate do hover gerenciável foi criado por Env::workbench_delegate");
+        ManagedHoverWidgetFactory::new(shower).create(delegate, target, fade_in_animation)
+    }
+}
+
 struct Env {
     fixture: Rc<ViewElement>,
     dom: Rc<FakeDom>,
     config: Rc<TestConfigurationService>,
     widgets: Rc<FakeHoverWidgetFactory>,
+    host: Rc<TestHost>,
+    real_widgets: Rc<RealHoverWidgets>,
+    delegates: Rc<RefCell<Vec<Rc<WorkbenchDelegate>>>>,
     service: Rc<HoverService>,
 }
 
+/// O serviço com o `FakeHoverWidget`, que guarda só o estado que o serviço lê.
 fn setup(guard: &LeakGuard) -> Env {
+    setup_backend(guard, false)
+}
+
+/// O serviço com as fábricas reais: `HoverWidget`, `ManagedHoverWidget` e as medidas do [`TestHost`].
+fn setup_real(guard: &LeakGuard) -> Env {
+    setup_backend(guard, true)
+}
+
+fn setup_backend(guard: &LeakGuard, real: bool) -> Env {
     let fixture = ViewElement::new();
     let layout = Emitter::new();
     guard.add_rc(layout.clone());
@@ -378,6 +579,12 @@ fn setup(guard: &LeakGuard) -> Env {
     let _ = config.set_user_configuration("workbench.hover.reducedDelay", Dynamic::Number(0.0), None);
     let dom = FakeDom::new();
     let widgets = Rc::new(FakeHoverWidgetFactory { created: RefCell::new(Vec::new()) });
+    let host = TestHost::new();
+    let real_widgets = Rc::new(RealHoverWidgets { factory: HoverWidgetFactory::new(dom.clone(), host.clone()), created: RefCell::new(Vec::new()) });
+    let delegates: Rc<RefCell<Vec<Rc<WorkbenchDelegate>>>> = Rc::new(RefCell::new(Vec::new()));
+    let hover_widgets = if real { real_widgets.clone() as Rc<dyn IHoverWidgetFactory> } else { widgets.clone() as Rc<dyn IHoverWidgetFactory> };
+    let managed_hover_widgets =
+        if real { Rc::new(DelegateRoutingFactory { delegates: delegates.clone() }) as Rc<dyn IManagedHoverWidgetFactory> } else { Rc::new(UnusedManagedHoverWidgetFactory) as Rc<dyn IManagedHoverWidgetFactory> };
     let on_did_show_context_menu = Event::none();
     let keybinding_service: Rc<dyn IKeybindingService> = Rc::new(MockKeybindingService);
     let service = guard.add_rc(HoverService::new(HoverServiceDeps {
@@ -387,14 +594,68 @@ fn setup(guard: &LeakGuard) -> Env {
         keybinding_service,
         layout_service: layout_service.clone(),
         accessibility_service: Rc::new(FakeAccessibilityService),
-        hover_widgets: widgets.clone(),
+        hover_widgets,
         context_views: Rc::new(ContextViewFactory { layout_service }),
-        managed_hover_widgets: Rc::new(UnusedManagedHoverWidgetFactory),
+        managed_hover_widgets,
     }));
-    Env { fixture, dom, config, widgets, service }
+    Env { fixture, dom, config, widgets, host, real_widgets, delegates, service }
 }
 
 impl Env {
+    /// `instantiationService.createInstance(WorkbenchHoverDelegate, placement, undefined, overrideOptions)`.
+    fn workbench_delegate(&self, placement: HoverPlacement, overrides: PersistenceOverride) -> Rc<dyn IHoverDelegate> {
+        let delegate = Rc::new(WorkbenchDelegate { service: Rc::downgrade(&self.service), placement, overrides });
+        self.delegates.borrow_mut().push(delegate.clone());
+        delegate
+    }
+
+    /// O `WorkbenchHoverDelegate` sem `overrideOptions` (`{}`).
+    fn element_delegate(&self) -> Rc<dyn IHoverDelegate> {
+        self.workbench_delegate(HoverPlacement::Element, Rc::new(|_, _| IHoverPersistenceOptions::default()))
+    }
+
+    /// O `HoverWidget` concreto de um hover mostrado pela fábrica real (`hover as HoverWidget`).
+    fn widget_of(&self, hover: &Rc<dyn IHoverWidgetHandle>) -> Rc<HoverWidget> {
+        let node = hover.dom_node();
+        self.real_widgets
+            .created
+            .borrow()
+            .iter()
+            .find(|created| Rc::ptr_eq(&created.widget.dom_node(), &node))
+            .map(|created| created.widget.clone())
+            .expect("o hover foi criado pela fábrica real")
+    }
+
+    /// Os nós `.monaco-hover` que estão na árvore do `fixture`, na ordem de criação (`fixture.querySelectorAll`).
+    fn live_hover_nodes(&self) -> Vec<Rc<ViewElement>> {
+        let fake = self.widgets.created.borrow().iter().map(|widget| widget.node.clone()).collect::<Vec<_>>();
+        let real = self.real_widgets.created.borrow().iter().map(|created| created.widget.dom_node()).collect::<Vec<_>>();
+        fake.into_iter().chain(real).filter(|node| is_ancestor(node, &self.fixture)).collect()
+    }
+
+    /// O texto de cada ação nos hovers vivos (`.monaco-hover .hover-row.status-bar .action-container`).
+    fn live_action_labels(&self) -> Vec<String> {
+        self.real_widgets
+            .created
+            .borrow()
+            .iter()
+            .filter(|created| is_ancestor(&created.widget.dom_node(), &self.fixture))
+            .flat_map(|created| created.actions.clone())
+            .collect()
+    }
+
+    /// `document.body`: um elemento fora de qualquer hover, para o `relatedTarget`.
+    fn body(&self) -> Rc<ViewElement> {
+        ViewElement::new()
+    }
+
+    /// `new FocusEvent(type, { bubbles: true, relatedTarget })` e `new MouseEvent(type, { bubbles: true, relatedTarget })`.
+    fn related_event(&self, related_target: Option<Rc<ViewElement>>) -> HoverDomEvent {
+        let mut event = HoverDomEvent::new(None);
+        event.related_target = related_target;
+        event
+    }
+
     /// `createTarget()`.
     fn create_target(&self) -> Rc<ViewElement> {
         let target = ViewElement::new();
@@ -422,7 +683,7 @@ impl Env {
 
     /// `document.querySelectorAll('.monaco-hover').length`.
     fn hover_count(&self) -> usize {
-        self.widgets.created.borrow().iter().filter(|widget| is_ancestor(&widget.node, &self.fixture)).count()
+        self.live_hover_nodes().len()
     }
 
     /// `createNestedHover(parentHover, content)`.
@@ -451,6 +712,66 @@ impl Env {
     fn mouse_event(&self) -> HoverDomEvent {
         HoverDomEvent::new(None)
     }
+
+    /// `showHoverWithManualLayout()`: texto simples, que não dispara o `ResizeObserver`, e sem esconder ao passar o mouse.
+    fn show_hover_with_manual_layout(&self) -> Rc<dyn IHoverWidgetHandle> {
+        self.show_hover("Content", None, |options| options.persistence = Some(IHoverPersistenceOptions { hide_on_hover: Some(false), ..Default::default() }))
+    }
+}
+
+/// `target.getBoundingClientRect = () => new DOMRect(x, y, width, height)`.
+fn set_rect(element: &Rc<ViewElement>, x: f64, y: f64, width: f64, height: f64) {
+    element.set_position(y, x);
+    element.set_size(width, height);
+}
+
+/// `Number.parseFloat(element.style.<property>)`.
+fn style_px(element: &Rc<ViewElement>, property: &str) -> f64 {
+    let value = element.style_get_property(property).unwrap_or_else(|| panic!("o estilo {property} deveria estar definido"));
+    value.trim_end_matches("px").parse().unwrap_or_else(|_| panic!("o estilo {property} não é um número em px: {value}"))
+}
+
+/// `{ position: { hoverPosition, anchorAlignment, clippingElement }, appearance: { showPointer: true } }`.
+fn pointer_hover(position: HoverPosition, anchor_alignment: Option<AnchorAlignment>, clipping_element: Option<Rc<ViewElement>>) -> impl FnOnce(&mut IHoverOptions) {
+    move |options| {
+        options.position = Some(IHoverPositionOptions { hover_position: Some(HoverPositionOption::Position(position)), anchor_alignment, clipping_element, ..Default::default() });
+        options.appearance = Some(IHoverAppearanceOptions { show_pointer: Some(true), ..Default::default() });
+    }
+}
+
+/// `{ commandId, label, run: () => { } }`.
+fn test_action(command_id: &str, label: &str) -> IHoverAction {
+    IHoverAction { label: label.to_owned(), command_id: command_id.to_owned(), icon_class: None, run: Rc::new(|_| {}) }
+}
+
+/// `{ appearance: { maxHeightRatio: 0.25 }, actions: [{ commandId: 'test.action', ... }] }`.
+fn scrollable_hover(options: &mut IHoverOptions) {
+    options.appearance = Some(IHoverAppearanceOptions { max_height_ratio: Some(0.25), ..Default::default() });
+    options.actions = vec![test_action("test.action", "Test Action")];
+}
+
+/// `{ element: (token) => HTMLElement, contentOwnsPadding }`.
+fn element_content(create: impl Fn(CancellationToken) -> Rc<ViewElement> + 'static, content_owns_padding: bool) -> ManagedHoverContentOrFactory {
+    ManagedHoverContentOrFactory::Content(ManagedHoverContent::Tooltip(ManagedHoverTooltip { element: Some(Rc::new(create)), content_owns_padding, ..Default::default() }))
+}
+
+/// `content(text)` do caso do hover fixado: guarda cada `token` recebido e põe o texto no elemento.
+fn text_element_content(dom: &Rc<FakeDom>, text: &str, tokens: &Rc<RefCell<Vec<CancellationToken>>>) -> ManagedHoverContentOrFactory {
+    let (dom, text, tokens) = (dom.clone(), text.to_owned(), tokens.clone());
+    element_content(
+        move |token| {
+            tokens.borrow_mut().push(token);
+            let element = ViewElement::new();
+            dom.set_text(&element, &text);
+            element
+        },
+        false,
+    )
+}
+
+/// `tokens.map(token => token.isCancellationRequested)`.
+fn cancelled(tokens: &Rc<RefCell<Vec<CancellationToken>>>) -> Vec<bool> {
+    tokens.borrow().iter().map(|token| token.is_cancellation_requested()).collect()
 }
 
 fn sticky(options: &mut IHoverOptions) {
@@ -476,6 +797,152 @@ fn should_not_show_hover_with_empty_content() {
     let target = env.create_target();
     let hover = env.service.show_instant_hover(env.options("", &target), false, false);
     assert!(hover.is_none(), "Hover should not be created for empty content");
+}
+
+#[test]
+fn should_align_the_right_edge_of_a_hover_with_its_target() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let target = env.create_target();
+    set_rect(&target, 300.0, 100.0, 100.0, 20.0);
+    let hover = env.show_hover("Right aligned hover", Some(target), pointer_hover(HoverPosition::Below, Some(AnchorAlignment::Right), None));
+    env.host.set_client_width(200.0);
+
+    hover.layout();
+
+    assert_eq!(hover.x(), 198.0);
+    hover.dispose();
+}
+
+#[test]
+fn should_centre_the_hover_pointer_on_its_target_for_odd_and_even_hover_widths() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let target = env.create_target();
+    set_rect(&target, 300.0, 100.0, 100.0, 20.0);
+    let hover = env.show_hover("Pointer centering", Some(target), pointer_hover(HoverPosition::Below, None, None));
+    let pointer = env.widget_of(&hover).hover_pointer().expect("the hover pointer should exist");
+
+    let pointer_origin_for = |client_width: f64| {
+        env.host.set_client_width(client_width);
+        hover.layout();
+        hover.x() + style_px(&pointer, "left")
+    };
+
+    // An even width halves exactly, so it pins the caret's own half width.
+    let even_origin = pointer_origin_for(200.0);
+    let caret_half_width = 350.0 - even_origin;
+    let odd_origin = pointer_origin_for(201.0);
+
+    assert_eq!((caret_half_width, even_origin + caret_half_width, odd_origin + caret_half_width), (3.0, 350.0, 350.0));
+    hover.dispose();
+}
+
+#[test]
+fn should_centre_the_hover_pointer_vertically_for_odd_hover_heights() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let target = env.create_target();
+    set_rect(&target, 300.0, 100.0, 100.0, 200.0);
+    let hover = env.show_hover("Pointer centering", Some(target), pointer_hover(HoverPosition::Right, None, None));
+    let pointer = env.widget_of(&hover).hover_pointer().expect("the hover pointer should exist");
+
+    // O `clientHeight` do contêiner é a altura do conteúdo mais a borda, menos a borda.
+    let pointer_top_for = |client_height: f64| {
+        env.host.contents_height.set(client_height);
+        hover.layout();
+        style_px(&pointer, "top")
+    };
+
+    let even_top = pointer_top_for(40.0);
+    let caret_half_height = 20.0 - even_top;
+    let odd_top = pointer_top_for(41.0);
+
+    assert_eq!((caret_half_height, even_top + caret_half_height, odd_top + caret_half_height), (3.0, 20.0, 20.5));
+    hover.dispose();
+}
+
+#[test]
+fn should_position_the_hover_next_to_the_part_of_the_target_visible_within_the_clipping_element() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let layout_hover_x = |clipping_rect: Option<(f64, f64, f64, f64)>| {
+        let target = env.create_target();
+        set_rect(&target, 0.0, 100.0, 300.0, 22.0);
+        let clipping_element = clipping_rect.map(|(x, y, width, height)| {
+            let clipping_element = env.create_target();
+            set_rect(&clipping_element, x, y, width, height);
+            clipping_element
+        });
+
+        let hover = env.show_hover("Clipped target", Some(target), pointer_hover(HoverPosition::Right, None, clipping_element));
+        env.host.set_client_width(200.0);
+        hover.layout();
+        let x = hover.x();
+        hover.dispose();
+        x
+    };
+
+    // The hover sits 3px (the pointer size) to the right of the target's right edge
+    let without_clipping_element = layout_hover_x(None);
+    let partially_visible = layout_hover_x(Some((0.0, 0.0, 200.0, 400.0)));
+    let not_visible = layout_hover_x(Some((400.0, 0.0, 200.0, 400.0)));
+    assert_eq!((without_clipping_element, partially_visible, not_visible), (303.0, 203.0, 303.0));
+}
+
+#[test]
+fn should_constrain_a_right_aligned_hover_to_the_available_width() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let target = env.create_target();
+    set_rect(&target, 100.0, 100.0, 50.0, 20.0);
+    let hover = env.show_hover("Constrained right aligned hover", Some(target.clone()), pointer_hover(HoverPosition::Below, Some(AnchorAlignment::Right), None));
+    let dom_node = hover.dom_node();
+    env.host.set_client_width_getter(|max_width| max_width.filter(|width| *width != 0.0).map_or(200.0, |width| width.min(200.0)));
+
+    hover.layout();
+    let constrained_max_width = dom_node.style_get_property("max-width").unwrap_or_default();
+    set_rect(&target, 300.0, 100.0, 50.0, 20.0);
+    hover.layout();
+
+    assert_eq!((constrained_max_width, dom_node.style_get_property("max-width").unwrap_or_default()), ("146px".to_owned(), String::new()));
+    hover.dispose();
+}
+
+#[test]
+fn should_constrain_scrollable_content_without_clipping_hover_actions() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let hover = env.show_hover("Scrollable hover", None, scrollable_hover);
+    let contents = env.widget_of(&hover).contents_dom_node();
+    // `overflowingContent.style.height = innerHeight` dentro do conteúdo.
+    env.host.contents_height.set(WINDOW_HEIGHT);
+
+    hover.layout();
+    let expected_max_height = format!("{}px", WINDOW_HEIGHT * 0.25);
+    let hover_height = hover.dom_node().size().height;
+    let contents_offset_height = env.host.contents_height.get().min(style_px(&contents, "max-height"));
+    let height_outside_contents = hover_height - contents_offset_height;
+    // A barra de status fica dentro do hover quando o conteúdo limitado mais o que fica fora dele cabem na altura do hover.
+    let status_bar_is_visible = contents_offset_height + TestHost::outside_height(true) <= hover_height;
+
+    assert_eq!(
+        (hover.dom_node().style_get_property("max-height").unwrap_or_default(), contents.style_get_property("max-height").unwrap_or_default(), env.host.contents_height.get() > contents_offset_height, status_bar_is_visible),
+        (expected_max_height, format!("{}px", (WINDOW_HEIGHT * 0.25 - height_outside_contents).max(0.0)), true, true)
+    );
+    hover.dispose();
+}
+
+#[test]
+fn should_not_make_short_hover_content_scrollable() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let hover = env.show_hover("Short hover", None, scrollable_hover);
+    let contents = env.widget_of(&hover).contents_dom_node();
+    let contents_offset_height = env.host.contents_height.get().min(style_px(&contents, "max-height"));
+
+    assert_eq!((env.host.contents_height.get() > contents_offset_height, contents.style_get_property("padding-right").unwrap_or_default()), (false, String::new()));
+    hover.dispose();
 }
 
 #[test]
@@ -561,6 +1028,20 @@ fn should_deduplicate_hovers_by_id() {
 
     hover1.dispose();
     hover3.dispose();
+}
+
+#[test]
+fn should_apply_additional_classes_to_hover_dom() {
+    let guard = ensure_no_disposables_are_leaked_in_test_suite();
+    let env = setup_real(&guard);
+    let hover = env.show_hover("Test", None, |options| options.additional_classes = vec!["custom-class-1".to_owned(), "custom-class-2".to_owned()]);
+
+    let dom_node = hover.dom_node();
+    assert!(env.is_in_dom(&hover), "Hover should be in DOM");
+    assert!(dom_node.class_list_contains("custom-class-1"), "Should have custom-class-1");
+    assert!(dom_node.class_list_contains("custom-class-2"), "Should have custom-class-2");
+
+    hover.dispose();
 }
 
 // endregion
@@ -955,6 +1436,50 @@ fn matches_each_element_of_a_structured_hover_target() {
 // region setupManagedHover
 
 #[test]
+fn updates_a_pinned_hover_without_losing_its_content_or_focus() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let delegate = env.workbench_delegate(HoverPlacement::Element, Rc::new(|_, focus| IHoverPersistenceOptions { sticky: Some(focus), ..Default::default() }));
+        let tokens = Rc::new(RefCell::new(Vec::new()));
+        let hover = env.service.setup_managed_hover(delegate, &env.create_target(), text_element_content(&env.dom, "Initial", &tokens), None);
+        hover.show(true);
+        timeout(0).await.unwrap();
+        // `await hover.update(...)`: o conteúdo é síncrono, a promessa já volta resolvida.
+        let _ = hover.update(text_element_content(&env.dom, "Updated", &tokens), None);
+        let element = env.live_hover_nodes().into_iter().next().expect("the replacement hover should be in the DOM");
+        let updated = (env.dom.text_content(&element), env.dom.is_ancestor_of_active_element(&element), cancelled(&tokens));
+        hover.hide();
+
+        assert_eq!((updated, cancelled(&tokens)), (("Updated".to_owned(), true, vec![true, false]), vec![true, true]));
+        hover.dispose();
+    });
+}
+
+#[test]
+fn forwards_on_did_show_only_for_a_displayed_managed_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let calls = Rc::new(RefCell::new(Vec::<&str>::new()));
+        let sink = calls.clone();
+        let options = IManagedHoverOptions { on_did_show: Some(Rc::new(move || sink.borrow_mut().push("show"))), ..Default::default() };
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &env.create_target(), "Promo".into(), Some(options));
+        let blocker = env.show_hover("Locked", None, sticky);
+        hover.show(false);
+        timeout(0).await.unwrap();
+        let blocked = calls.borrow().clone();
+        blocker.dispose();
+        hover.show(false);
+        timeout(0).await.unwrap();
+        hover.hide();
+
+        assert_eq!((blocked, calls.borrow().clone()), (vec![], vec!["show"]));
+        hover.dispose();
+    });
+}
+
+#[test]
 fn should_use_native_title_attribute_when_show_native_hover_is_true() {
     let guard = ensure_no_disposables_are_leaked_in_test_suite();
     let env = setup(&guard);
@@ -984,6 +1509,178 @@ fn should_update_content_dynamically() {
     assert_eq!(env.dom.get_attribute(&target, "title").as_deref(), Some("Final"));
 
     hover.dispose();
+}
+
+#[test]
+fn should_update_options_dynamically() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let with_action = |command_id: &str, label: &str| IManagedHoverOptions { actions: vec![test_action(command_id, label)], ..Default::default() };
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, "Test".into(), Some(with_action("test.first", "First")));
+
+        let _ = hover.update("Test".into(), Some(with_action("test.second", "Second")));
+
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(Some(env.body())));
+        timeout(500).await.unwrap();
+
+        assert_eq!(env.live_action_labels(), vec!["Second".to_owned()]);
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_let_managed_html_content_own_the_hover_boundary_padding() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, element_content(|_| ViewElement::new(), true), None);
+
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(Some(env.body())));
+        timeout(500).await.unwrap();
+
+        let node = env.live_hover_nodes().into_iter().next().expect("the managed hover should be in the DOM");
+        assert_eq!((node.class_list_contains("compact"), node.class_list_contains("managed-hover-content-owns-padding")), (true, true));
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_cancel_managed_html_content_when_mouseleave_closes_the_rendered_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let tokens = Rc::new(RefCell::new(Vec::new()));
+        let sink = tokens.clone();
+        let hover = env.service.setup_managed_hover(
+            env.element_delegate(),
+            &target,
+            element_content(
+                move |token| {
+                    sink.borrow_mut().push(token);
+                    ViewElement::new()
+                },
+                false,
+            ),
+            None,
+        );
+
+        env.dom.dispatch(&target, HoverDomEventKind::MouseOver, env.related_event(Some(env.body())));
+        timeout(0).await.unwrap();
+        let before_hide = cancelled(&tokens);
+        // `new MouseEvent('mouseout', ...)`: nem o serviço nem o widget ouvem `mouseout` (só `mouseleave`), então o evento
+        // não tem efeito e só a espera do `timeout(0)` do original permanece.
+        timeout(0).await.unwrap();
+        let after_mouse_leave = cancelled(&tokens);
+        env.service.hide_hover(true);
+
+        assert_eq!((before_hide, after_mouse_leave, cancelled(&tokens)), (vec![false], vec![false], vec![true]));
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_focus_an_already_visible_managed_hover_when_shown_explicitly() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, "Test".into(), None);
+        env.dom.dispatch(&target, HoverDomEventKind::MouseOver, env.related_event(Some(env.body())));
+        timeout(0).await.unwrap();
+        let first_hover = env.live_hover_nodes().first().cloned();
+
+        env.service.show_managed_hover(&target);
+        timeout(0).await.unwrap();
+        let live = env.live_hover_nodes();
+        let focused_hover = live.first().cloned();
+
+        let recreated = !matches!((&first_hover, &focused_hover), (Some(first), Some(focused)) if Rc::ptr_eq(first, focused));
+        let focused = focused_hover.as_ref().is_some_and(|node| env.dom.is_ancestor_of_active_element(node));
+        assert_eq!((first_hover.is_some(), recreated, focused, live.len()), (true, true, true, 1));
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_retain_replacement_managed_html_content_when_updating_a_visible_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let tokens = Rc::new(RefCell::new(Vec::new()));
+        let content = || {
+            let sink = tokens.clone();
+            element_content(
+                move |token| {
+                    sink.borrow_mut().push(token);
+                    ViewElement::new()
+                },
+                false,
+            )
+        };
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, content(), None);
+        env.dom.dispatch(&target, HoverDomEventKind::MouseOver, env.related_event(Some(env.body())));
+        timeout(0).await.unwrap();
+
+        let _ = hover.update(content(), None);
+
+        assert_eq!(cancelled(&tokens), vec![true, false]);
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_not_re_show_hover_on_focus_when_related_target_is_from_a_dismissed_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, "Test".into(), None);
+
+        // Show hover explicitly
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(Some(env.body())));
+        timeout(500).await.unwrap();
+        assert!(env.hover_count() > 0, "Hover should be visible after focus");
+
+        // Dismiss via hoverService (simulates Esc / external dismissal)
+        env.service.hide_hover(true);
+        timeout(0).await.unwrap();
+
+        // Simulate focus returning from the hover element
+        let hover_element = ViewElement::with_classes(&["monaco-hover"]);
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(Some(hover_element)));
+        timeout(500).await.unwrap();
+
+        assert_eq!(env.hover_count(), 0, "Hover should not re-show when focus comes from dismissed hover");
+        hover.dispose();
+    });
+}
+
+#[test]
+fn should_not_re_show_hover_on_focus_when_related_target_is_null_window_reactivation() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let target = env.create_target();
+        let hover = env.service.setup_managed_hover(env.element_delegate(), &target, "Test".into(), None);
+
+        // Show hover via focus and dismiss externally
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(Some(env.body())));
+        timeout(500).await.unwrap();
+        env.service.hide_hover(true);
+        timeout(0).await.unwrap();
+
+        // Simulate focus from window reactivation (relatedTarget is null)
+        env.dom.dispatch(&target, HoverDomEventKind::Focus, env.related_event(None));
+        timeout(500).await.unwrap();
+
+        assert_eq!(env.hover_count(), 0, "Hover should not re-show on window reactivation");
+        hover.dispose();
+    });
 }
 
 // endregion
@@ -1121,6 +1818,80 @@ fn should_recreate_last_disposed_hover() {
 // endregion
 
 // region layout and resize
+
+#[test]
+fn layout_should_suppress_pending_mouseout_so_content_resize_does_not_dismiss_hover() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let hover = env.show_hover_with_manual_layout();
+        assert!(env.is_in_dom(&hover), "Hover should be in DOM");
+        let hover_container = hover.dom_node().parent_element().expect("the hover container should exist");
+
+        // Simulate a mouseleave on the hover container (as happens when content shrinks)
+        env.dom.dispatch(&hover_container, HoverDomEventKind::MouseLeave, env.mouse_event());
+
+        // Before the debounce timer fires, trigger a layout (as ResizeObserver would)
+        hover.layout();
+
+        timeout(200).await.unwrap();
+
+        assert!(env.is_in_dom(&hover), "Hover should remain in DOM after layout suppresses mouseout");
+
+        hover.dispose();
+        assert!(!env.is_in_dom(&hover), "Hover should be removed from DOM after dispose");
+    });
+}
+
+#[test]
+fn hover_should_still_dismiss_on_mouseout_when_no_layout_occurs() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let hover = env.show_hover_with_manual_layout();
+        assert!(env.is_in_dom(&hover), "Hover should be in DOM");
+        let hover_container = hover.dom_node().parent_element().expect("the hover container should exist");
+        // `sinon.spy(hover, 'layout')`: o `layout` termina sempre em `on_contents_changed` do host, que é o contador.
+        let layout_calls_before = env.host.contents_changed.get();
+
+        env.dom.dispatch(&hover_container, HoverDomEventKind::MouseLeave, env.mouse_event());
+
+        timeout(199).await.unwrap();
+        assert!(env.is_in_dom(&hover), "Hover should remain in DOM until the mouseout debounce fires");
+        timeout(1).await.unwrap();
+
+        assert_eq!(
+            (env.host.contents_changed.get() - layout_calls_before, hover.is_mouse_in(), hover.is_disposed(), env.is_in_dom(&hover)),
+            (0, false, true, false)
+        );
+    });
+}
+
+#[test]
+fn suppression_clears_after_mouse_re_enters_and_a_new_mouseleave_dismisses_normally() {
+    run_with_faked_timers(async move {
+        let guard = ensure_no_disposables_are_leaked_in_test_suite();
+        let env = setup_real(&guard);
+        let hover = env.show_hover_with_manual_layout();
+        assert!(env.is_in_dom(&hover), "Hover should be in DOM");
+        let hover_container = hover.dom_node().parent_element().expect("the hover container should exist");
+
+        // Simulate mouseleave + layout to suppress
+        env.dom.dispatch(&hover_container, HoverDomEventKind::MouseLeave, env.mouse_event());
+        hover.layout();
+        timeout(200).await.unwrap();
+        assert!(env.is_in_dom(&hover), "Hover should remain after suppressed mouseout");
+
+        // Mouse re-enters, clearing the suppression flag
+        env.dom.dispatch(&hover_container, HoverDomEventKind::MouseOver, env.mouse_event());
+
+        // Mouse leaves again, this time no layout, so it should dismiss
+        env.dom.dispatch(&hover_container, HoverDomEventKind::MouseLeave, env.mouse_event());
+        timeout(200).await.unwrap();
+
+        assert!(!env.is_in_dom(&hover), "Hover should dismiss on normal mouseout after suppression was cleared");
+    });
+}
 
 #[test]
 fn clicking_outside_should_dismiss_non_sticky_hover() {
