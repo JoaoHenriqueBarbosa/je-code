@@ -587,7 +587,7 @@ fn history_entry_from_value(value: &Value) -> Option<(String, URI, Vec<String>)>
 }
 
 /// O `URI` do objeto de componentes que o `URI#toJSON` grava.
-fn uri_from_value(value: &Value) -> Option<URI> {
+pub(crate) fn uri_from_value(value: &Value) -> Option<URI> {
     let Value::Object(object) = value else { return None };
     let part = |key: &str| match object.get(key) {
         Some(Value::String(text)) => Some(text.clone()),
