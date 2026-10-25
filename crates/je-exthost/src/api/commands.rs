@@ -1,5 +1,6 @@
 //! `vscode.commands`: `registerCommand`, `executeCommand` e `getCommands` sobre o `ExtHostCommands` portado.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use je_base::dynamic::Dynamic;
@@ -82,18 +83,52 @@ pub fn promise_outcome_to_js<T: Clone + 'static>(
     JsData::Handle(target)
 }
 
+/// Devolve o objeto que a extensão segura no lugar do objeto do host que um `ArgumentProcessor` produziu (a thread, a fonte de
+/// controle, a célula...), ou `None` se o resolvedor não o conhece.
+type ArgumentResolver = Rc<dyn Fn(&Dynamic) -> Option<JsData>>;
+
+/// Os resolvedores de argumento de comando de cada área: o `Dynamic` que um `ArgumentProcessor` devolve carrega o objeto do host
+/// (`WeakHost`), e o comando da extensão precisa receber o MESMO objeto que ela criou (o original entrega `commentThread.value`).
+#[derive(Default)]
+pub struct HostArguments {
+    resolvers: RefCell<Vec<ArgumentResolver>>,
+}
+
+impl HostArguments {
+    pub fn register(&self, resolver: impl Fn(&Dynamic) -> Option<JsData> + 'static) {
+        self.resolvers.borrow_mut().push(Rc::new(resolver));
+    }
+
+    /// `value` como dado do motor, com os objetos do host trocados pelos que a extensão segura (também dentro de listas e objetos,
+    /// como o `{ thread, text }` de uma resposta de comentário).
+    pub fn to_js(&self, value: &Dynamic) -> JsData {
+        match value {
+            Dynamic::Array(items) => JsData::Array(items.to_vec().iter().map(|item| self.to_js(item)).collect()),
+            Dynamic::Object(object) if object.host::<JsHandle>().is_none() => {
+                let resolvers = self.resolvers.borrow().clone();
+                if let Some(resolved) = resolvers.iter().find_map(|resolver| resolver(value)) {
+                    return resolved;
+                }
+                JsData::Object(object.entries().iter().map(|(key, item)| (key.to_string_lossy(), self.to_js(item))).collect())
+            }
+            other => dynamic_to_js(other),
+        }
+    }
+}
+
 /// O namespace `commands`.
-pub fn namespace(runner: &NodeRunner, commands: &Rc<ExtHostCommands>, table: &Rc<DisposableTable>) -> JsData {
+pub fn namespace(runner: &NodeRunner, commands: &Rc<ExtHostCommands>, table: &Rc<DisposableTable>, arguments: &Rc<HostArguments>) -> JsData {
     let register = {
-        let (runner, commands, table) = (runner.clone(), commands.clone(), table.clone());
+        let (runner, commands, table, arguments) = (runner.clone(), commands.clone(), table.clone(), arguments.clone());
         runner.clone().make_function("registerCommand", 2, Rc::new(move |args| {
             let id = string_arg(args, 0, "registerCommand: o id")?;
             let Some(JsData::Handle(callback)) = args.get(1).cloned() else { return Err("registerCommand: o callback precisa ser função".to_owned()) };
             let callback: CommandCallback = {
                 let runner = runner.clone();
+                let arguments = arguments.clone();
                 let callback: Rc<JsHandle> = callback;
                 Rc::new(move |command_args: &[Dynamic]| {
-                    let js_args: Vec<JsData> = command_args.iter().map(dynamic_to_js).collect();
+                    let js_args: Vec<JsData> = command_args.iter().map(|arg| arguments.to_js(arg)).collect();
                     call_settled(&runner, &callback, &js_args)
                 })
             };

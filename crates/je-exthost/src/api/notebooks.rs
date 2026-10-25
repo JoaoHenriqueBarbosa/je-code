@@ -60,7 +60,7 @@ use je_base::promise::{MaybePromise, Promise};
 use je_workbench::api::common::ext_host_notebook::{
     ExtHostNotebookController, NotebookAsRepl, NotebookCellStatusBarItemProvider, NotebookCellStatusBarItems, NotebookDocumentShowOptions, NotebookSerializer,
 };
-use je_workbench::api::common::ext_host_notebook_document::{NotebookCell, NotebookDocument, NotebookDocumentChangeEvent};
+use je_workbench::api::common::ext_host_notebook_document::{ExtHostCell, ExtHostNotebookDocument, NotebookCell, NotebookDocument, NotebookDocumentChangeEvent};
 use je_workbench::api::common::ext_host_notebook_document_save_participant::{ExtHostNotebookDocumentSaveParticipant, NotebookDocumentWillSaveEvent};
 use je_workbench::api::common::ext_host_notebook_documents::ExtHostNotebookDocuments;
 use je_workbench::api::common::ext_host_notebook_editor::NotebookEditor;
@@ -75,7 +75,7 @@ use je_workbench::api::common::ext_host_types::{
 };
 use zjsc::api::embed_node::{ClassSpec, JsData, JsHandle, MethodCallback, NodeRunner};
 
-use crate::api::commands::{call_settled, convert_maybe, promise_to_js};
+use crate::api::commands::{call_settled, convert_maybe, promise_to_js, HostArguments};
 use crate::api::disposable::DisposableTable;
 use crate::api::events::{event_function, event_function_with_epilogue, EventTables};
 use crate::api::file_system_events::thenable_edit;
@@ -111,6 +111,20 @@ pub struct NotebookApi {
     pub events: Rc<EventTables>,
     /// Dá o `vscode.TextDocument` de uma célula nos eventos de mudança.
     pub text: Rc<TextObjects>,
+}
+
+/// Registra o resolvedor dos argumentos de comando que o `ArgumentProcessor` do `ExtHostNotebookController` produz: a célula
+/// (`NotebookCellActionContext`) e o notebook (`NotebookActionContext`) chegam ao comando da extensão como os objetos nativos
+/// `NotebookCell` e `NotebookDocument` (a identidade `===` não vale, como em todas as leituras de notebook).
+pub fn register_arguments(objects: &Rc<NotebookObjects>, arguments: &HostArguments) {
+    let objects = objects.clone();
+    arguments.register(move |value| {
+        let Dynamic::Object(object) = value else { return None };
+        if let Some(cell) = object.host::<ExtHostCell>() {
+            return Some(objects.cell_to_js(&cell.api_cell()));
+        }
+        object.host::<ExtHostNotebookDocument>().map(|document| objects.document_to_js(&document.api_notebook()))
+    });
 }
 
 /// Os notebooks, as células, os editores, os controladores e as execuções que o JavaScript segura, por id (os objetos carregam só o id).

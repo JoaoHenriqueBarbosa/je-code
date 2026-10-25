@@ -347,6 +347,10 @@ impl ExtensionHost {
         members.extend(debug::classes(runner, &debug_objects));
         let notebook_objects = Rc::new(notebooks::NotebookObjects::default());
         notebooks::define_classes(runner, &notebook_objects, &window_state.text_objects, &table, &event_tables);
+        let host_arguments = Rc::new(commands::HostArguments::default());
+        scm::register_arguments(runner, &scm_objects, &host_arguments);
+        comments::register_arguments(runner, &comment_objects, &host_arguments);
+        notebooks::register_arguments(&notebook_objects, &host_arguments);
         members.extend(notebooks::classes(runner));
         let extension_slot = ExtensionServiceSlot::new();
         extensions::define_class(runner, &extension_slot);
@@ -752,7 +756,7 @@ impl ExtensionHost {
         }
 
         members.extend([
-            ("commands".to_owned(), commands::namespace(runner, &commands, &table)),
+            ("commands".to_owned(), commands::namespace(runner, &commands, &table, &host_arguments)),
             ("l10n".to_owned(), l10n::namespace(runner)),
             ("extensions".to_owned(), extensions::namespace(runner, &extension_slot, &table)),
         ]);

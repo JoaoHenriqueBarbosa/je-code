@@ -48,11 +48,13 @@ use harness::{run_extension, settled_ok, Workbench};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::IDisposable;
+use je_base::marshalling_ids::MarshalledId;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
 use je_editor::range::Range as EditorRange;
 use je_exthost::in_process::IMainThreadBinder;
 use je_extensions::manifest::ExtensionIdentifier;
+use je_workbench::common::comments::MarshalledCommentThread;
 use je_workbench::api::common::ext_host_protocol::{
     CommentCanReply, CommentChanges, CommentProviderFeatures, CommentReaction, CommentThreadChanges, CommentThreadRevealOptions, CommentingRangeResourceHint, ExtHostCommentsShape,
     ExtHostContext, IMainContext, MainContext, MainThreadCommentsShape,
@@ -130,6 +132,16 @@ exports.activate = (context) => {
     globalThis.__thread = thread;
     return 'ok';
   });
+
+  command('t.commentsKeptComment', () => {
+    const comment = { body: 'primeiro', mode: vscode.CommentMode.Preview, author: { name: 'Ana' }, extra: 'mantido' };
+    globalThis.__thread = globalThis.__controller.createCommentThread(vscode.Uri.file('/proj/a.txt'), new vscode.Range(0, 0, 0, 5), [comment]);
+    return 'ok';
+  });
+  command('t.commentsOnThread', (thread) => JSON.stringify({ same: thread === globalThis.__thread, body: thread.comments.map(bodyOf) }));
+  command('t.commentsOnController', (controller) => JSON.stringify({ same: controller === globalThis.__controller, id: controller.id }));
+  command('t.commentsOnReply', (reply) => JSON.stringify({ same: reply.thread === globalThis.__thread, text: reply.text }));
+  command('t.commentsOnComment', (comment) => JSON.stringify({ extra: comment.extra, body: bodyOf(comment) }));
 
   command('t.commentsDispose', () => {
     const controller = globalThis.__controller;
@@ -443,6 +455,36 @@ fn toggle_reaction_reaches_the_reaction_handler_with_the_comment() {
         workbench.pump();
         settled_ok(&toggled, "toggleReaction");
         assert_eq!(events(workbench), r#"["reaction:primeiro:like:2:true"]"#);
+    });
+}
+
+#[test]
+fn command_arguments_are_the_same_objects_the_extension_created() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, (_observed, panel)| {
+        run(workbench, "t.commentsCreate");
+        run(workbench, "t.commentsKeptComment");
+        settle(workbench);
+        let (controller, thread, unique_ids) = panel.last_thread();
+
+        let number = |value: u32| Dynamic::from(f64::from(value));
+        let marshalled_thread = MarshalledCommentThread { comment_control_handle: controller, comment_thread_handle: thread }.to_dynamic();
+        let marshalled = |id: MarshalledId, fields: Vec<(&str, Dynamic)>| {
+            let mut entries = vec![("$mid", Dynamic::from(id as i32))];
+            entries.extend(fields);
+            Dynamic::object(entries)
+        };
+
+        // `CommentThread`: a mesma thread que `createCommentThread` devolveu (`commentThread.value` no original).
+        assert_eq!(workbench.execute("t.commentsOnThread", vec![marshalled_thread.clone()]), Dynamic::string(r#"{"same":true,"body":["primeiro"]}"#));
+        // `CommentController`.
+        let controller_arg = marshalled(MarshalledId::CommentController, vec![("handle", number(controller))]);
+        assert_eq!(workbench.execute("t.commentsOnController", vec![controller_arg]), Dynamic::string(r#"{"same":true,"id":"je-review"}"#));
+        // `CommentThreadReply`: o `{ thread, text }` com a thread da extensão.
+        let reply = marshalled(MarshalledId::CommentThreadReply, vec![("thread", marshalled_thread.clone()), ("text", Dynamic::string("resposta"))]);
+        assert_eq!(workbench.execute("t.commentsOnReply", vec![reply]), Dynamic::string(r#"{"same":true,"text":"resposta"}"#));
+        // `CommentNode`: o comentário que a extensão atribuiu, com as propriedades extras dela.
+        let node = marshalled(MarshalledId::CommentNode, vec![("thread", marshalled_thread), ("commentUniqueId", number(unique_ids[0]))]);
+        assert_eq!(workbench.execute("t.commentsOnComment", vec![node]), Dynamic::string(r#"{"extra":"mantido","body":"primeiro"}"#));
     });
 }
 

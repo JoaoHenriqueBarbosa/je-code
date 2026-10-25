@@ -30,6 +30,7 @@ pub mod telemetry_logger;
 pub mod file_system;
 pub mod file_system_events;
 pub mod l10n;
+pub mod instances;
 pub mod js_object;
 pub mod language_configuration;
 pub mod language_provider_types;

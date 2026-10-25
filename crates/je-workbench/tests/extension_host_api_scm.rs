@@ -21,6 +21,7 @@ use harness::{run_extension, settled_ok, Workbench};
 use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::lifecycle::IDisposable;
+use je_base::marshalling_ids::MarshalledId;
 use je_base::promise::Promise;
 use je_base::uri::URI;
 use je_editor::languages::StringOrMarkdown;
@@ -88,6 +89,8 @@ exports.activate = (context) => {
     return 'ok';
   });
   command('t.scmDispose', () => { globalThis.__control.dispose(); return 'ok'; });
+  command('t.scmIdentity', (control, group) => JSON.stringify({ control: control === globalThis.__control, group: group === globalThis.__changes }));
+  command('t.scmState', (state) => JSON.stringify({ path: state.resourceUri.path, context: state.contextValue }));
 };
 "#;
 
@@ -398,6 +401,37 @@ fn resource_command_runs_and_state_changes_reach_the_main_thread_as_splices() {
         settle(workbench);
         let lines = panel.lines();
         assert_eq!(lines[lines.len() - 2..], strings(&["groupLabel:changes=Alterações", "spliceStates:changes:1+1:"])[..]);
+    });
+}
+
+#[test]
+fn command_arguments_are_the_same_objects_the_extension_created() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, panel| {
+        run(workbench, "t.scmCreate");
+        settle(workbench);
+
+        let number = |value: u32| Dynamic::from(f64::from(value));
+        let control = panel.control_handle();
+        let changes = panel.groups.borrow().iter().find(|(_, id)| id == "changes").map(|(handle, _)| *handle).expect("o grupo changes foi registrado");
+        let resource = panel.resources.borrow().iter().find(|(uri, _, _)| uri == "file:///repo/b.txt").map(|(_, _, handle)| *handle).expect("b.txt entrou na lista");
+        let marshalled = |id: MarshalledId, fields: Vec<(&str, Dynamic)>| {
+            let mut entries = vec![("$mid", Dynamic::from(id as i32))];
+            entries.extend(fields);
+            Dynamic::object(entries)
+        };
+
+        // `ScmProvider` e `ScmResourceGroup`: a extensão recebe a mesma fonte e o mesmo grupo que `createSourceControl` e
+        // `createResourceGroup` devolveram (`commentThread.value` e equivalentes no original).
+        let provider = marshalled(MarshalledId::ScmProvider, vec![("handle", number(control))]);
+        let group = marshalled(MarshalledId::ScmResourceGroup, vec![("sourceControlHandle", number(control)), ("groupHandle", number(changes))]);
+        assert_eq!(workbench.execute("t.scmIdentity", vec![provider, group]), Dynamic::string(r#"{"control":true,"group":true}"#));
+
+        // `ScmResource`: o estado que a extensão atribuiu ao grupo, com as propriedades dela.
+        let state = marshalled(
+            MarshalledId::ScmResource,
+            vec![("sourceControlHandle", number(control)), ("groupHandle", number(changes)), ("handle", number(resource))],
+        );
+        assert_eq!(workbench.execute("t.scmState", vec![state]), Dynamic::string(r#"{"path":"/repo/b.txt","context":"modified"}"#));
     });
 }
 
