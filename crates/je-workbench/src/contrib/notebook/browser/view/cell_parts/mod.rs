@@ -3,12 +3,14 @@
 //!
 //! Portados até aqui (um arquivo por fonte): `cellDnd.ts` (só a lógica de reordenação), `cellOutput.ts`, `codeCell.ts` (só o
 //! `CodeCellLayout`), `cellEditorOptions.ts`, `cellContextKeys.ts`, `cellFocusIndicator.ts`, `cellDecorations.ts`, `cellFocus.ts`,
-//! `cellWidgets.ts`, `cellEditorOverflowWidgets.ts`, `collapsedCellInput.ts`, `collapsedCellOutput.ts` e `cellProgressBar.ts`.
+//! `cellWidgets.ts`, `cellEditorOverflowWidgets.ts`, `collapsedCellInput.ts`, `collapsedCellOutput.ts`, `cellProgressBar.ts`,
+//! `cellToolbars.ts` (`BetweenCellToolbar` e `CellTitleToolbarPart`), `cellStatusPart.ts` (`CellEditorStatusBar`), `cellExecution.ts`
+//! (`CellExecutionPart`) e `cellToolbarStickyScroll.ts` (que `cellToolbars.ts` importa).
 //!
-//! Fatias seguintes, nesta ordem: `cellToolbars`, `cellStatusPart`, `cellExecution`, `codeCellRunToolbar`, `foldedCellHint`,
-//! `cellComments`, `cellDragRenderer`, `cellActionView`, `codeCellExecutionIcon`; depois `codeCell.ts` e `markupCell.ts`; depois o
-//! `cellRenderer.ts` (que monta os templates e fornece as implementações dos contratos estreitos abaixo) e os 5 casos de
-//! `cellEditorOverflowWidgets.test.ts`.
+//! Faltam, nesta ordem: `codeCellRunToolbar`, `foldedCellHint`, `cellComments`, `cellDragRenderer`, `cellActionView` (o
+//! `CodiconActionViewItem` que o `BetweenCellToolbar` recebe como argumento), `codeCellExecutionIcon`; depois `codeCell.ts` (a classe
+//! `CodeCell`, além do `CodeCellLayout`) e `markupCell.ts`; depois o `cellRenderer.ts` (que monta os templates e fornece as
+//! implementações dos contratos estreitos abaixo) e os 5 casos de `cellEditorOverflowWidgets.test.ts`.
 //!
 //! Divergências comuns a todas as partes desta pasta:
 //! - **DOM é a árvore do `je-ui`.** O `HTMLElement` que o construtor original recebe é um [`je_ui::NodeId`] da [`je_ui::Ui`] (o
@@ -22,12 +24,14 @@
 //! - **Partes são `Rc`.** Os ouvintes de evento guardam um `Weak` da parte (o `this` do original), então os construtores devolvem
 //!   `Rc<Self>` (via `Rc::new_cyclic`). `_register(x)` é [`CellPartState::register`].
 //! - **`ICellViewModel` é o [`CellViewModel`](crate::contrib::notebook::browser::view_model::notebook_view_model_impl::CellViewModel).**
-//!   O `instanceof CodeCellViewModel` e o `instanceof MarkupCellViewModel` são `match` e `as_code`.
+//!   O `instanceof CodeCellViewModel` e o `instanceof MarkupCellViewModel` são `match` e `as_code`; os campos de `layoutInfo` que as duas
+//!   formas compartilham são lidos por `common_layout_info` (`view/cell_part.rs`).
+//! - **Partes de sobreposição** (`BetweenCellToolbar`, `CellTitleToolbarPart`) usam `impl_cell_overlay_part!`, o par de
+//!   `impl_cell_content_part!` para o `CellOverlayPart`.
+//! - **Contexto de ação das barras** (`{ ui, cell, notebookEditor, source, $mid }`) é `INotebookActionContext::to_dynamic`.
 
-/// Implementa o que toda parte de conteúdo repete: o `IDisposable` (que descarta o [`CellPartState`] da parte, campo `state`) e o
-/// `CellContentPart` com os métodos padrão. O `CellPart` fica com quem usa a macro, porque é nele que a parte sobrescreve
-/// `did_render_cell`, `update_state` e os outros ganchos.
-macro_rules! impl_cell_content_part {
+/// Implementa o `IDisposable` que toda parte repete: descarta o [`CellPartState`] da parte (campo `state`).
+macro_rules! impl_cell_part_disposable {
     ($part:ty, $name:literal) => {
         impl je_base::lifecycle::IDisposable for $part {
             fn dispose(&self) {
@@ -38,8 +42,26 @@ macro_rules! impl_cell_content_part {
                 $name
             }
         }
+    };
+}
+
+/// Implementa o que toda parte de conteúdo repete: o `IDisposable` (que descarta o [`CellPartState`] da parte, campo `state`) e o
+/// `CellContentPart` com os métodos padrão. O `CellPart` fica com quem usa a macro, porque é nele que a parte sobrescreve
+/// `did_render_cell`, `update_state` e os outros ganchos.
+macro_rules! impl_cell_content_part {
+    ($part:ty, $name:literal) => {
+        impl_cell_part_disposable!($part, $name);
 
         impl $crate::contrib::notebook::browser::view::cell_part::CellContentPart for $part {}
+    };
+}
+
+/// O mesmo de `impl_cell_content_part`, para as partes de sobreposição (`CellOverlayPart`).
+macro_rules! impl_cell_overlay_part {
+    ($part:ty, $name:literal) => {
+        impl_cell_part_disposable!($part, $name);
+
+        impl $crate::contrib::notebook::browser::view::cell_part::CellOverlayPart for $part {}
     };
 }
 
@@ -47,10 +69,14 @@ pub mod cell_decorations;
 pub mod cell_dnd;
 pub mod cell_editor_options;
 pub mod cell_editor_overflow_widgets;
+pub mod cell_execution;
 pub mod cell_focus;
 pub mod cell_focus_indicator;
 pub mod cell_output;
 pub mod cell_progress_bar;
+pub mod cell_status_part;
+pub mod cell_toolbar_sticky_scroll;
+pub mod cell_toolbars;
 pub mod cell_widgets;
 pub mod code_cell_layout;
 pub mod collapsed_cell_input;

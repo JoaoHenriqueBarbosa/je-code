@@ -9,8 +9,14 @@
 //!   `cell` obrigatório) é a mesma struct, e quem a exige lê `cell` com `expect`.
 //! - `activeKernel?.supportedLanguages` é [`IActiveNotebookEditor::active_kernel_supported_languages`] (`None` sem kernel).
 //! - `focusNotebookCell` é síncrono (o `await` do original só espera a criação do editor de código da célula).
+//! - O literal `{ ui, cell, notebookEditor, source, $mid }` que as barras de ferramentas das células passam como contexto é
+//!   [`INotebookActionContext::to_dynamic`].
 
 use std::rc::Rc;
+
+use je_base::dynamic::{Dynamic, ObjectRef};
+use je_base::js_string::JsString;
+use je_base::marshalling_ids::MarshalledId;
 
 use crate::contrib::notebook::browser::view_model::notebook_view_model_impl::{CellViewModel, NotebookViewModel};
 use crate::contrib::notebook::common::model::notebook_text_model::NotebookTextModel;
@@ -61,6 +67,23 @@ impl INotebookActionContext {
     pub fn with_ui(mut self, ui: bool) -> Self {
         self.ui = Some(ui);
         self
+    }
+}
+
+impl INotebookActionContext {
+    /// O contexto como o argumento que uma barra de ferramentas ou um comando recebe: um objeto cujo anfitrião é este contexto
+    /// (`cell`, `notebookEditor` e `selectedCells` se lêem com `ObjectRef::host`) e que carrega `ui`, `source` (quando informado)
+    /// e o `$mid` de `MarshalledId.NotebookCellActionContext`, como o literal `{ ui, cell, notebookEditor, source, $mid }` do original.
+    pub fn to_dynamic(&self, source: Option<&str>) -> Dynamic {
+        let object = ObjectRef::with_host(Rc::new(self.clone()));
+        if let Some(ui) = self.ui {
+            object.set(&JsString::from("ui"), Dynamic::from(ui));
+        }
+        if let Some(source) = source {
+            object.set(&JsString::from("source"), Dynamic::from(source));
+        }
+        object.set(&JsString::from("$mid"), Dynamic::from(MarshalledId::NotebookCellActionContext as i32));
+        Dynamic::Object(object)
     }
 }
 
