@@ -46,6 +46,14 @@ notify = { version = "8", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
+# O `RequestService` do lado Node (`request/node_request_service.rs`): o mesmo cliente do marketplace em `je-extensions`
+# (`ureq` com `rustls` e o provedor RustCrypto, em Rust puro: o provedor padrão do `rustls` compila C e o
+# `scripts/pure-rust-check.sh` o barra) e o `flate2` com `zlib-rs` (o `createGunzip` do original). Fora do `wasm32`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
+rustls-rustcrypto = "0.0.2-alpha"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
 # Só as constantes (`O_NONBLOCK`) da abertura de leitura do `DiskFileSystemProvider`: nenhuma chamada da libc,
 # então nada de `unsafe` e nada de C compilado.
 [target.'cfg(unix)'.dependencies]
