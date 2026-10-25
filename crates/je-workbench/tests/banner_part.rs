@@ -184,11 +184,13 @@ fn create_banner(guard: &LeakGuard) -> Banner {
     guard.add_rc(configuration_service.on_did_change_configuration_emitter.clone());
     let configuration: Rc<dyn IConfigurationService> = configuration_service.clone();
 
-    let theme_service: Rc<dyn IThemeService> = guard.add_rc(TestThemeService::new_default());
+    let theme_service = guard.add_rc(TestThemeService::new_default());
+    let theme_service: Rc<dyn IThemeService> = theme_service;
     let storage = guard.add_rc(TestStorageService::new());
     let storage_service: Rc<dyn StorageService> = Rc::new(storage);
     let layout_service: Rc<dyn IWorkbenchLayoutService> = Rc::new(TestLayoutService);
-    let context_key_service: Rc<dyn IContextKeyService> = guard.add_rc(ContextKeyService::new(configuration));
+    let context_key_service = guard.add_rc(ContextKeyService::new(configuration));
+    let context_key_service: Rc<dyn IContextKeyService> = context_key_service;
 
     let view = TestBannerView::new();
     let container = ViewElement::with_classes(&["part", "banner"]);
