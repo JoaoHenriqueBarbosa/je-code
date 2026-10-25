@@ -70,10 +70,14 @@ struct Fixture {
 impl Fixture {
     /// `maximum_regions` é o `foldingMaximumRegions` do editor; `strategy` é o `foldingStrategy`.
     fn new(maximum_regions: Option<f64>, strategy: Option<&str>) -> Self {
+        Self::with_text(TEXT, maximum_regions, strategy)
+    }
+
+    fn with_text(text: &str, maximum_regions: Option<f64>, strategy: Option<&str>) -> Self {
         let disposables = DisposableStore::new();
         let services = create_code_editor_services(&disposables, None);
         let model = TextModel::new_with_language_service(
-            TEXT.into(),
+            text.into(),
             PLAINTEXT_LANGUAGE_ID,
             resolve_options(&RelaxedTextModelCreationOptions::default()),
             None,
@@ -172,16 +176,18 @@ fn indent_ranges_are_computed_without_providers() {
 #[test]
 fn limit_reporter_reports_computed_and_limited_ranges() {
     run_with_faked_timers(async {
-        let f = Fixture::new(Some(2.0), None);
+        // `foldingMaximumRegions` é cortado em no mínimo 10 (EditorIntOption 5000, 10, 65000): são 12 regiões para 10.
+        let text = (0..12).map(|i| format!("function f{i}() {{\n    w();\n}}")).collect::<Vec<_>>().join("\n");
+        let f = Fixture::with_text(&text, Some(10.0), None);
         let reporter = f.controller.limit_reporter().clone();
         let changes = Rc::new(Cell::new(0));
         let counter = Rc::clone(&changes);
         let _listener = reporter.on_did_change().listen(move |_| counter.set(counter.get() + 1));
 
         let folding_model = f.settle().await;
-        assert_eq!(reporter.computed(), 3);
-        assert_eq!(reporter.limited(), Some(2));
-        assert_eq!(folding_model.regions().length(), 2);
+        assert_eq!(reporter.computed(), 12);
+        assert_eq!(reporter.limited(), Some(10));
+        assert_eq!(folding_model.regions().length(), 10);
         assert!(changes.get() >= 1, "o relator avisa quando o resultado muda");
 
         // o mesmo resultado de novo não dispara outro aviso
