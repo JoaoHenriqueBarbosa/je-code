@@ -31,7 +31,7 @@ use std::rc::{Rc, Weak};
 
 use je_base::errors::{self, Error};
 use je_base::event::Event;
-use je_base::lifecycle::{DisposableRef, IDisposable, to_disposable};
+use je_base::lifecycle::{DisposableRef, IDisposable, plain_disposable, to_disposable};
 use je_base::promise::Promise;
 use je_base::runtime;
 
@@ -192,13 +192,14 @@ impl OnboardingWindow {
     }
 
     /// `scheduleAtNextAnimationFrame(targetWindow, callback)`: os quadros do mesmo ciclo rodam na ordem em que foram
-    /// pedidos, e o que for pedido durante o ciclo roda no ciclo seguinte.
+    /// pedidos, e o que for pedido durante o ciclo roda no ciclo seguinte. O handle é o objeto literal `{ dispose }` do
+    /// original, que ninguém rastreia (o `animate` troca um por quadro e não descarta os que já dispararam).
     pub fn schedule_at_next_animation_frame(&self, callback: impl FnOnce() + 'static) -> DisposableRef {
         let id = self.document.next_id();
         self.document.frames.borrow_mut().push((id, Box::new(callback)));
         OnboardingDocument::arm_frame(&self.document);
         let document = self.document.clone();
-        to_disposable(move || document.frames.borrow_mut().retain(|(frame, _)| *frame != id))
+        plain_disposable(move || document.frames.borrow_mut().retain(|(frame, _)| *frame != id))
     }
 
     /// `requestAnimationFrame`: o mesmo agendador, sem handle para cancelar.
