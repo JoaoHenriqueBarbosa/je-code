@@ -165,11 +165,23 @@ pub struct HoverElement {
     text: RefCell<String>,
     aria_label: RefCell<Option<String>>,
     size: Cell<(f64, f64)>,
+    /// Os ouvintes do `ResizeObserver` do elemento (referências fracas: quem observa guarda o ouvinte).
+    resize_listeners: RefCell<Vec<Weak<dyn Fn()>>>,
 }
 
 impl HoverElement {
     pub fn new(text: &str) -> Rc<Self> {
-        Rc::new(Self { text: RefCell::new(text.to_owned()), aria_label: RefCell::new(None), size: Cell::new((0.0, 0.0)) })
+        Rc::new(Self {
+            text: RefCell::new(text.to_owned()),
+            aria_label: RefCell::new(None),
+            size: Cell::new((0.0, 0.0)),
+            resize_listeners: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// `ResizeObserver.observe(element)`: o ouvinte roda quando o tamanho do elemento muda, enquanto quem observa o mantiver vivo.
+    pub fn observe_resize(&self, listener: &Rc<dyn Fn()>) {
+        self.resize_listeners.borrow_mut().push(Rc::downgrade(listener));
     }
 
     /// `textContent`.
@@ -191,9 +203,16 @@ impl HoverElement {
         *self.text.borrow_mut() = text.to_owned();
     }
 
-    /// `style.width` e `style.height`.
+    /// `style.width` e `style.height`: avisa os observadores quando o tamanho muda.
     pub fn set_size(&self, width: f64, height: f64) {
-        self.size.set((width, height));
+        if self.size.replace((width, height)) == (width, height) {
+            return;
+        }
+        self.resize_listeners.borrow_mut().retain(|listener| listener.strong_count() > 0);
+        let listeners: Vec<Rc<dyn Fn()>> = self.resize_listeners.borrow().iter().filter_map(Weak::upgrade).collect();
+        for listener in listeners {
+            listener();
+        }
     }
 
     pub fn size(&self) -> (f64, f64) {
@@ -267,7 +286,41 @@ pub struct IActionListItemHover {
     pub preserve_vertical_position: bool,
     /// Align the panel's top with the trigger row (with `preserve_vertical_position`, shifting up only to fit the viewport).
     pub align_to_anchor_top: bool,
+    /// Actions rendered in the standard hover footer (`.hover-row.status-bar`).
+    pub actions: Vec<IHoverAction>,
+    /// Releases a content element built by a `HoverContent::Lazy` that the panel did not keep.
+    pub dispose_content: Option<Rc<dyn Fn(&Rc<HoverElement>)>>,
+    /// Owned by the hover descriptor; registered for the widget's lifetime when its content is shown.
+    pub disposable: Option<DisposableRef>,
 }
+
+/// `IHoverAction`: uma ação do rodapé padrão do hover.
+#[derive(Clone)]
+pub struct IHoverAction {
+    pub command_id: String,
+    pub label: String,
+    pub icon_class: Option<String>,
+    pub run: Rc<dyn Fn()>,
+}
+
+/// O rodapé do painel (`.hover-row.status-bar`): a classe, o rótulo de cada ação e o retângulo do `.actions`.
+#[derive(Clone)]
+pub struct PanelFooter {
+    pub class_name: String,
+    pub actions: Vec<String>,
+    pub rect: IRect,
+}
+
+/// O estilo do painel (`.action-list-submenu-panel`): `padding`, `border` e `overflow: hidden`.
+pub const SUBMENU_PANEL_PADDING: f64 = 4.0;
+pub const SUBMENU_PANEL_BORDER: f64 = 1.0;
+/// `.action-list-submenu-panel { overflow: hidden }`.
+pub const SUBMENU_PANEL_CLIPS_OVERFLOW: bool = true;
+/// A altura da linha do rodapé (`.hover-row.status-bar { line-height: 22px }`).
+const HOVER_FOOTER_HEIGHT: f64 = 22.0;
+/// A duração e a curva da animação que acompanha a linha que mudou de lugar (`_animateItemMove`).
+const ITEM_MOVE_DURATION_MS: u64 = 160;
+const ITEM_MOVE_EASING: &str = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 
 /// `IActionListHeaderLink`: o link do cabeçalho e da linha com detalhe.
 #[derive(Clone)]
@@ -812,6 +865,20 @@ struct WidgetState<T: ActionListItemData> {
     panel_viewport_height: Option<f64>,
     /// Quantas vezes o `_layoutSubmenu` do painel aberto reposicionou o painel.
     layout_submenu_count: usize,
+    /// A rolagem do `.action-list-submenu-viewport` do hover, a altura do conteúdo dele e o zoom que o painel usa.
+    panel_scroll_top: f64,
+    panel_content_height: f64,
+    panel_zoom: f64,
+    /// O ouvinte do `ResizeObserver` do conteúdo e o quadro agendado que reposiciona o painel.
+    panel_resize_listener: Option<Rc<dyn Fn()>>,
+    panel_layout_timer: Option<TimerId>,
+    /// As ações do rodapé do hover (`_submenuHoverActionElements`) e a ação de cada uma.
+    panel_footer: Vec<(Rc<HoverElement>, IHoverAction)>,
+    /// `_submenuSide`: o lado em que o painel persistente abriu (`true` é a direita).
+    submenu_side: Option<bool>,
+    /// A animação de movimento da linha (duração e curva) e `prefers-reduced-motion`.
+    item_move_animation: Option<(u64, &'static str)>,
+    reduce_motion: bool,
     /// `canPrefetchVisibleItems`: verdadeiro a partir do primeiro quadro depois da criação.
     can_prefetch_visible_items: bool,
     /// `visibleItems`: a identidade das linhas que já foram avisadas.
@@ -1006,6 +1073,15 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 panel_style_width: None,
                 panel_viewport_height: None,
                 layout_submenu_count: 0,
+                panel_scroll_top: 0.0,
+                panel_content_height: 0.0,
+                panel_zoom: 1.0,
+                panel_resize_listener: None,
+                panel_layout_timer: None,
+                panel_footer: Vec::new(),
+                submenu_side: None,
+                item_move_animation: None,
+                reduce_motion: false,
                 can_prefetch_visible_items: false,
                 visible_items: BTreeSet::new(),
                 visible_items_update: None,
@@ -1393,7 +1469,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     }
 
     /// `control.focus()` num controle do conteúdo do hover.
-    fn focus_control(&self, control: Rc<HoverElement>) {
+    pub fn focus_control(&self, control: Rc<HoverElement>) {
         if let Some(input) = &self.filter_input {
             input.blur();
         }
@@ -2460,6 +2536,21 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             });
         let preserve_submenu = has_submenu_widget && preserved_item.as_ref().is_some_and(|item| has_submenu_actions(item));
         let preserve_panel = preserve_hover || preserve_submenu;
+        // A content element built by a function that the panel did not keep is released by the item that built it.
+        if !preserve_hover {
+            let built = preserved_item.as_ref().is_some_and(|item| matches!(item.hover.as_ref().and_then(|hover| hover.content.as_ref()), Some(HoverContent::Lazy(_))));
+            if let (true, Some(item), Some(content)) = (built, &preserved_item, &preserved_content) {
+                if let Some(dispose_content) = item.hover.as_ref().and_then(|hover| hover.dispose_content.clone()) {
+                    dispose_content(content);
+                }
+            }
+        }
+        let previous_row = if options.animate_item_move && preserve_panel {
+            let current = self.state.borrow().current_submenu_element.clone();
+            current.and_then(|current| self.list_index_of(&current)).map(|index| self.row_rect(index))
+        } else {
+            None
+        };
 
         self.state.borrow_mut().all_menu_items = items.to_vec();
         if let (true, Some(preserved_item)) = (preserve_panel, &preserved_item) {
@@ -2500,12 +2591,53 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         }
         if preserve_panel {
             self.layout_submenu();
+            if let (Some(previous_row), Some(preserved_item)) = (previous_row, &preserved_item) {
+                self.animate_item_move(preserved_item, previous_row);
+            }
         } else if let Some(focus_item_id) = focus_item_id {
             self.focus_item_by_id(focus_item_id);
         }
         if let Some(scroll_top) = preserved_scroll_top {
             self.set_scroll_top(scroll_top);
         }
+    }
+
+    /// `_animateItemMove`: the row that kept the open panel and changed place slides from where it was, unless motion is reduced,
+    /// it did not move, or either position lies outside the list.
+    fn animate_item_move(&self, item: &Rc<IActionListItem<T>>, previous: IRect) {
+        if self.state.borrow().reduce_motion {
+            return;
+        }
+        let Some(index) = self.list_index_of(item) else {
+            return;
+        };
+        let current = self.row_rect(index);
+        let bounds = self.dom_node.rect();
+        let bounds_bottom = bounds.top + bounds.height;
+        if previous.top < bounds.top
+            || previous.top + previous.height > bounds_bottom
+            || current.top < bounds.top
+            || current.top + current.height > bounds_bottom
+            || (previous.top - current.top).abs() < 1.0
+        {
+            return;
+        }
+        self.state.borrow_mut().item_move_animation = Some((ITEM_MOVE_DURATION_MS, ITEM_MOVE_EASING));
+    }
+
+    /// `row.getAnimations()`: the duration (ms) and easing of the running move animation, if any.
+    pub fn item_move_animations(&self) -> Vec<(u64, String)> {
+        self.state.borrow().item_move_animation.map(|(duration, easing)| (duration, easing.to_owned())).into_iter().collect()
+    }
+
+    /// `animation.finish()`.
+    pub fn finish_item_move_animations(&self) {
+        self.state.borrow_mut().item_move_animation = None;
+    }
+
+    /// `prefers-reduced-motion: reduce`.
+    pub fn set_reduce_motion(&self, reduce: bool) {
+        self.state.borrow_mut().reduce_motion = reduce;
     }
 
     fn remove_item(&self, item: &Rc<IActionListItem<T>>) {
@@ -2586,9 +2718,23 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 PanelHeader::Rendered { text: format!("{text}{rendered}"), links }
             }
         });
+        if let (Some(PanelHeader::Element(_)), Some(disposable)) = (&header, element.hover.as_ref().and_then(|hover| hover.disposable.clone())) {
+            // The hover element is owned by the caller and reused across shows, so its disposable lives as long as the widget.
+            self.panel_subscriptions.add(disposable);
+        }
+        let footer: Vec<(Rc<HoverElement>, IHoverAction)> = element
+            .hover
+            .as_ref()
+            .map(|hover| hover.actions.iter().map(|action| (HoverElement::new(&action.label), action.clone())).collect())
+            .unwrap_or_default();
         {
             let mut state = self.state.borrow_mut();
+            // `hoverHeader.offsetWidth`: the width the panel keeps while the content is shown.
+            if let Some(PanelHeader::Element(content)) = &header {
+                state.submenu_max_width = content.size().0;
+            }
             state.panel_header = header;
+            state.panel_footer = footer;
             // Show container before creating the widget so the list can measure during construction.
             state.panel_hidden = false;
             state.panel_animated = false;
@@ -2645,6 +2791,62 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             state.panel_animated = state.current_submenu_widget.is_some();
         }
         self.layout_submenu();
+        self.observe_panel_content(element);
+    }
+
+    /// The `ResizeObserver` of `_showSubmenuForElement`: content that grows or shrinks (for instance after focus reveals
+    /// bounded text) repositions the panel, not just the row that measured it before the content changed.
+    fn observe_panel_content(&self, element: &Rc<IActionListItem<T>>) {
+        let hover = element.hover.clone().unwrap_or_default();
+        let persistent = self.opts().is_some_and(|o| o.persistent_hover);
+        let observes = persistent || hover.align_to_parent || hover.tab_through_panel || hover.preserve_vertical_position || hover.align_to_parent_bottom;
+        let (current, has_submenu_widget, header) = {
+            let state = self.state.borrow();
+            (state.current_submenu_element.clone(), state.current_submenu_widget.is_some(), state.panel_header.clone())
+        };
+        let is_current = current.is_some_and(|current| Rc::ptr_eq(&current, element));
+        let (true, true, false, Some(PanelHeader::Element(content))) = (observes, is_current, has_submenu_widget, header) else {
+            return;
+        };
+        let weak = self.this.clone();
+        let listener: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(widget) = weak.upgrade() {
+                widget.schedule_panel_layout();
+            }
+        });
+        content.observe_resize(&listener);
+        self.state.borrow_mut().panel_resize_listener = Some(listener);
+    }
+
+    /// Layout can resize the observed panel, so it runs at the next animation frame, outside the resize observation.
+    fn schedule_panel_layout(&self) {
+        if self.state.borrow().panel_layout_timer.is_some() {
+            return;
+        }
+        let weak = self.this.clone();
+        let timer = set_timeout(
+            move || {
+                if let Some(widget) = weak.upgrade() {
+                    widget.state.borrow_mut().panel_layout_timer = None;
+                    widget.layout_submenu();
+                }
+            },
+            ANIMATION_FRAME_MS,
+        );
+        self.state.borrow_mut().panel_layout_timer = Some(timer);
+    }
+
+    /// A host that writes the panel's `style.width` (a resize of the panel) is undone at the next frame: the panel goes back to
+    /// the width its content asked for when it opened.
+    pub fn set_panel_width(&self, width: f64) {
+        {
+            let mut state = self.state.borrow_mut();
+            if let Some(rect) = state.panel_rect.as_mut() {
+                rect.2 = width;
+            }
+            state.panel_style_width = Some(width);
+        }
+        self.schedule_panel_layout();
     }
 
     /// Um objeto descartado junto com o widget (as assinaturas de eventos do painel).
@@ -2695,7 +2897,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
 
     /// O posicionamento do painel de hover de conteúdo (o ramo sem lista de submenu do `layout` de `_showSubmenuForElement`).
     fn layout_hover_panel(&self, current: &Rc<IActionListItem<T>>, index: Option<usize>) {
-        let (zoom, (window_width, window_height), header, has_submenu_widget) = {
+        let (zoom_level, (window_width, window_height), header, has_submenu_widget) = {
             let state = self.state.borrow();
             (state.zoom, state.window_size, state.panel_header.clone(), state.current_submenu_widget.is_some())
         };
@@ -2707,25 +2909,49 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             self.state.borrow_mut().panel_rect = None;
             return;
         };
+        let (max_width, opening_top, opening_height, previous_viewport, previous_panel, previous_scroll, previous_side, has_footer) = {
+            let state = self.state.borrow();
+            (
+                state.submenu_max_width,
+                state.opening_panel_top,
+                state.opening_panel_height,
+                state.panel_viewport_height,
+                state.panel_rect,
+                state.panel_scroll_top,
+                state.submenu_side,
+                !state.panel_footer.is_empty(),
+            )
+        };
         let hover = current.hover.clone().unwrap_or_default();
         let persistent = self.opts().is_some_and(|o| o.persistent_hover);
+        let preserve = hover.preserve_vertical_position;
         let align_to_parent = persistent || hover.align_to_parent || hover.align_to_parent_bottom;
+        let zoom = if align_to_parent || preserve { zoom_level } else { 1.0 };
         let parent_rect = self.dom_node.rect();
         let edge_rect = if align_to_parent {
             self.dom_node.parent_element().and_then(|parent| parent.closest("action-widget")).map_or(parent_rect, |widget| widget.rect())
         } else {
             parent_rect
         };
-        let (content_width, content_height) = content.size();
-        let chrome = ACTION_WIDGET_VERTICAL_CHROME_HEIGHT;
-        let scrollable = hover.preserve_vertical_position || hover.align_to_parent_bottom || (!persistent && !align_to_parent);
+        let (_, content_height) = content.size();
+        // The footer row sits flush with the panel's inner edges (negative margin), so it adds its height minus the padding.
+        let footer_extra = if has_footer { HOVER_FOOTER_HEIGHT - SUBMENU_PANEL_PADDING } else { 0.0 };
+        let chrome = ACTION_WIDGET_VERTICAL_CHROME_HEIGHT + footer_extra;
+        let scrollable = preserve || hover.align_to_parent_bottom || (!persistent && !hover.align_to_parent);
 
-        let mut panel_width = if align_to_parent { (content_width + chrome) * zoom } else { content_width + chrome };
+        let mut panel_width = if persistent {
+            edge_rect.width
+        } else if align_to_parent {
+            (max_width + ACTION_WIDGET_VERTICAL_CHROME_HEIGHT) * zoom
+        } else {
+            max_width + ACTION_WIDGET_VERTICAL_CHROME_HEIGHT
+        };
         let gap = if align_to_parent { 0.0 } else { 4.0 };
         let viewport_margin = 4.0;
         let edge_right = edge_rect.left + edge_rect.width;
         let space_right = window_width - viewport_margin - edge_right - gap;
         let space_left = edge_rect.left - viewport_margin - gap;
+        let mut style_width = if persistent { Some(edge_rect.width / zoom) } else { None };
         if !align_to_parent {
             // Keep previews beside their row while retaining a readable content width.
             let minimum_panel_width = panel_width.min(240.0);
@@ -2733,12 +2959,21 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             if available_side_width >= minimum_panel_width {
                 panel_width = panel_width.min(available_side_width);
             }
+            // On a narrow viewport neither side may have room for the panel next to its anchor: clamp it to what fits on screen.
             let available_width = window_width - 2.0 * viewport_margin;
             if panel_width > available_width {
                 panel_width = available_width.max(0.0);
             }
+            style_width = Some(panel_width);
         }
-        let show_right = space_right >= panel_width || space_right >= space_left;
+        let mut show_right = space_right >= panel_width || space_right >= space_left;
+        if persistent {
+            if let Some(side_is_right) = previous_side {
+                if (if side_is_right { space_right } else { space_left }) >= panel_width {
+                    show_right = side_is_right;
+                }
+            }
+        }
         let mut left = if show_right { edge_right - parent_rect.left + gap } else { edge_rect.left - parent_rect.left - panel_width - gap };
         let page_left = parent_rect.left + left;
         if page_left < viewport_margin {
@@ -2747,35 +2982,64 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             left -= (page_left + panel_width) - (window_width - viewport_margin);
         }
 
-        let panel_height = (content_height + chrome) * zoom;
+        // The scroll viewport still has its previous height when content changes, so a panel that keeps its position
+        // reads the height it has now; otherwise it follows the content.
+        let shown_viewport = if preserve { previous_viewport.unwrap_or(content_height) } else { content_height };
+        let panel_height = (shown_viewport + chrome) * zoom;
+        let opening_height = if preserve && opening_height.is_none() { Some(panel_height / zoom) } else { opening_height };
+        let anchor_height = opening_height.map_or(panel_height, |height| height * zoom);
+        let anchor_rect = index.map(|index| self.row_rect(index));
         let edge_bottom = edge_rect.top + edge_rect.height;
         let bottom_boundary = if hover.align_to_parent_bottom { edge_bottom.min(window_height) } else { window_height };
         let mut top = if hover.align_to_parent_bottom {
-            bottom_boundary - parent_rect.top - panel_height
-        } else if let Some(row) = index.map(|index| self.row_rect(index)) {
-            row.top - parent_rect.top + (row.height - panel_height) / 2.0
+            bottom_boundary - parent_rect.top - anchor_height
+        } else if let Some(opening_top) = opening_top {
+            opening_top * zoom
+        } else if let Some(row) = anchor_rect {
+            if hover.align_to_anchor_top { row.top - parent_rect.top } else { row.top - parent_rect.top + (row.height - anchor_height) / 2.0 }
         } else {
-            0.0
+            previous_panel.map_or(parent_rect.top, |(panel_top, _, _, _)| panel_top) - parent_rect.top
         };
-        let panel_bottom = parent_rect.top + top + panel_height;
-        if panel_bottom > bottom_boundary {
+        let keeps_anchor_top = preserve && hover.align_to_anchor_top;
+        let panel_bottom = parent_rect.top + top + anchor_height;
+        if panel_bottom > bottom_boundary && !keeps_anchor_top {
             top -= panel_bottom - bottom_boundary + 8.0;
         }
         if parent_rect.top + top < 0.0 {
             top = -parent_rect.top;
         }
+        let new_opening_top = if preserve && opening_top.is_none() { Some(top / zoom) } else { opening_top };
         let available_panel_height = if hover.align_to_parent_bottom { bottom_boundary - 8.0 } else { window_height - parent_rect.top - top - 8.0 };
-        let height = if scrollable {
+        let (viewport_height, height) = if scrollable {
             let available_height = (available_panel_height / zoom - chrome).max(0.0);
-            (content_height.min(available_height) + chrome) * zoom
+            let viewport_height = content_height.min(available_height);
+            (Some(viewport_height), (viewport_height + chrome) * zoom)
         } else {
-            panel_height
+            (None, panel_height)
         };
         if hover.align_to_parent_bottom {
             top = (bottom_boundary - height).max(0.0) - parent_rect.top;
         }
-        self.state.borrow_mut().panel_rect = Some((parent_rect.top + top, parent_rect.left + left, panel_width, height));
+        let scroll_top = viewport_height.map_or(0.0, |viewport| previous_scroll.min((content_height - viewport).max(0.0)).max(0.0));
+
+        let mut state = self.state.borrow_mut();
+        state.opening_panel_height = opening_height;
+        state.opening_panel_top = new_opening_top;
+        state.panel_viewport_height = viewport_height;
+        state.panel_content_height = content_height;
+        state.panel_scroll_top = scroll_top;
+        state.panel_zoom = zoom;
+        if persistent {
+            state.submenu_side = Some(show_right);
+        }
+        state.panel_style_top = Some(top / zoom);
+        state.panel_style_left = Some(left / zoom);
+        if style_width.is_some() {
+            state.panel_style_width = style_width;
+        }
+        state.panel_rect = Some((parent_rect.top + top, parent_rect.left + left, panel_width, height));
     }
+
 
     /// O ramo com lista de submenu do `layout` de `_showSubmenuForElement`: largura, lado, topo e a altura da lista dentro do
     /// painel. O painel só tem o viewport que rola quando o item preserva a posição vertical ou alinha pelo rodapé do pai.
@@ -3041,11 +3305,15 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         if self.panel_contains_focus() {
             self.dom_focus_list();
         }
-        let widget = {
+        let (widget, layout_timer) = {
             let mut state = self.state.borrow_mut();
             state.has_layout_submenu = false;
             state.panel_animated = false;
             state.panel_header = None;
+            state.panel_footer = Vec::new();
+            state.panel_resize_listener = None;
+            state.panel_scroll_top = 0.0;
+            state.panel_content_height = 0.0;
             state.panel_rect = None;
             state.opening_panel_top = None;
             state.opening_panel_height = None;
@@ -3056,8 +3324,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             state.panel_viewport_height = None;
             // The row that opened the panel is no longer expanded.
             state.expanded_trigger = None;
-            state.current_submenu_widget.take()
+            (state.current_submenu_widget.take(), state.panel_layout_timer.take())
         };
+        if let Some(timer) = layout_timer {
+            clear_timeout(timer);
+        }
         if let Some(widget) = widget {
             widget.dispose();
         }
@@ -3371,7 +3642,22 @@ impl<T: ActionListItemData> ActionListWidget<T> {
 
     /// Os controles do conteúdo do hover do item aberto (`getTabbableElements`).
     fn panel_tabbable_controls(&self, element: &IActionListItem<T>) -> Vec<Rc<HoverElement>> {
-        element.hover.as_ref().and_then(|hover| hover.get_tabbable_elements.clone()).map(|get| get()).unwrap_or_default()
+        let mut controls = element.hover.as_ref().and_then(|hover| hover.get_tabbable_elements.clone()).map(|get| get()).unwrap_or_default();
+        controls.extend(self.hover_action_elements());
+        controls
+    }
+
+    /// `_submenuHoverActionElements`: the footer actions of the open panel, in Tab order.
+    pub fn hover_action_elements(&self) -> Vec<Rc<HoverElement>> {
+        self.state.borrow().panel_footer.iter().map(|(control, _)| control.clone()).collect()
+    }
+
+    /// The click on the footer action `index`.
+    pub fn click_hover_action(&self, index: usize) {
+        let run = self.state.borrow().panel_footer.get(index).map(|(_, action)| action.run.clone());
+        if let Some(run) = run {
+            run();
+        }
     }
 
     /// `_itemDetailLinks.get(element) ?? []`: o link do detalhe da linha, criado na primeira vez que a linha o renderiza.
@@ -3537,9 +3823,32 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// Os tratadores do painel (`keydown` do `_submenuContainer`): ArrowLeft e Escape voltam à lista; Enter, Espaço e as
     /// setas agem sobre o submenu.
     fn submenu_panel_key_down(&self, e: &UiKeyEvent) {
+        let plain = !e.ctrl_key && !e.meta_key && !e.alt_key && !e.shift_key;
+        if plain && (e.key_code == KeyCode::PageDown || e.key_code == KeyCode::PageUp) {
+            // The scrollable hover pages through its content by one viewport.
+            let (viewport, content, has_submenu_widget) = {
+                let state = self.state.borrow();
+                (state.panel_viewport_height, state.panel_content_height, state.current_submenu_widget.is_some())
+            };
+            if let (Some(viewport), false) = (viewport, has_submenu_widget) {
+                e.stop();
+                let delta = if e.key_code == KeyCode::PageDown { viewport } else { -viewport };
+                let mut state = self.state.borrow_mut();
+                state.panel_scroll_top = (state.panel_scroll_top + delta).clamp(0.0, (content - viewport).max(0.0));
+                return;
+            }
+        }
         if e.key == "Enter" || e.key == " " {
             let current = self.state.borrow().current_submenu_element.clone();
             let active = self.focus_state.control_focused.borrow().clone();
+            if let Some(active) = &active {
+                let run = self.state.borrow().panel_footer.iter().find(|(control, _)| Rc::ptr_eq(control, active)).map(|(_, action)| action.run.clone());
+                if let Some(run) = run {
+                    e.stop();
+                    run();
+                    return;
+                }
+            }
             if let (Some(current), Some(active)) = (current, active) {
                 let owns_control = current.hover.as_ref().is_some_and(|hover| hover.tab_through_panel)
                     && self.panel_tabbable_controls(&current).iter().any(|control| Rc::ptr_eq(control, &active));
@@ -4294,6 +4603,47 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// O painel tem a classe `ACTION_WIDGET_ANIMATED_CLASS` (só o painel que mostra uma lista de submenu).
     pub fn panel_animated(&self) -> bool {
         self.state.borrow().panel_animated
+    }
+
+    /// `viewport.scrollHeight > viewport.clientHeight`: o conteúdo do hover é maior que o viewport do painel.
+    pub fn panel_scrolls(&self) -> bool {
+        let state = self.state.borrow();
+        state.panel_viewport_height.is_some_and(|viewport| state.panel_content_height > viewport)
+    }
+
+    /// `viewport.scrollTop`.
+    pub fn panel_scroll_top(&self) -> f64 {
+        self.state.borrow().panel_scroll_top
+    }
+
+    /// `content.getBoundingClientRect()`: o conteúdo do hover dentro do painel, deslocado pela rolagem do viewport.
+    pub fn panel_content_rect(&self) -> Option<IRect> {
+        let state = self.state.borrow();
+        let (top, left, _, _) = state.panel_rect?;
+        let zoom = state.panel_zoom;
+        let inset = (SUBMENU_PANEL_PADDING + SUBMENU_PANEL_BORDER) * zoom;
+        let width = match &state.panel_header {
+            Some(PanelHeader::Element(content)) => content.size().0,
+            _ => 0.0,
+        };
+        Some(IRect { top: top + inset - state.panel_scroll_top * zoom, left: left + inset, width: width * zoom, height: state.panel_content_height * zoom })
+    }
+
+    /// O rodapé `.hover-row.status-bar` do painel: encostado nas bordas internas (as margens negativas anulam o `padding`).
+    pub fn panel_footer(&self) -> Option<PanelFooter> {
+        let state = self.state.borrow();
+        if state.panel_footer.is_empty() {
+            return None;
+        }
+        let (top, left, width, height) = state.panel_rect?;
+        let zoom = state.panel_zoom;
+        let border = SUBMENU_PANEL_BORDER * zoom;
+        let bottom = top + height - border;
+        Some(PanelFooter {
+            class_name: "hover-row status-bar".to_owned(),
+            actions: state.panel_footer.iter().map(|(_, action)| action.label.clone()).collect(),
+            rect: IRect { top: bottom - HOVER_FOOTER_HEIGHT * zoom, left: left + border, width: width - 2.0 * border, height: HOVER_FOOTER_HEIGHT * zoom },
+        })
     }
 }
 
