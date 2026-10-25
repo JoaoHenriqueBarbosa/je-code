@@ -1,3 +1,4 @@
+pub mod color_theme_css;
 pub mod color_theme_data;
 pub mod file_icon_theme_data;
 pub mod plist_parser;
