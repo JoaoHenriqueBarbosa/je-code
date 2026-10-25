@@ -135,8 +135,8 @@ pub struct ParagraphPiece {
     /// coordenadas da linha); no atômico, o início da caixa mais o recuo.
     pub dx: f32,
     pub runs: Vec<Run>,
-    /// Num trecho atômico, a altura da fonte acima e abaixo da linha de base (a área de conteúdo, onde o
-    /// navegador desenha o fundo e a borda do `code`).
+    /// A altura da fonte acima e abaixo da linha de base (a área de conteúdo, onde o navegador desenha o fundo
+    /// e a borda do `code` e o contorno de foco de um link).
     pub ascent: f32,
     pub descent: f32,
     pub boxed: bool,
@@ -310,8 +310,8 @@ impl TextSystem {
                             width: glyph_run.advance(),
                             dx: 0.0,
                             runs: vec![Run { font: run.font().clone(), size: run.font_size(), glyphs: glyphs.into() }],
-                            ascent: 0.0,
-                            descent: 0.0,
+                            ascent: run.metrics().ascent,
+                            descent: run.metrics().descent,
                             boxed: false,
                         });
                     }

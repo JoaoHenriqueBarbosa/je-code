@@ -224,6 +224,8 @@ struct Node {
     /// rótulo e o papel do nó (ver [`Tree::attribute`]).
     attributes: HashMap<String, String>,
     alive: bool,
+    /// Num nó `Role::Link` filho de um parágrafo, o número do link no parágrafo ([`crate::Span::link`]).
+    link: Option<u32>,
     /// Quantas vezes o espaço da arena já foi reutilizado.
     generation: u32,
 }
@@ -233,11 +235,13 @@ pub struct Tree {
     nodes: Vec<Node>,
     free: Vec<u32>,
     root: NodeId,
+    /// O nó com o foco do teclado (espelho do [`crate::Ui::focused`]), para a pintura do contorno de foco.
+    focused: Option<NodeId>,
 }
 
 impl Node {
     fn new(parent: Option<NodeId>, role: Role) -> Self {
-        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), attributes: HashMap::new(), alive: true, generation: 0 }
+        Self { parent, children: Vec::new(), bounds: Rect::ZERO, fill: (false, false), right: None, bottom: None, style: NodeStyle::default(), role, label: None, classes: Vec::new(), attributes: HashMap::new(), alive: true, link: None, generation: 0 }
     }
 }
 
@@ -250,7 +254,7 @@ impl Default for Tree {
 impl Tree {
     pub fn new() -> Self {
         let root = Node::new(None, Role::Region);
-        Self { nodes: vec![root], free: Vec::new(), root: NodeId(0, 0) }
+        Self { nodes: vec![root], free: Vec::new(), root: NodeId(0, 0), focused: None }
     }
 
     pub fn root(&self) -> NodeId {
@@ -368,6 +372,74 @@ impl Tree {
         paragraph.link_at(rect.width(), x - rect.x0, y - rect.y0)
     }
 
+    /// Os nós de link (`Role::Link`) do parágrafo, com o número de cada um, na ordem dos filhos.
+    pub fn paragraph_link_nodes(&self, paragraph: NodeId) -> Vec<(u32, NodeId)> {
+        self.node(paragraph).children.iter().filter_map(|child| self.node(*child).link.map(|link| (link, *child))).collect()
+    }
+
+    /// O número do link no parágrafo, se o nó é um nó de link criado por [`crate::Ui::sync_paragraph_links`].
+    pub fn link_index(&self, node: NodeId) -> Option<u32> {
+        self.node(node).link
+    }
+
+    /// Cria o nó de link do parágrafo: `Role::Link`, com o nome acessível, sem caixa (retângulo vazio) e sem
+    /// ponteiro, porque o clique continua sendo do parágrafo ([`Tree::paragraph_link_at`]).
+    pub(crate) fn add_paragraph_link(&mut self, paragraph: NodeId, link: u32, name: String) -> NodeId {
+        let id = self.create(paragraph, Role::Link);
+        let node = self.node_mut(id);
+        node.link = Some(link);
+        node.label = Some(name);
+        node.style.pointer_events = PointerEvents::None;
+        id
+    }
+
+    /// As caixas do nó de link em coordenadas da janela, uma por linha que o link ocupa (ver
+    /// [`Paragraph::link_boxes`]). Vazio se o nó não é um link de parágrafo.
+    pub fn link_boxes(&self, node: NodeId) -> Vec<Rect> {
+        let (Some(link), Some(parent)) = (self.node(node).link, self.node(node).parent) else { return Vec::new() };
+        let Content::Paragraph(paragraph) = &self.node(parent).style.content else { return Vec::new() };
+        let rect = self.absolute_bounds(parent);
+        paragraph.link_boxes(rect.width(), link).into_iter().map(|b| b + Vec2::new(rect.x0, rect.y0)).collect()
+    }
+
+    /// A ordem de Tab: os nós com `tabindex` positivo em ordem crescente (empate na ordem da árvore), depois os de
+    /// `tabindex` zero e os links de parágrafo na ordem da árvore. Fora ficam o `tabindex` negativo, o atributo
+    /// `disabled` e a subárvore de um nó oculto (`display: none`).
+    pub fn tab_order(&self) -> Vec<NodeId> {
+        let mut positive: Vec<(i32, NodeId)> = Vec::new();
+        let mut natural = Vec::new();
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            let node = self.node(id);
+            if !node.style.visible {
+                continue;
+            }
+            let tab_index = node.attributes.get("tabindex").and_then(|value| value.trim().parse::<i32>().ok()).or(node.link.map(|_| 0));
+            if !node.attributes.contains_key("disabled") {
+                match tab_index {
+                    Some(index) if index > 0 => positive.push((index, id)),
+                    Some(0) => natural.push(id),
+                    _ => {}
+                }
+            }
+            stack.extend(node.children.iter().rev());
+        }
+        positive.sort_by_key(|(index, _)| *index);
+        positive.into_iter().map(|(_, id)| id).chain(natural).collect()
+    }
+
+    /// Guarda o nó com o foco (chamado pelo [`crate::Ui`]).
+    pub(crate) fn set_focused(&mut self, node: Option<NodeId>) {
+        self.focused = node;
+    }
+
+    /// O número do link do parágrafo que tem o foco, se o foco está num nó de link filho dele.
+    fn focused_link_of(&self, paragraph: NodeId) -> Option<u32> {
+        let focused = self.focused.filter(|f| self.is_alive(*f))?;
+        let node = self.node(focused);
+        node.parent.filter(|parent| *parent == paragraph).and(node.link)
+    }
+
     /// Remove o nó e a subárvore dele (o `remove` do DOM).
     pub fn remove(&mut self, id: NodeId) {
         if id == self.root || !self.is_alive(id) {
@@ -382,6 +454,9 @@ impl Tree {
             node.alive = false;
             stack.extend(std::mem::take(&mut node.children));
             self.free.push(n.0);
+        }
+        if self.focused.is_some_and(|f| !self.is_alive(f)) {
+            self.focused = None;
         }
     }
 
@@ -656,10 +731,11 @@ impl Tree {
                 }
             }
             Content::Paragraph(paragraph) => {
+                let ring = paragraph.focus_color.zip(self.focused_link_of(id)).map(|(color, link)| (link, color, scale));
                 if (scale - 1.0).abs() < f64::EPSILON {
-                    paint_paragraph(paragraph, rect.x0, rect.y0, rect.width(), list, opacity);
+                    paint_paragraph(paragraph, rect.x0, rect.y0, rect.width(), list, opacity, ring);
                 } else {
-                    paint_paragraph(&paragraph.scaled(scale), rect.x0 * scale, rect.y0 * scale, rect.width() * scale, list, opacity);
+                    paint_paragraph(&paragraph.scaled(scale), rect.x0 * scale, rect.y0 * scale, rect.width() * scale, list, opacity, ring);
                 }
             }
             Content::Codicon { id: icon, size, color } => {
@@ -699,8 +775,10 @@ impl Tree {
 }
 
 /// Pinta o parágrafo com o canto superior esquerdo em (`x`, `y`) e a largura dada, em pixels de dispositivo: cada
-/// linha ocupa um `line-height` e o texto dela fica centrado nele como o Chromium centra a linha.
-fn paint_paragraph(paragraph: &Paragraph, x: f64, y: f64, width: f64, list: &mut DisplayList, opacity: f32) {
+/// linha ocupa um `line-height` e o texto dela fica centrado nele como o Chromium centra a linha. `focus` é o link
+/// com o foco do teclado (número, cor e largura do contorno em pixels de dispositivo): o contorno de 1px sólido
+/// fica dentro de cada caixa do link (`outline-offset: -1px`).
+fn paint_paragraph(paragraph: &Paragraph, x: f64, y: f64, width: f64, list: &mut DisplayList, opacity: f32, focus: Option<(u32, Rgba, f64)>) {
     let layout = paragraph.layout(width);
     for (index, line) in layout.lines.iter().enumerate() {
         let top = y + index as f64 * paragraph.line_height + half_leading(paragraph.line_height, f64::from(line.line_height));
@@ -712,6 +790,12 @@ fn paint_paragraph(paragraph: &Paragraph, x: f64, y: f64, width: f64, list: &mut
                 paint_frame(frame, frame_rect, list, opacity);
             }
             piece.paint(list, x as f32, baseline as f32, fade(paragraph.color_of(span), opacity));
+        }
+    }
+    if let Some((link, color, ring_width)) = focus {
+        for link_box in paragraph.link_boxes(width, link) {
+            let moved = link_box + Vec2::new(x, y);
+            list.stroke(Shape::Rect(moved.inset(-ring_width / 2.0)), ring_width, fade(color, opacity));
         }
     }
 }
@@ -732,7 +816,7 @@ fn paint_frame(frame: &SpanFrame, rect: Rect, list: &mut DisplayList, opacity: f
 /// altura natural da fonte), arredondada para BAIXO. É o `FontHeight::AddLeading` do Blink
 /// (`ascent += half_leading.Floor()`), medido contra o oráculo (H26): sem o `floor`, linhas de espaço ímpar
 /// (p.ex. `line-height: 10px` com fonte de 13 px) saíam 1 px abaixo do Chromium.
-fn half_leading(line_height: f64, natural: f64) -> f64 {
+pub(crate) fn half_leading(line_height: f64, natural: f64) -> f64 {
     ((line_height - natural) / 2.0).floor()
 }
 

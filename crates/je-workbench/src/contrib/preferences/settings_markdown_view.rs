@@ -27,11 +27,14 @@
 //! - **Elementos sem equivalente.** Tabelas viram blocos empilhados (uma célula por bloco), o tachado (`del`) não é
 //!   desenhado (o parágrafo do `je-ui` não tem decoração de texto), e imagens saem antes da tradução
 //!   ([`clean_rendered_markdown`]).
-//! - **Foco.** O `je-ui` não tem `tabindex` nem foco dentro de um parágrafo: o link é ativado pelo ponteiro, e o `Space` e o
-//!   `Enter` sobre ele do original não existem.
-//! - **Papel.** O link não é um nó (`Role::Link`) próprio: o bloco inteiro é genérico, e o destino sai do hit test do texto.
 //! - **Espaço em branco.** O `white-space: normal` é aplicado aqui, ao montar os trechos: sequências de espaço, tabulação e
 //!   quebra de linha do texto viram um espaço, e o espaço no começo e no fim do bloco (e junto de um `br`) é descartado.
+//!
+//! Acessibilidade e teclado do link, como o `a` do Chromium: cada link do bloco é um nó filho `Role::Link` do nó do bloco
+//! ([`Ui::sync_paragraph_links`]), sem caixa de layout própria, com o texto do link por nome acessível e as caixas vindas da
+//! disposição do parágrafo ([`Tree::link_boxes`]). Ele entra na ordem de Tab, o `Enter` o ativa (um `Click` com o nó do
+//! link por alvo, que o ouvinte do bloco resolve para o destino), o `Space` não o ativa (como no Chromium) e o foco desenha
+//! o contorno de 1 px de `focusBorder` dentro de cada caixa do link (`a:focus { outline-offset: -1px }`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -76,6 +79,8 @@ pub struct MarkdownViewStyles {
     pub foreground: Rgba,
     pub link_foreground: Rgba,
     pub link_active_foreground: Rgba,
+    /// `focusBorder`: a cor do contorno de foco de um link.
+    pub focus_border: Rgba,
     pub code_foreground: Rgba,
     pub code_background: Option<Rgba>,
     pub code_border: Option<Rgba>,
@@ -92,6 +97,7 @@ impl MarkdownViewStyles {
             foreground,
             link_foreground,
             link_active_foreground: theme.get_color("textLink.activeForeground").unwrap_or(link_foreground),
+            focus_border: theme.get_color("focusBorder").unwrap_or(Rgba::opaque(0x00, 0x7f, 0xd4)),
             code_foreground: theme.get_color("textPreformat.foreground").unwrap_or(foreground),
             code_background: theme.get_color("textPreformat.background"),
             code_border: theme.get_color("textPreformat.border"),
@@ -182,6 +188,8 @@ struct Builder<'a> {
     disposables: &'a Rc<DisposableStore>,
     activate: Option<Rc<dyn Fn(&JsString)>>,
     blocks: Vec<Block>,
+    /// Os nós de bloco que têm link: ganham os nós de link quando a montagem solta a árvore.
+    linked: Vec<NodeId>,
     current: Option<Draft>,
     /// O texto montado até aqui termina em espaço (ou o bloco está no começo): o próximo espaço é descartado.
     trailing_space: bool,
@@ -251,6 +259,7 @@ impl<'a> Builder<'a> {
         paragraph.wrap = wrap;
         if !draft.links.is_empty() {
             paragraph.link_hover_color = Some(self.styles.link_active_foreground);
+            paragraph.focus_color = Some(self.styles.focus_border);
         }
         let style = self.tree.style_mut(node);
         style.content = Content::Paragraph(paragraph);
@@ -260,6 +269,7 @@ impl<'a> Builder<'a> {
         }
         if !draft.links.is_empty() {
             self.attach_links(node, draft.links);
+            self.linked.push(node);
         }
         self.blocks.push(Block { indent: draft.indent, quote_bar: draft.quote_bar, marker: draft.marker, node, line_height: draft.line_height, rule: false });
     }
@@ -457,8 +467,15 @@ impl<'a> Builder<'a> {
         self.disposables.add(self.ui.listen(node, EventKind::Click, false, {
             let (ui, links) = (ui.clone(), links.clone());
             move |e| {
-                let Some(pointer) = e.pointer else { return };
-                let Some(index) = ui.tree().paragraph_link_at(node, pointer.x, pointer.y) else { return };
+                // O clique do ponteiro tem o ponto; o `Enter` num link com foco chega com o nó do link por alvo.
+                let index = {
+                    let tree = ui.tree();
+                    match e.pointer {
+                        Some(pointer) => tree.paragraph_link_at(node, pointer.x, pointer.y),
+                        None => tree.link_index(e.target),
+                    }
+                };
+                let Some(index) = index else { return };
                 let Some(link) = links.get(index as usize) else { return };
                 (link.activate)(&link.href);
                 e.prevent_default();
@@ -548,6 +565,7 @@ impl MarkdownView {
             disposables: &disposables,
             activate,
             blocks: Vec::new(),
+            linked: Vec::new(),
             current: None,
             trailing_space: true,
             pending_marker: None,
@@ -568,7 +586,11 @@ impl MarkdownView {
         }
         builder.flush();
         let blocks = std::mem::take(&mut builder.blocks);
+        let linked = std::mem::take(&mut builder.linked);
         drop(tree);
+        for node in linked {
+            ui.sync_paragraph_links(node);
+        }
         Rc::new(Self { ui: ui.clone(), root, blocks, rendered, disposables })
     }
 

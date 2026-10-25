@@ -23,7 +23,9 @@
 //!   na raiz ([`Ui::root`]) faz o mesmo.
 //! - **Teclado e foco.** [`Ui::key_input`] entrega `KeyDown`/`KeyUp` ao nó com foco (ou à raiz).
 //!   [`Ui::focus`] e [`Ui::blur`] despacham `Blur` e `Focus`, que não borbulham (o `trackFocus` do VS
-//!   Code escuta os dois com captura).
+//!   Code escuta os dois com captura). Sem `preventDefault`, o `keydown` tem a ação padrão do navegador: `Tab` e
+//!   `Shift+Tab` movem o foco pela ordem de Tab ([`Tree::tab_order`]: `tabindex` e links de parágrafo) e `Enter`
+//!   num link de parágrafo o ativa com um `Click` (o `Space` não ativa link, como no Chromium).
 //!
 //! - **Roda do mouse.** [`Ui::wheel_input`] despacha um [`EventKind::Wheel`] (que borbulha) ao nó sob o
 //!   ponteiro, com os deltas em pixels ou em linhas e o `deltaMode` ([`crate::wheel`]). O
@@ -42,7 +44,7 @@ use std::rc::Rc;
 use je_base::key_codes::KeyCode;
 use je_base::lifecycle::{DisposableRef, plain_disposable, to_disposable};
 
-use crate::tree::{Cursor, NodeId, Tree};
+use crate::tree::{Content, Cursor, NodeId, Tree};
 use crate::wheel::WheelData;
 
 /// O tipo de um evento (o `type` do DOM).
@@ -604,18 +606,77 @@ impl Ui {
         self.dispatch(&mut Event::new(EventKind::Wheel, target).with_wheel(wheel))
     }
 
-    /// Entrega uma tecla ao nó com foco (ou à raiz). Devolve falso se `preventDefault` foi chamado.
+    /// Entrega uma tecla ao nó com foco (ou à raiz). Devolve falso se `preventDefault` foi chamado ou se a tecla teve a
+    /// ação padrão do navegador: `Tab` e `Shift+Tab` movem o foco pela ordem de Tab ([`Ui::focus_by_tab`]), e `Enter`
+    /// num link de parágrafo o ativa (o `click` com o link por alvo, como o `HTMLAnchorElement` faz).
     pub fn key_input(&self, down: bool, key: KeyData) -> bool {
         let target = self.focused().unwrap_or_else(|| self.root());
         let kind = if down { EventKind::KeyDown } else { EventKind::KeyUp };
-        self.dispatch(&mut Event::new(kind, target).with_key(key))
+        let proceed = self.dispatch(&mut Event::new(kind, target).with_key(key));
+        proceed && !(down && self.key_default_action(target, key))
     }
 
-    /// Entrega texto digitado (teclado, IME, colar do sistema) ao nó com foco (ou à raiz). Devolve falso
-    /// se `preventDefault` foi chamado.
-    pub fn text_input(&self, text: &str) -> bool {
-        let target = self.focused().unwrap_or_else(|| self.root());
-        self.dispatch(&mut Event::new(EventKind::TextInput, target).with_text(text))
+    /// A ação padrão do navegador para o `keydown` que nenhum ouvinte consumiu (ver [`Ui::key_input`]). `Space` não
+    /// ativa link no Chromium e não faz nada aqui. Devolve verdadeiro se a tecla foi consumida.
+    fn key_default_action(&self, target: NodeId, key: KeyData) -> bool {
+        let Modifiers { alt, ctrl, shift, meta } = key.modifiers;
+        if key.key_code == KeyCode::Enter && self.0.tree.borrow().link_index(target).is_some() {
+            self.dispatch(&mut Event::new(EventKind::Click, target));
+            return true;
+        }
+        key.key_code == KeyCode::Tab && !(alt || ctrl || meta) && self.focus_by_tab(shift)
+    }
+
+    /// Move o foco para o próximo (ou, com `reverse`, o anterior) da ordem de Tab ([`Tree::tab_order`]), voltando ao
+    /// outro extremo no fim. Sem foco na ordem, começa pelo primeiro (ou pelo último). Devolve falso se não há nó
+    /// focável.
+    pub fn focus_by_tab(&self, reverse: bool) -> bool {
+        let order = self.0.tree.borrow().tab_order();
+        let Some(last) = order.len().checked_sub(1) else { return false };
+        let current = self.focused().and_then(|focused| order.iter().position(|node| *node == focused));
+        let next = match (current, reverse) {
+            (Some(index), false) => (index + 1) % order.len(),
+            (Some(index), true) => (index + last) % order.len(),
+            (None, false) => 0,
+            (None, true) => last,
+        };
+        self.focus(order[next]);
+        true
+    }
+
+    /// Cria, atualiza e remove os nós de link (`Role::Link`) do parágrafo do nó `id`, um por link do
+    /// [`crate::Paragraph`], na ordem em que aparecem no texto (a ordem de Tab). O nó de um link que continua existe
+    /// mantém a identidade (e o foco); o de um link que sumiu é removido com os ouvintes e o foco. Chame depois de
+    /// trocar o conteúdo do parágrafo.
+    pub fn sync_paragraph_links(&self, id: NodeId) {
+        let (wanted, existing) = {
+            let tree = self.0.tree.borrow();
+            if !tree.is_alive(id) {
+                return;
+            }
+            let wanted: Vec<(u32, String)> = match &tree.style(id).content {
+                Content::Paragraph(paragraph) => paragraph.link_numbers().into_iter().map(|link| (link, paragraph.link_name(link))).collect(),
+                _ => Vec::new(),
+            };
+            (wanted, tree.paragraph_link_nodes(id))
+        };
+        for (link, node) in &existing {
+            if !wanted.iter().any(|(number, _)| number == link) {
+                self.remove(*node);
+            }
+        }
+        let mut tree = self.0.tree.borrow_mut();
+        for (link, name) in wanted {
+            let node = match existing.iter().find(|(number, _)| *number == link) {
+                Some((_, node)) => {
+                    tree.set_label(*node, name);
+                    *node
+                }
+                None => tree.add_paragraph_link(id, link, name),
+            };
+            // Reanexar na ordem do texto: a ordem dos filhos é a ordem de Tab.
+            tree.append_child(id, node);
+        }
     }
 
     pub fn focused(&self) -> Option<NodeId> {
@@ -629,17 +690,30 @@ impl Ui {
             return;
         }
         if let Some(previous) = previous {
-            self.0.input.borrow_mut().focused = None;
+            self.set_focused(None);
             self.dispatch(&mut Event::new(EventKind::Blur, previous));
         }
-        self.0.input.borrow_mut().focused = Some(node);
+        self.set_focused(Some(node));
         self.dispatch(&mut Event::new(EventKind::Focus, node));
     }
 
     pub fn blur(&self) {
         if let Some(previous) = self.focused() {
-            self.0.input.borrow_mut().focused = None;
+            self.set_focused(None);
             self.dispatch(&mut Event::new(EventKind::Blur, previous));
         }
+    }
+
+    /// Guarda o foco no estado de entrada e na árvore (que pinta o contorno de foco do link).
+    fn set_focused(&self, node: Option<NodeId>) {
+        self.0.input.borrow_mut().focused = node;
+        self.0.tree.borrow_mut().set_focused(node);
+    }
+
+    /// Entrega texto digitado (teclado, IME, colar do sistema) ao nó com foco (ou à raiz). Devolve falso
+    /// se `preventDefault` foi chamado.
+    pub fn text_input(&self, text: &str) -> bool {
+        let target = self.focused().unwrap_or_else(|| self.root());
+        self.dispatch(&mut Event::new(EventKind::TextInput, target).with_text(text))
     }
 }

@@ -24,12 +24,17 @@
 //! - **Texto.** [`Content::Text`] é uma linha só. O parágrafo com quebra é [`Content::Paragraph`]: trechos com
 //!   estilo, cor e link num nó só, quebrados na largura da caixa dele pelo motor de texto (`je-text`), com a
 //!   altura medida pela quantidade de linhas ([`Paragraph::height`]), o clique em link por
-//!   [`Tree::paragraph_link_at`] e o `textContent` por [`Tree::text_content`].
+//!   [`Tree::paragraph_link_at`] e o `textContent` por [`Tree::text_content`]. Cada link do parágrafo é um nó filho
+//!   `Role::Link` sem caixa própria ([`Ui::sync_paragraph_links`]), com nome acessível, caixas vindas da disposição do
+//!   parágrafo ([`Tree::link_boxes`]), ordem de Tab, `Enter` e contorno de foco.
 
 pub mod events;
 mod paragraph;
 mod tree;
 pub mod wheel;
+
+#[cfg(test)]
+mod paragraph_link_tests;
 
 pub use events::{Event, EventKind, Handler, KeyData, Modifiers, Phase, PointerButton, PointerData, PointerInput, PointerInputKind, Ui};
 pub use paragraph::{Paragraph, Span, SpanFrame, SpanKind};
