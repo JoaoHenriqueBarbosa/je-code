@@ -29,7 +29,7 @@ mod connected_tabs;
 
 pub use card_border_layers::{BorderLayer, CardEdge, GradientKind};
 pub use connected_tabs::{
-    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
+    ConnectedGroupFrame, EDITOR_TABS_SCROLLBAR_Z_INDEX, FillShoulder, FillShoulderBox, StickyTabsBackgroundBox, TAB_CONNECTED_EDGE_PSEUDO_CONTENT, TAB_FILL_BACKGROUND_CLIP, TabBorderContainer, TabBorderIndicator, TabElement,
     TabRowPlacement, editor_group_child_display, tab_fill_bottom_left_radius, tab_fill_top_right_radius,
 };
 
@@ -423,24 +423,45 @@ impl<'a> ModernUiStyle<'a> {
 
     /// `color` do `.tab-label` de uma aba do editor (`tabs.css`, linhas 1060 a 1111). A aba inativa usa
     /// `--modern-ui-editor-tab-inactive-foreground`: 50% do primeiro plano, ou `tab.inactiveForeground` nas abas conectadas
-    /// fora do alto contraste (linhas 37 e 61).
+    /// fora do alto contraste (linhas 37 e 61). Cada variável `--modern-ui-editor-tab-*-foreground` que o DOM escreveu na raiz
+    /// vence o padrão, e a do grupo sem foco (`unfocused-*`) é um alias da do grupo com foco (linhas 36, 38 e 40).
     pub fn editor_tab_foreground(&self, tab: EditorTabState) -> Option<Color> {
         if !self.has("modern-ui-tabs") {
             return None;
         }
         if tab.active {
-            return self.color("modernEditorTab.activeForeground");
+            return self.tab_foreground_variable(tab.group_active, "active", || self.color("modernEditorTab.activeForeground"));
         }
         if tab.selected {
             return self.color("tab.selectedForeground");
         }
         if tab.hovered {
-            return self.color("modernEditorTab.hoverForeground");
+            return self.tab_foreground_variable(tab.group_active, "hover", || self.color("modernEditorTab.hoverForeground"));
         }
-        if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
-            return self.color("tab.inactiveForeground");
+        self.tab_foreground_variable(tab.group_active, "inactive", || {
+            if self.has("modern-ui-connected-editor-tabs") && !self.high_contrast() {
+                self.color("tab.inactiveForeground")
+            } else {
+                self.color("foreground").map(|foreground| foreground.transparent(0.5))
+            }
+        })
+    }
+
+    /// `--modern-ui-editor-tab-<state>-foreground` (ou `unfocused-<state>-foreground`, que sem valor próprio é um alias da
+    /// primeira): o que o DOM escreveu na raiz e, sem isso, o padrão da folha.
+    fn tab_foreground_variable(&self, group_active: bool, state: &str, default: impl FnOnce() -> Option<Color>) -> Option<Color> {
+        let own = self.root_variables.get(&format!("--modern-ui-editor-tab-{state}-foreground")).cloned();
+        if group_active {
+            return own.or_else(default);
         }
-        self.color("foreground").map(|foreground| foreground.transparent(0.5))
+        self.root_variables.get(&format!("--modern-ui-editor-tab-unfocused-{state}-foreground")).cloned().or(own).or_else(default)
+    }
+
+    /// `color` do ícone (`::before`), do nome e da descrição de um rótulo de aba: o do `.tab-label`. O rótulo com a decoração
+    /// de arquivo (`.monaco-decoration-itemColor`, `decoration_color`) fica de fora das regras de `tabs.css` (linhas 1067 a
+    /// 1111) e o ícone, o nome e a descrição herdam a cor dela (linhas 1115 a 1119).
+    pub fn editor_tab_label_color(&self, tab: EditorTabState, decoration_color: Option<&Color>) -> Option<Color> {
+        decoration_color.cloned().or_else(|| self.editor_tab_foreground(tab))
     }
 
     /// `background-color` do `.tab-actions` de uma aba (`tabs.css`, linhas 580 a 650). O fundo só existe com o ponteiro

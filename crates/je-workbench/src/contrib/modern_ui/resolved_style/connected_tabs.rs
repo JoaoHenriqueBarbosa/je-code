@@ -24,7 +24,7 @@ use je_theme::sizes::base_sizes::{
     CORNER_RADIUS_LARGE, CORNER_RADIUS_MEDIUM, CORNER_RADIUS_SMALL, SPACING_SIZE160, SPACING_SIZE20, SPACING_SIZE200, SPACING_SIZE240, SPACING_SIZE280, SPACING_SIZE40, SPACING_SIZE60, STROKE_THICKNESS,
 };
 
-use super::{BoxEdges, ClassList, EditorTabState, ModernUiStyle, css_rgb};
+use super::{BoxEdges, ClassList, CornerRadii, EditorTabState, ModernUiStyle, css_rgb};
 use crate::browser::parts::editor::multi_editor_tabs_control::{
     ModernSpacing, StrokeSide, TabBoxContext, TabFillStrokeInput, TabStrokeColor, high_contrast_connected_tab_fill_stroke,
 };
@@ -312,37 +312,65 @@ impl<'a> ModernUiStyle<'a> {
             // contorno fechado das demais abas em alto contraste é do `high_contrast_connected_tab_fill_stroke`.
             return (tab.has("active") && !tab.has("connected-tab-upper-row")).then(Color::transparent_color);
         }
+        self.connected_tab_fill_border_color(tab, StrokeSide::Top)
+    }
+
+    /// `--modern-ui-editor-tab-hover-border` e `--modern-ui-editor-tab-unfocused-hover-border` (`tabs.css`, linhas 47 e 48):
+    /// `transparent` sem o participante de tema, e a do grupo sem foco é um alias da outra.
+    fn tab_hover_border(&self, group_active: bool) -> Color {
+        let hover = self.declared("--modern-ui-editor-tab-hover-border");
+        let color = if group_active { hover } else { self.declared("--modern-ui-editor-tab-unfocused-hover-border").or(hover) };
+        color.unwrap_or_else(Color::transparent_color)
+    }
+
+    /// `border-<lado>-color` do `.tab-fill` de uma aba conectada fora do alto contraste: a cascata de todas as regras que
+    /// pintam a borda do preenchimento, aplicadas da menor para a maior especificidade (e, no empate, da ordem de carga: o
+    /// `connectedEditorTabs.css` vem antes do `tabs.css`, na ordem dos `import`s de `modernUI.contribution.ts`). `None` é a
+    /// cor `currentColor` (a variável da regra não existe). Sob `.hc-black` e `.hc-light` vale o
+    /// `high_contrast_connected_tab_fill_stroke`.
+    fn connected_tab_fill_border_color(&self, tab: &TabElement, side: StrokeSide) -> Option<Color> {
         let (active, selected, upper_row) = (tab.has("active"), tab.has("selected"), tab.has("connected-tab-upper-row"));
         let (tab_border_top, dirty_border_top, multi_selected) = (tab.has("tab-border-top"), tab.has("dirty-border-top"), tab.has("multi-selected"));
-        // `--modern-ui-connected-tab-top-accent` da aba (linha 755).
+        let top = matches!(side, StrokeSide::Top);
+        // `--modern-ui-connected-tab-top-accent` da aba (`connectedEditorTabs.css`, linha 755).
         let accent = if dirty_border_top { tab.dirty_border_top_color.clone() } else { None };
-        // Linhas 797 a 800: a pílula de cima da aba ativa com várias seleções.
-        if active && upper_row && multi_selected {
-            return accent.or_else(|| tab.border_top_color.clone()).or_else(|| self.color("contrastActiveBorder"));
+        // `tabs.css`, linha 156: o traço de `--modern-ui-editor-tab-border` nos quatro lados.
+        let mut color = Some(self.editor_tab_border());
+        // `tabs.css`, linhas 459 a 467: o traço da aba selecionada com `.tab-border-top` é `tab.selectedBorderTop` nos quatro
+        // lados (`--tab-border-top-color` com `!important` no próprio preenchimento).
+        if selected && !active && tab_border_top {
+            color = self.color("tab.selectedBorderTop");
+        }
+        // `connectedEditorTabs.css`, linhas 330 e 710: a aba ativa e a pílula de cima têm o contorno transparente (a aresta
+        // da aba ativa desenha o traço).
+        if active || upper_row {
+            color = Some(Color::transparent_color());
+        }
+        // `tabs.css`, linhas 387 a 397: o sublinhado de `:hover` da aba inativa sem seleção (o `tabs.css` carrega depois do
+        // `connectedEditorTabs.css`, então vence a linha 710 no empate de especificidade).
+        if tab.hovered && !active && !selected && matches!(side, StrokeSide::Bottom) {
+            color = Some(self.tab_hover_border(tab.group_active));
         }
         // Linha 771: o acento sujo pinta a borda de cima da pílula de cima e das abas inativas.
-        if dirty_border_top && (upper_row || !active) {
-            return accent;
+        if dirty_border_top && (upper_row || !active) && top {
+            color = accent.clone();
         }
-        if active {
-            // Linhas 338 a 344: só a pílula de cima pinta o acento explícito; a aba ativa comum tem a borda transparente
-            // (linha 330) e o `.tab-connected-edge` desenha o topo.
-            if upper_row && tab_border_top {
-                let suffix = if tab.group_active { "active-border-top" } else { "unfocused-active-border-top" };
-                return Some(self.tab_custom(suffix).unwrap_or_else(Color::transparent_color));
-            }
-            return Some(Color::transparent_color());
+        // Linhas 240 a 246: as abas inativas comuns (sem seleção e fora da pílula de cima) não têm contorno, e a regra tem mais
+        // especificidade que a do acento sujo (o acento fica no gradiente de fundo).
+        if !selected && !active && !upper_row {
+            color = Some(Color::transparent_color());
         }
-        // Linha 710: a pílula de cima tem o contorno transparente.
-        if upper_row {
-            return Some(Color::transparent_color());
+        // Linhas 338 a 344: só a pílula de cima ativa pinta o acento explícito de cima.
+        if active && upper_row && tab_border_top && !dirty_border_top && top {
+            let suffix = if tab.group_active { "active-border-top" } else { "unfocused-active-border-top" };
+            color = Some(self.tab_custom(suffix).unwrap_or_else(Color::transparent_color));
         }
-        if selected {
-            // `tabs.css`, linhas 459 a 467: o traço de cima da aba selecionada é `tab.selectedBorderTop`.
-            return if tab_border_top { self.color("tab.selectedBorderTop") } else { Some(self.editor_tab_border()) };
+        // Linhas 797 a 800: a pílula de cima da aba ativa com várias seleções pinta os quatro lados.
+        if active && upper_row && multi_selected {
+            let border = tab.border_top_color.clone().or_else(|| self.color("contrastActiveBorder"));
+            color = if top { accent.or(border) } else { border };
         }
-        // Linhas 240 a 246: as abas inativas não têm contorno.
-        Some(Color::transparent_color())
+        color
     }
 
     /// `--modern-ui-editor-tab-border` (`tabs.css`, linha 41, e o participante de `tab.border`).
@@ -485,6 +513,57 @@ impl<'a> ModernUiStyle<'a> {
         let stroke = self.size(STROKE_THICKNESS);
         let bottom = if self.connected_tabs() && tab.has("active") { 0.0 } else { stroke };
         Some(BoxEdges { top: stroke, right: stroke, bottom, left: stroke })
+    }
+}
+
+/// A caixa do `.sticky-tabs-background` dentro do `.monaco-scrollable-element`: os deslocamentos de cima e de baixo
+/// (`None` é `auto`), a altura calculada e a largura do traço de baixo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StickyTabsBackgroundBox {
+    pub top: f64,
+    pub bottom: Option<f64>,
+    pub height: f64,
+    pub border_bottom_width: f64,
+}
+
+impl<'a> ModernUiStyle<'a> {
+    /// A caixa do `.sticky-tabs-background` (`tabs.css`, linhas 741 a 750, e `connectedEditorTabs.css`, linhas 277 a 282).
+    /// `tabs.css` o posiciona em `top: 0` com a altura da aba (`editor_group_tab_height`); nas abas conectadas a máscara
+    /// ocupa a altura toda do contêiner de rolagem (`scrollable_height`, `bottom: 0` e `height: auto`) e o traço de baixo
+    /// (`border-bottom` com `box-sizing: border-box`) é o separador sob as abas fixadas, então a máscara cobre o
+    /// preenchimento que rola por baixo sem deixar vão com o separador da fileira.
+    pub fn sticky_tabs_background_box(&self, scrollable_height: f64, editor_group_tab_height: f64) -> StickyTabsBackgroundBox {
+        if self.connected_tabs() {
+            return StickyTabsBackgroundBox { top: 0.0, bottom: Some(0.0), height: scrollable_height, border_bottom_width: self.size(STROKE_THICKNESS) };
+        }
+        StickyTabsBackgroundBox { top: 0.0, bottom: None, height: editor_group_tab_height, border_bottom_width: 0.0 }
+    }
+
+    /// `border-radius` do `.tab-actions` (`tabs.css`, linhas 515 e 533, e `connectedEditorTabs.css`, linhas 492, 496 e 849 a
+    /// 851): o canto do lado de fora da aba tem o raio pequeno; na aba ativa conectada o canto de cima do lado de fora usa
+    /// `--modern-ui-connected-tab-radius` (o raio médio, ou o pequeno sem ele) e a pílula de cima ativa volta ao raio pequeno nos
+    /// quatro cantos. `None` sem o `.modern-ui-tabs`.
+    pub fn tab_actions_border_radii(&self, tab: &TabElement) -> Option<CornerRadii> {
+        if !self.has("modern-ui-tabs") {
+            return None;
+        }
+        let small = self.size(CORNER_RADIUS_SMALL);
+        let left = tab.has("tab-actions-left");
+        if !(self.connected_tabs() && tab.has("active")) {
+            return Some(if left { CornerRadii(small, 0.0, 0.0, small) } else { CornerRadii(0.0, small, small, 0.0) });
+        }
+        if tab.has("connected-tab-upper-row") {
+            return Some(CornerRadii::uniform(small));
+        }
+        // `var(--vscode-cornerRadius-medium, var(--vscode-cornerRadius-small))`.
+        let radius = get_size_registry().resolve_default_size(CORNER_RADIUS_MEDIUM, self.theme).map_or(small, |size| size.value);
+        Some(if left { CornerRadii(radius, 0.0, 0.0, 0.0) } else { CornerRadii(0.0, radius, 0.0, 0.0) })
+    }
+
+    /// `justify-content` do `.actions-container` do `.tab-actions` (`connectedEditorTabs.css`, linhas 499 a 501): `center` nas
+    /// abas conectadas, que centra o botão na ranhura de 24px. `None` fora delas, em que nenhuma regra do Modern UI o declara.
+    pub fn tab_actions_container_justify_content(&self) -> Option<&'static str> {
+        self.connected_tabs().then_some("center")
     }
 
     /// As variáveis de tamanho que as regras da aba leem (`--vscode-spacing-*`, `--vscode-strokeThickness` e os raios), com
@@ -654,22 +733,17 @@ impl<'a> ModernUiStyle<'a> {
 
     /// `border-<lado>-color` do `.tab-fill` de uma aba conectada, como o `getComputedStyle` devolve (`rgb(...)`, `rgba(...)`).
     /// Em alto contraste vale a cascata de `high_contrast_connected_tab_fill_stroke` (a aba ativa fora da linha de cima tem o
-    /// contorno transparente, L330, e o `.tab-connected-edge` desenha o traço); fora dele, o topo é o de
-    /// [`ModernUiStyle::connected_tab_fill_border_top_color`] e os demais lados são transparentes, menos o da aba selecionada
-    /// inativa, que usa `--modern-ui-editor-tab-border` (`tabs.css`, linhas 459 a 467). `None` fora das abas conectadas e quando a
-    /// cor é `currentColor` (a variável do tema não existe).
+    /// contorno transparente, L330, e o `.tab-connected-edge` desenha o traço); fora dele valem todas as regras que pintam a
+    /// borda do preenchimento, em cada lado (ver `connected_tab_fill_border_color`: o traço da aba, o da selecionada, o
+    /// sublinhado do `:hover`, o acento sujo, a pílula de cima e a ativa com várias seleções). `None` fora das abas
+    /// conectadas e quando a cor é `currentColor` (a variável do tema não existe).
     pub fn tab_fill_border_color(&self, tab: &TabElement, side: StrokeSide, placement: TabRowPlacement) -> Option<String> {
         if !self.connected_tabs() {
             return None;
         }
         let (active, selected, upper_row) = (tab.has("active"), tab.has("selected"), tab.has("connected-tab-upper-row"));
         if !self.high_contrast() {
-            let color = match side {
-                StrokeSide::Top => self.connected_tab_fill_border_top_color(tab),
-                _ if selected && !active && !upper_row && !tab.has("dirty-border-top") => Some(self.editor_tab_border()),
-                _ => Some(Color::transparent_color()),
-            };
-            return color.as_ref().map(css_rgb);
+            return self.connected_tab_fill_border_color(tab, side).as_ref().map(css_rgb);
         }
         if active && !upper_row {
             return Some(css_rgb(&Color::transparent_color()));
