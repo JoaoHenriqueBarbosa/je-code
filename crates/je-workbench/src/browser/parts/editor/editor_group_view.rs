@@ -8,10 +8,16 @@
 //! Divergências:
 //! - **Sem DOM.** O `element` é um nó do `je-ui` (o que o grid precisa para posicionar a vista). O título
 //!   (`EditorTitleControl`), a barra de progresso, o `Watermark`, a barra de ferramentas e o menu de contexto do grupo vazio,
-//!   as classes CSS (`locked`, `empty`, `active`), `updateStyles`, o telemetria de `editorOpened`, o `trackFocus`, os
-//!   toques e cliques do contêiner e `setBoundarySashes` são pintura ou entrada do DOM e vêm com a renderização nativa. Toda
-//!   chamada ao `titleControl` (`openEditor`, `closeEditor`, `moveEditor`, `pinEditor`, `stickEditor`...) some, e com ela as
-//!   opções de atualização do título (`skipTitleUpdate`, `preserveWindowOrder`).
+//!   o telemetria de `editorOpened`, o `trackFocus`, os toques e cliques do contêiner e `setBoundarySashes` são pintura ou
+//!   entrada do DOM e vêm com a renderização nativa. Toda chamada ao `titleControl` (`openEditor`, `closeEditor`,
+//!   `moveEditor`, `pinEditor`, `stickEditor`...) some, e com ela as opções de atualização do título (`skipTitleUpdate`,
+//!   `preserveWindowOrder`).
+//! - **Classes e estilos** (`classList` e `style` do `element`, do `titleContainer` e do `editorContainer`) são
+//!   [`ElementStyle`], que o desenho nativo lê: `updateContainer` (`empty`, `active`, `inactive`, `max-height-478px`),
+//!   `updateTitleContainer` (`tabs`, `show-file-icons`) e `updateStyles` (as cores de `EDITOR_GROUP_EMPTY_BACKGROUND`,
+//!   `EDITOR_GROUP_HEADER_*` e `editorBackground`, o `--title-border-bottom-color` e o `--title-border-bottom-width`). O
+//!   `Themable` é o `IThemeService` lido do `InstantiationService` (sem ele o grupo não pinta cores) e `getColor` é o texto
+//!   CSS da cor do tema vigente.
 //! - **O painel de editor** (`EditorPanes`) é o registro lógico do editor visível de [`editor_panes`](super::editor_panes): o
 //!   `activeEditorPane` devolve o painel lógico (a entrada atribuída, as opções e o id registrado), `onDidActiveEditorChange`
 //!   e `onDidOpenEditorFail` disparam como no original, e as restrições de tamanho do painel (`minimumWidth` e companhia)
@@ -49,7 +55,7 @@
 //!   (`id_of`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::{Rc, Weak};
 
 use je_base::async_::{RunOnceWorker, async_fn, promises};
@@ -59,6 +65,7 @@ use je_base::lifecycle::{DisposableId, DisposableStore, IDisposable, id_of};
 use je_base::nls::localize;
 use je_base::promise::{DeferredPromise, Promise};
 use je_base::uri::URI;
+use je_editor::services::theme_service::{IThemeService, I_THEME_SERVICE};
 use je_instantiation::InstantiationService;
 use je_platform::actions::actions::{MenuChangeEvent, MenuId};
 use je_platform::contextkey::contextkey::{IContextKeyService, IContextKeyServiceTarget, IScopedContextKeyService};
@@ -78,6 +85,10 @@ use crate::common::editor::editor_group_model::{
     SerializedEditorGroupModel, is_group_editor_close_event,
 };
 use crate::common::editor::editor_input::CanMove;
+use crate::common::theme::{
+    CONTRAST_BORDER, EDITOR_BACKGROUND, EDITOR_GROUP_EMPTY_BACKGROUND, EDITOR_GROUP_HEADER_BORDER, EDITOR_GROUP_HEADER_NO_TABS_BACKGROUND,
+    EDITOR_GROUP_HEADER_TABS_BACKGROUND,
+};
 use crate::common::editor::{
     ActiveEditorChangeEvent, CloseDirection, EditorCloseContext, EditorCloseEvent, EditorIdentifier, EditorInputCapabilities, EditorInputOrUntyped, EditorInputRef,
     EditorInputWithOptions, EditorOpenContext, EditorResourceAccessor, EditorResourceAccessorOptions, EditorWillMoveEvent, EditorWillOpenEvent, EditorsOrder,
@@ -85,7 +96,7 @@ use crate::common::editor::{
 };
 use crate::services::editor::editor_groups_service::{
     ActiveEditorActions, CloseAllEditorsOptions, CloseEditorOptions, CloseEditorsFilter, CloseEditorsTarget, EditorPartOptions, EditorPartOptionsChangeEvent,
-    EditorReplacement, GroupsOrder, IEditorGroup, ToolbarActions,
+    EditorReplacement, GroupsOrder, IEditorGroup, ShowTabs, ToolbarActions,
 };
 use crate::services::files_configuration::files_configuration_service::{AutoSaveMode, I_FILES_CONFIGURATION_SERVICE, ResourceOrEditor};
 use crate::services::layout::layout_service::WindowId;
@@ -222,6 +233,49 @@ fn js_slice<T: Clone>(items: &[T], start: i64, end: Option<i64>) -> Vec<T> {
     items[from as usize..to as usize].to_vec()
 }
 
+/// O que o original escreve no `style` e na `classList` de um elemento do grupo (`element`, `titleContainer`,
+/// `editorContainer`), para o desenho nativo ler.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElementStyle {
+    /// `classList`.
+    pub classes: BTreeSet<String>,
+    /// `style.backgroundColor` (vazio é a ausência da declaração).
+    pub background_color: String,
+    /// `style.setProperty(name, value)`: as variáveis CSS.
+    pub properties: BTreeMap<String, String>,
+}
+
+impl ElementStyle {
+    /// `classList.contains(name)`.
+    pub fn has_class(&self, name: &str) -> bool {
+        self.classes.contains(name)
+    }
+
+    /// `style.getPropertyValue(name)`.
+    pub fn property(&self, name: &str) -> Option<&str> {
+        self.properties.get(name).map(String::as_str)
+    }
+
+    /// `classList.toggle(name, force)`.
+    fn toggle_class(&mut self, name: &str, force: bool) {
+        if force {
+            self.classes.insert(name.to_string());
+        } else {
+            self.classes.remove(name);
+        }
+    }
+}
+
+/// Os elementos de estilo do grupo.
+#[derive(Clone, Debug, Default)]
+struct GroupStyle {
+    container: ElementStyle,
+    title: ElementStyle,
+    editor: ElementStyle,
+    /// O valor de reserva de `var(--modern-ui-editor-title-background, <reserva>)`.
+    title_background_fallback: String,
+}
+
 /// `EditorGroupView`.
 pub struct EditorGroupView {
     ui: Ui,
@@ -235,6 +289,9 @@ pub struct EditorGroupView {
     index: Cell<usize>,
     active: Cell<Option<bool>>,
     last_layout: Cell<Option<LastLayout>>,
+    content_right_inset: Cell<f64>,
+    style: RefCell<GroupStyle>,
+    theme_service: Option<Rc<dyn IThemeService>>,
     disposed: Cell<bool>,
     scoped_context_key_service: Rc<dyn IScopedContextKeyService>,
     map_editor_to_pending_confirmation: RefCell<HashMap<DisposableId, Promise<bool>>>,
@@ -288,6 +345,9 @@ impl EditorGroupView {
         // Editor pane
         let editor_panes = disposables.add_rc(EditorPanes::new(model.id(), instantiation_service.clone()));
 
+        // O `Themable`: o tema vigente é opcional (sem o serviço o grupo não pinta cores)
+        let theme_service = instantiation_service.invoke_function(|accessor| accessor.try_get(I_THEME_SERVICE));
+
         let this = Rc::new_cyclic(|this: &Weak<EditorGroupView>| {
             let worker_group = this.clone();
             Self {
@@ -302,6 +362,9 @@ impl EditorGroupView {
                 index: Cell::new(index),
                 active: Cell::new(None),
                 last_layout: Cell::new(None),
+                content_right_inset: Cell::new(0.0),
+                style: RefCell::new(GroupStyle::default()),
+                theme_service,
                 disposed: Cell::new(false),
                 scoped_context_key_service,
                 map_editor_to_pending_confirmation: RefCell::new(HashMap::new()),
@@ -328,6 +391,10 @@ impl EditorGroupView {
                 this: this.clone(),
             }
         });
+
+        // Update containers
+        this.update_title_container();
+        this.update_container();
 
         // Restore editors if provided, and signal restored once editors have restored
         let restore_editors_promise = this.restore_editors(copy_from.as_ref()).unwrap_or_else(|| Promise::resolved(()));
@@ -414,6 +481,18 @@ impl EditorGroupView {
             }
         }));
 
+        // Theme Changes (`Themable.onThemeChange`)
+        if let Some(theme_service) = &self.theme_service {
+            self.disposables.add(theme_service.on_did_color_theme_change().listen({
+                let weak = weak.clone();
+                move |_| {
+                    if let Some(group) = weak.upgrade() {
+                        group.update_styles();
+                    }
+                }
+            }));
+        }
+
         // Focus
         self.disposables.add(self.on_did_focus.event().listen(move |_| {
             if let Some(group) = weak.upgrade() {
@@ -432,7 +511,8 @@ impl EditorGroupView {
         };
 
         match e.kind {
-            // `onDidOpenEditor` só publicava telemetria e atualizava o contêiner (pintura)
+            // `onDidOpenEditor` publica telemetria (pintura, fora do porte) e atualiza o contêiner
+            GroupModelChangeKind::EditorOpen => self.update_container(),
             GroupModelChangeKind::EditorClose => {
                 if is_group_editor_close_event(e)
                     && let (Some(index), Some(context), Some(sticky)) = (e.editor_index, e.context, e.sticky)
@@ -469,6 +549,9 @@ impl EditorGroupView {
                 editor.dispose();
             }
         }
+
+        // Update container
+        self.update_container();
 
         // Event
         self.on_did_close_editor.fire(EditorCloseEvent { group_id: self.id(), editor: editor.clone(), context, index: editor_index, sticky });
@@ -528,6 +611,12 @@ impl EditorGroupView {
     }
 
     fn on_did_change_editor_part_options(&self, event: &EditorPartOptionsChangeEvent) {
+        // Title container
+        self.update_title_container();
+
+        // Styles
+        self.update_styles();
+
         // Pin preview editor once user disables preview
         if event.old_part_options.enable_preview
             && !event.new_part_options.enable_preview
@@ -612,13 +701,130 @@ impl EditorGroupView {
             let _ = self.set_selection(&active_editor, Vec::new());
         }
 
+        // Update container
+        {
+            let mut style = self.style.borrow_mut();
+            style.container.toggle_class("active", is_active);
+            style.container.toggle_class("inactive", !is_active);
+        }
+
+        // Update styles
+        self.update_styles();
+
         // Update model
         self.model.set_active(None /* entire group got active */);
     }
 
-    /// `layout(width, height, top, left)`: guarda o tamanho (o título e o painel de editor, que o repartem, vêm depois).
+    /// `layout(width, height, top, left)`: guarda o tamanho e escreve o que o original escreve no título (a classe
+    /// `max-height-478px` e `--title-border-bottom-width`). O título e o painel de editor, que repartem a altura, vêm depois.
     fn do_layout(&self, width: f64, height: f64) {
         self.last_layout.set(Some(LastLayout { width, height }));
+
+        let content_width = (width - self.content_right_inset.get()).max(0.0);
+        let mut style = self.style.borrow_mut();
+        style.container.toggle_class("max-height-478px", height <= 478.0);
+        style.title.properties.insert("--title-border-bottom-width".to_string(), format!("{content_width}px"));
+    }
+
+    /// `setContentRightInset(inset)`: reserva à direita do cabeçalho e do painel de editor, com as abas de largura total.
+    pub fn set_content_right_inset(&self, inset: f64) {
+        let next = inset.round().max(0.0);
+        if next == self.content_right_inset.get() {
+            return;
+        }
+
+        self.content_right_inset.set(next);
+        self.relayout();
+    }
+
+    /// `relayout()`.
+    pub fn relayout(&self) {
+        if let Some(last_layout) = self.last_layout.get() {
+            self.do_layout(last_layout.width, last_layout.height);
+        }
+    }
+
+    /// `titleContainer`: as classes e o estilo que o grupo escreve nele.
+    pub fn title_container_style(&self) -> ElementStyle {
+        self.style.borrow().title.clone()
+    }
+
+    /// `element`: as classes e o estilo que o grupo escreve nele.
+    pub fn container_style(&self) -> ElementStyle {
+        self.style.borrow().container.clone()
+    }
+
+    /// `editorContainer`: o estilo que o grupo escreve nele.
+    pub fn editor_container_style(&self) -> ElementStyle {
+        self.style.borrow().editor.clone()
+    }
+
+    /// O fundo computado do título: `var(--modern-ui-editor-title-background, <reserva>)` vale a variável quando a raiz a
+    /// define (`tabs.css`, com `.modern-ui-tabs`: `--modern-ui-editor-title-background: var(--vscode-editor-background)`) e
+    /// a reserva (a cor do cabeçalho do tema) senão.
+    pub fn computed_title_background(&self, modern_ui_title_background: Option<&str>) -> String {
+        modern_ui_title_background.map_or_else(|| self.style.borrow().title_background_fallback.clone(), str::to_string)
+    }
+
+    /// `Themable.getColor(id)`: a cor do tema vigente em CSS, `None` quando o tema não a define.
+    fn get_color(&self, id: &str) -> Option<String> {
+        let theme = self.theme_service.as_ref()?.get_color_theme();
+        theme.get_color(id, None).map(|color| color.to_string())
+    }
+
+    /// `updateTitleContainer()`.
+    fn update_title_container(&self) {
+        let Some(groups_view) = self.groups_view.upgrade() else { return };
+        let options = groups_view.part_options();
+
+        let mut style = self.style.borrow_mut();
+        style.title.toggle_class("tabs", matches!(options.show_tabs, ShowTabs::Multiple));
+        style.title.toggle_class("show-file-icons", options.show_icons);
+    }
+
+    /// `updateContainer()`: o grupo vazio ganha a classe `empty` (o `tabIndex` e o `aria-label` são do DOM).
+    fn update_container(&self) {
+        let is_empty = self.editor_count() == 0;
+        self.style.borrow_mut().container.toggle_class("empty", is_empty);
+
+        // Update styles
+        self.update_styles();
+    }
+
+    /// `updateStyles()`.
+    fn update_styles(&self) {
+        let is_empty = self.editor_count() == 0;
+        let show_tabs = self.groups_view.upgrade().map(|groups_view| groups_view.part_options().show_tabs);
+        let multiple_tabs = matches!(show_tabs, Some(ShowTabs::Multiple));
+
+        let empty_background = self.get_color(EDITOR_GROUP_EMPTY_BACKGROUND);
+        let border_color = self.get_color(EDITOR_GROUP_HEADER_BORDER).or_else(|| self.get_color(CONTRAST_BORDER));
+        let title_background = self.get_color(if multiple_tabs { EDITOR_GROUP_HEADER_TABS_BACKGROUND } else { EDITOR_GROUP_HEADER_NO_TABS_BACKGROUND });
+        let editor_background = self.get_color(EDITOR_BACKGROUND);
+
+        let mut style = self.style.borrow_mut();
+
+        // Container
+        style.container.background_color = if is_empty { empty_background.unwrap_or_default() } else { String::new() };
+
+        // Title control
+        match border_color {
+            Some(border_color) if !is_empty => {
+                style.title.toggle_class("title-border-bottom", true);
+                style.title.properties.insert("--title-border-bottom-color".to_string(), border_color);
+            }
+            _ => {
+                style.title.toggle_class("title-border-bottom", false);
+                style.title.properties.remove("--title-border-bottom-color");
+            }
+        }
+
+        let title_background = title_background.unwrap_or_else(|| "transparent".to_string());
+        style.title.background_color = format!("var(--modern-ui-editor-title-background, {title_background})");
+        style.title_background_fallback = title_background;
+
+        // Editor container
+        style.editor.background_color = editor_background.unwrap_or_default();
     }
 
     // endregion

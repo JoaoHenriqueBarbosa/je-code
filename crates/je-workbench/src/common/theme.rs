@@ -1,5 +1,5 @@
-//! Porte de `src/vs/workbench/common/theme.ts`, no que as notificações usam: os identificadores das cores
-//! `NOTIFICATIONS_*`.
+//! Porte de `src/vs/workbench/common/theme.ts`, no que as notificações e o grupo de editor usam: os identificadores das cores
+//! `NOTIFICATIONS_*` e `EDITOR_GROUP_*`.
 //!
 //! Divergências:
 //! - **Registro.** Os `registerColor(...)` do original não são código de execução aqui: o `je-theme` gera o registro de
@@ -41,3 +41,33 @@ pub const NOTIFICATIONS_WARNING_ICON_FOREGROUND: &str = "notificationsWarningIco
 
 /// `notificationsInfoIcon.foreground`.
 pub const NOTIFICATIONS_INFO_ICON_FOREGROUND: &str = "notificationsInfoIcon.foreground";
+
+/// `editorPane.background`.
+pub const EDITOR_PANE_BACKGROUND: &str = "editorPane.background";
+
+/// `editorGroup.emptyBackground`.
+pub const EDITOR_GROUP_EMPTY_BACKGROUND: &str = "editorGroup.emptyBackground";
+
+/// `editorGroup.focusedEmptyBorder`.
+pub const EDITOR_GROUP_FOCUSED_EMPTY_BORDER: &str = "editorGroup.focusedEmptyBorder";
+
+/// `editorGroupHeader.tabsBackground`.
+pub const EDITOR_GROUP_HEADER_TABS_BACKGROUND: &str = "editorGroupHeader.tabsBackground";
+
+/// `editorGroupHeader.connectedTabsBackground`.
+pub const EDITOR_GROUP_HEADER_CONNECTED_TABS_BACKGROUND: &str = "editorGroupHeader.connectedTabsBackground";
+
+/// `editorGroupHeader.tabsBorder`.
+pub const EDITOR_GROUP_HEADER_TABS_BORDER: &str = "editorGroupHeader.tabsBorder";
+
+/// `editorGroupHeader.noTabsBackground`.
+pub const EDITOR_GROUP_HEADER_NO_TABS_BACKGROUND: &str = "editorGroupHeader.noTabsBackground";
+
+/// `editorGroupHeader.border`.
+pub const EDITOR_GROUP_HEADER_BORDER: &str = "editorGroupHeader.border";
+
+/// `editor.background` (`editorBackground` de `colorRegistry.ts`).
+pub const EDITOR_BACKGROUND: &str = "editor.background";
+
+/// `contrastBorder` (`colorRegistry.ts`).
+pub const CONTRAST_BORDER: &str = "contrastBorder";

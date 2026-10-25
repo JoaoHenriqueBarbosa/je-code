@@ -2893,6 +2893,690 @@ pub fn compute_last_in_row(tab_tops: &[f64]) -> Vec<bool> {
     last_in_row
 }
 
+//#region Regras de tamanho das abas (`multieditortabscontrol.css`)
+
+/// A especificidade do prefixo comum das regras de aba (`.monaco-workbench .part.editor > .content
+/// .editor-group-container > .title .tabs-container > .tab`): oito classes. Cada regra soma as classes e pseudoclasses
+/// que acrescenta (`:not(X)` e `:is(...)` contam como o argumento).
+const TAB_SPECIFICITY: u32 = 8;
+/// O prefixo das regras com `.title > .tabs-and-actions-container.wrapping .tabs-container > .tab`: dez classes.
+const WRAPPING_TAB_SPECIFICITY: u32 = 10;
+/// `.tab > .tab-actions { width: 28px }`.
+const TAB_ACTIONS_WIDTH: f64 = 28.0;
+/// `.tab-fade-hider { width: 5px }`.
+const TAB_FADE_HIDER_WIDTH: f64 = 5.0;
+/// O `min-width` das abas `shrink` e `fixed` com a ação à esquerda, e a largura da aba `sticky-shrink`.
+const TAB_SHRINK_MIN_WIDTH: f64 = 80.0;
+/// `.tab.sizing-fixed { min-width: ...50px; max-width: ...160px }`: os padrões de `--tab-sizing-fixed-min-width` e
+/// `--tab-sizing-fixed-max-width`.
+pub const TAB_FIXED_DEFAULT_MIN_WIDTH: f64 = 50.0;
+pub const TAB_FIXED_DEFAULT_MAX_WIDTH: f64 = 160.0;
+
+/// Um comprimento de `width`, `min-width` ou `max-width`: `auto` (ou `none`), pixels ou `fit-content`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CssLength {
+    Auto,
+    Px(f64),
+    FitContent,
+}
+
+/// As classes que os seletores de `multieditortabscontrol.css` testam em uma aba e no contêiner dela.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TabCssClasses {
+    pub sizing_fit: bool,
+    pub sizing_shrink: bool,
+    pub sizing_fixed: bool,
+    pub has_icon: bool,
+    pub sticky: bool,
+    pub sticky_compact: bool,
+    pub sticky_shrink: bool,
+    pub dirty: bool,
+    pub dirty_border_top: bool,
+    pub tab_actions_left: bool,
+    pub tab_actions_right: bool,
+    pub close_action_off: bool,
+    pub last_in_row: bool,
+    pub last_tab: bool,
+    /// `:last-child`: a última aba é o último filho só sem o botão de nova aba (escondido ou não) depois dela.
+    pub last_child: bool,
+    /// `tabs-and-actions-container.wrapping`.
+    pub wrapping: bool,
+    /// `tabs-and-actions-container.has-add-tab`.
+    pub has_add_tab: bool,
+    /// `tabs-container.disable-sticky-tabs`.
+    pub disable_sticky_tabs: bool,
+}
+
+impl TabCssClasses {
+    /// As classes de uma aba, lidas do estado que o controle escreveu nela e nos contêineres.
+    pub fn of(state: &TabState, container: &TabsContainerView) -> Self {
+        Self {
+            sizing_fit: state.sizing_fit,
+            sizing_shrink: state.sizing_shrink,
+            sizing_fixed: state.sizing_fixed,
+            has_icon: state.has_icon,
+            sticky: state.sticky,
+            sticky_compact: state.sticky_compact,
+            sticky_shrink: state.sticky_shrink,
+            dirty: state.dirty,
+            dirty_border_top: state.dirty_border_top,
+            tab_actions_left: state.tab_actions_left,
+            tab_actions_right: state.tab_actions_right,
+            close_action_off: state.close_action_off,
+            last_in_row: state.last_in_row,
+            last_tab: state.last_tab,
+            last_child: state.last_tab && container.add_tab == AddTabPresence::None,
+            wrapping: container.wrapping,
+            has_add_tab: container.has_add_tab,
+            disable_sticky_tabs: container.disable_sticky_tabs,
+        }
+    }
+
+    fn has_sizing(&self) -> bool {
+        self.sizing_fit || self.sizing_shrink || self.sizing_fixed
+    }
+
+    fn sizing_shrink_or_fixed(&self) -> bool {
+        self.sizing_shrink || self.sizing_fixed
+    }
+
+    /// `.tab.close-action-off:not(.dirty) > .tab-actions`, `.tab.sticky-compact > .tab-actions` e
+    /// `.tab.close-action-off.dirty-border-top > .tab-actions` (`display: none`).
+    pub fn tab_actions_hidden(&self) -> bool {
+        self.sticky_compact || (self.close_action_off && (!self.dirty || self.dirty_border_top))
+    }
+
+    /// `.tab-fade-hider` mostrado: `display: flex` nas abas `shrink` e `fixed` com a ação à esquerda ou desligada.
+    pub fn tab_fade_hider_shown(&self) -> bool {
+        self.sizing_shrink_or_fixed() && (self.tab_actions_left || self.close_action_off)
+    }
+}
+
+/// O que as regras leem além das classes: as variáveis CSS que o controle escreve, as classes da raiz e o que as regras de
+/// porcentagem medem.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabSizingParams {
+    /// `--tab-sizing-fixed-min-width` e `--tab-sizing-fixed-max-width`.
+    pub fixed_min_width: f64,
+    pub fixed_max_width: f64,
+    /// `--tab-sizing-current-width` (`fixed` com o mouse sobre as abas).
+    pub current_width: Option<f64>,
+    /// `--tab-sizing-fit-width`.
+    pub fit_width: Option<f64>,
+    /// `.modern-ui-tabs` na raiz: as regras de tamanho de `tabs.css`.
+    pub modern_ui_tabs: bool,
+    /// `.modern-ui-connected-editor-tabs` na raiz: a regra de `connectedEditorTabs.css` que tira o `min-width` das abas.
+    pub connected_editor_tabs: bool,
+    /// `100%` nas regras de `max-width`: a largura do contêiner de abas.
+    pub tabs_container_width: f64,
+    /// `--last-tab-margin-right`, `--last-tab-add-tab-width` e `--modern-ui-tab-terminal-gutter`.
+    pub last_tab_margin_right: f64,
+    pub last_tab_add_tab_width: f64,
+    pub terminal_gutter: f64,
+}
+
+impl Default for TabSizingParams {
+    fn default() -> Self {
+        Self {
+            fixed_min_width: TAB_FIXED_DEFAULT_MIN_WIDTH,
+            fixed_max_width: TAB_FIXED_DEFAULT_MAX_WIDTH,
+            current_width: None,
+            fit_width: None,
+            modern_ui_tabs: false,
+            connected_editor_tabs: false,
+            tabs_container_width: 0.0,
+            last_tab_margin_right: 0.0,
+            last_tab_add_tab_width: 0.0,
+            terminal_gutter: 0.0,
+        }
+    }
+}
+
+/// O valor vigente de uma propriedade depois da cascata: `!important` vence, depois a especificidade, depois a ordem de
+/// declaração (cada regra é declarada na ordem do arquivo, e a mais tardia vence o empate).
+struct Cascade<T: Copy> {
+    winner: Option<(bool, u32, T)>,
+}
+
+impl<T: Copy> Cascade<T> {
+    fn new() -> Self {
+        Self { winner: None }
+    }
+
+    fn declare(&mut self, specificity: u32, value: T) {
+        self.declare_flagged(false, specificity, value);
+    }
+
+    fn declare_important(&mut self, specificity: u32, value: T) {
+        self.declare_flagged(true, specificity, value);
+    }
+
+    fn declare_flagged(&mut self, important: bool, specificity: u32, value: T) {
+        let wins = self.winner.is_none_or(|(current_important, current_specificity, _)| (important, specificity) >= (current_important, current_specificity));
+        if wins {
+            self.winner = Some((important, specificity, value));
+        }
+    }
+
+    fn value_or(&self, initial: T) -> T {
+        self.winner.map_or(initial, |(_, _, value)| value)
+    }
+}
+
+/// O que a cascata de `multieditortabscontrol.css` decide para a caixa de uma aba (um item flex da linha de abas).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabBoxStyle {
+    /// `width`, `None` é `auto`.
+    pub width: Option<f64>,
+    pub min_width: CssLength,
+    pub max_width: CssLength,
+    pub flex_grow: f64,
+    pub flex_shrink: f64,
+    /// `flex-basis`, `None` é `auto`.
+    pub flex_basis: Option<f64>,
+    pub padding_left: f64,
+    pub padding_right: f64,
+    /// `margin-inline-end`.
+    pub margin_end: f64,
+    /// `position: sticky` (as abas compactas e `shrink` fixadas, a não ser com `disable-sticky-tabs`).
+    pub position_sticky: bool,
+}
+
+/// A cascata de `multieditortabscontrol.css` (com as regras de tamanho de `tabs.css` e `connectedEditorTabs.css` quando a raiz
+/// as liga) para a caixa de uma aba. Cada propriedade lista as regras na ordem do arquivo, com a especificidade do seletor.
+pub fn tab_box_style(classes: &TabCssClasses, params: &TabSizingParams) -> TabBoxStyle {
+    let c = classes;
+    let modern = params.modern_ui_tabs;
+    let sticky_compact_or_shrink = c.has_sizing() && (c.sticky_compact || c.sticky_shrink);
+    let modern_fit = modern && c.sizing_fit && !c.sticky_compact;
+    let modern_connected_sizing = modern && params.connected_editor_tabs && c.sizing_shrink_or_fixed() && !c.sticky_compact;
+    let fixed_current = params.current_width.unwrap_or(params.fixed_min_width);
+    let fixed_current_max = params.current_width.unwrap_or(params.fixed_max_width);
+
+    // width
+    let mut width = Cascade::<Option<f64>>::new();
+    if c.sizing_fit {
+        width.declare(TAB_SPECIFICITY + 1, Some(TabWidth::FIT)); // L211
+    }
+    if c.has_sizing() && c.sticky_compact {
+        width.declare(TAB_SPECIFICITY + 2, Some(TabWidth::COMPACT)); // L257
+    }
+    if c.has_sizing() && c.sticky_shrink {
+        width.declare(TAB_SPECIFICITY + 2, Some(TabWidth::SHRINK)); // L267
+    }
+    if modern_fit {
+        width.declare_important(TAB_SPECIFICITY - 1, params.fit_width); // tabs.css: `var(--tab-sizing-fit-width, auto) !important`
+    }
+    if modern && c.sticky_compact {
+        width.declare_important(TAB_SPECIFICITY - 2, Some(MODERN_UI_COMPACT_PINNED_TAB_WIDTH)); // tabs.css: `.tab.sticky-compact`
+    }
+
+    // min-width
+    let mut min_width = Cascade::<CssLength>::new();
+    if c.sizing_fit {
+        min_width.declare(TAB_SPECIFICITY + 1, CssLength::FitContent); // L211
+    }
+    if c.sizing_fixed {
+        min_width.declare(TAB_SPECIFICITY + 1, CssLength::Px(fixed_current)); // L217
+    }
+    if c.sizing_fixed && c.last_in_row {
+        min_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(fixed_current - 1.0)); // L223
+    }
+    if c.sizing_shrink {
+        min_width.declare(TAB_SPECIFICITY + 1, CssLength::Px(TAB_SHRINK_MIN_WIDTH)); // L234
+    }
+    if c.has_sizing() && c.sticky_compact {
+        min_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(TabWidth::COMPACT)); // L257
+    }
+    if c.has_sizing() && c.sticky_shrink {
+        min_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(TabWidth::SHRINK)); // L267
+    }
+    if c.sizing_shrink_or_fixed() && c.tab_actions_left {
+        min_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(TAB_SHRINK_MIN_WIDTH)); // L312
+    }
+    if modern_connected_sizing {
+        // connectedEditorTabs.css: `min-width: max(80px, var(--tab-sizing-fixed-min-width, 0px))`, 13 classes
+        min_width.declare(13, CssLength::Px(TAB_SHRINK_MIN_WIDTH.max(params.fixed_min_width)));
+    }
+    if modern_fit {
+        min_width.declare_important(TAB_SPECIFICITY - 1, CssLength::Px(0.0)); // tabs.css: `min-width: 0 !important`
+    }
+    if modern && c.sticky_compact {
+        min_width.declare_important(TAB_SPECIFICITY - 2, CssLength::Px(MODERN_UI_COMPACT_PINNED_TAB_WIDTH));
+    }
+
+    // max-width
+    let mut max_width = Cascade::<CssLength>::new();
+    if c.sizing_fixed {
+        max_width.declare(TAB_SPECIFICITY + 1, CssLength::Px(fixed_current_max)); // L217
+    }
+    if c.sizing_shrink {
+        max_width.declare(TAB_SPECIFICITY + 1, CssLength::FitContent); // L234
+    }
+    if c.has_sizing() && c.sticky_compact {
+        max_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(TabWidth::COMPACT)); // L257
+    }
+    if c.has_sizing() && c.sticky_shrink {
+        max_width.declare(TAB_SPECIFICITY + 2, CssLength::Px(TabWidth::SHRINK)); // L267
+    }
+    if modern && c.wrapping && c.sizing_fit && !c.sticky_compact {
+        // tabs.css: `max-width: 100%` e, na última aba, `max(80px, 100% - margem - botão - vão)`
+        max_width.declare(15, CssLength::Px(params.tabs_container_width));
+        if c.last_tab {
+            let room = params.tabs_container_width - params.last_tab_margin_right - params.last_tab_add_tab_width - params.terminal_gutter;
+            max_width.declare(17, CssLength::Px(TabWidth::SHRINK.max(room)));
+        }
+    }
+    if modern && c.sticky_compact {
+        max_width.declare_important(TAB_SPECIFICITY - 2, CssLength::Px(MODERN_UI_COMPACT_PINNED_TAB_WIDTH));
+    }
+
+    // flex-grow, flex-shrink e flex-basis (`flex: 1 0 0` é a abreviação das três)
+    let mut flex_grow = Cascade::<f64>::new();
+    let mut flex_shrink = Cascade::<f64>::new();
+    let mut flex_basis = Cascade::<Option<f64>>::new();
+    if c.sizing_fit {
+        flex_shrink.declare(TAB_SPECIFICITY + 1, 0.0); // L215
+    }
+    if c.sizing_fixed {
+        flex_grow.declare(TAB_SPECIFICITY + 1, 1.0); // L220: `flex: 1 0 0`
+        flex_shrink.declare(TAB_SPECIFICITY + 1, 0.0);
+        flex_basis.declare(TAB_SPECIFICITY + 1, Some(0.0));
+    }
+    if c.wrapping && c.sizing_fit && c.last_in_row && !c.last_child {
+        flex_grow.declare(WRAPPING_TAB_SPECIFICITY + 3, 1.0); // L231
+    }
+    if c.sizing_shrink {
+        flex_basis.declare(TAB_SPECIFICITY + 1, Some(0.0)); // L234
+        flex_grow.declare(TAB_SPECIFICITY + 1, 1.0);
+    }
+    if sticky_compact_or_shrink {
+        flex_basis.declare(TAB_SPECIFICITY + 2, Some(0.0)); // L241
+        flex_grow.declare(TAB_SPECIFICITY + 2, 0.0);
+    }
+    if modern_fit {
+        // tabs.css: `flex: 0 0 auto !important`
+        flex_grow.declare_important(TAB_SPECIFICITY - 1, 0.0);
+        flex_shrink.declare_important(TAB_SPECIFICITY - 1, 0.0);
+        flex_basis.declare_important(TAB_SPECIFICITY - 1, None);
+    }
+    if modern && c.sticky_compact {
+        // tabs.css: `flex: 0 0 28px !important`
+        flex_grow.declare_important(TAB_SPECIFICITY - 2, 0.0);
+        flex_shrink.declare_important(TAB_SPECIFICITY - 2, 0.0);
+        flex_basis.declare_important(TAB_SPECIFICITY - 2, Some(MODERN_UI_COMPACT_PINNED_TAB_WIDTH));
+    }
+
+    // padding-left
+    let mut padding_left = Cascade::<f64>::new();
+    padding_left.declare(TAB_SPECIFICITY, 10.0); // L122
+    if c.sizing_shrink_or_fixed() && c.has_icon && c.tab_actions_right {
+        padding_left.declare(TAB_SPECIFICITY + 3, 5.0); // L204
+    }
+    if c.sizing_shrink_or_fixed() && c.has_icon && c.close_action_off && !c.sticky_compact {
+        padding_left.declare(TAB_SPECIFICITY + 4, 5.0); // L205
+    }
+    if c.tab_actions_left && !c.sticky_compact {
+        padding_left.declare(TAB_SPECIFICITY + 2, 0.0); // L318
+    }
+
+    // padding-right (sem regra base: o inicial é 0)
+    let mut padding_right = Cascade::<f64>::new();
+    if c.sizing_shrink_or_fixed() && c.tab_actions_left {
+        padding_right.declare(TAB_SPECIFICITY + 2, 5.0); // L312
+    }
+    if c.tab_actions_left && !c.sticky_compact {
+        padding_right.declare(TAB_SPECIFICITY + 2, 10.0); // L318
+    }
+    if c.close_action_off {
+        padding_right.declare(TAB_SPECIFICITY + 1, 10.0); // L529
+    }
+    if c.sizing_shrink_or_fixed() && c.close_action_off && !c.sticky_compact {
+        padding_right.declare(TAB_SPECIFICITY + 3, 5.0); // L533
+    }
+    if c.close_action_off && c.dirty && !c.dirty_border_top && !c.sticky_compact {
+        padding_right.declare(TAB_SPECIFICITY + 4, 0.0); // L542
+    }
+    if modern && c.sticky_compact {
+        padding_left.declare_important(TAB_SPECIFICITY - 2, 0.0);
+        padding_right.declare_important(TAB_SPECIFICITY - 2, 0.0);
+    }
+
+    // margin-inline-end (a margem do ombro e do vão do terminal, que as regras do Modern UI acrescentam, é de quem mede)
+    let mut margin_end = Cascade::<f64>::new();
+    if c.wrapping && c.last_tab {
+        margin_end.declare(WRAPPING_TAB_SPECIFICITY + 1, params.last_tab_margin_right); // L192
+    }
+    if c.wrapping && c.has_add_tab && c.last_tab {
+        margin_end.declare(WRAPPING_TAB_SPECIFICITY + 2, 0.0); // L196
+    }
+
+    TabBoxStyle {
+        width: width.value_or(None),
+        min_width: min_width.value_or(CssLength::Auto),
+        max_width: max_width.value_or(CssLength::Auto),
+        flex_grow: flex_grow.value_or(0.0),
+        flex_shrink: flex_shrink.value_or(1.0),
+        flex_basis: flex_basis.value_or(None),
+        padding_left: padding_left.value_or(0.0),
+        padding_right: padding_right.value_or(0.0),
+        margin_end: margin_end.value_or(0.0),
+        position_sticky: sticky_compact_or_shrink && !c.disable_sticky_tabs,
+    }
+}
+
+/// A largura intrínseca (`max-content`, a caixa de borda) de uma aba: os paddings, o rótulo (com o `padding-right` de 5px das
+/// abas `shrink` e a margem do selo das `shrink` e `fixed`), a coluna das ações (28px, a não ser com `display: none`) e o
+/// `tab-fade-hider` (5px). `label_width` é a largura do conteúdo do rótulo (ícone e nome) e `has_badge` diz se o rótulo tem
+/// o selo da decoração.
+pub fn tab_intrinsic_width(classes: &TabCssClasses, style: &TabBoxStyle, label_width: f64, has_badge: bool, modern_ui_tabs: bool) -> f64 {
+    let c = classes;
+
+    // `.tab.sizing-shrink:not(.tab-actions-left):not(.close-action-off) .tab-label { padding-right: 5px }` (12 classes) contra
+    // `tabs.css` (`.tab:is(.sizing-shrink, .sizing-fixed) > .tab-label { padding-right: 0 }`, 11 classes)
+    let mut label_padding_right = Cascade::<f64>::new();
+    if c.sizing_shrink && !c.tab_actions_left && !c.close_action_off {
+        label_padding_right.declare(TAB_SPECIFICITY + 4, 5.0);
+    }
+    if modern_ui_tabs && c.sizing_shrink_or_fixed() {
+        label_padding_right.declare(TAB_SPECIFICITY + 3, 0.0);
+    }
+    let badge_margin = if has_badge && c.sizing_shrink_or_fixed() { 5.0 } else { 0.0 };
+    let actions = if c.tab_actions_hidden() { 0.0 } else { TAB_ACTIONS_WIDTH };
+    let fade_hider = if c.tab_fade_hider_shown() { TAB_FADE_HIDER_WIDTH } else { 0.0 };
+
+    style.padding_left + style.padding_right + label_width + label_padding_right.value_or(0.0) + badge_margin + actions + fade_hider
+}
+
+/// Um item flex da linha de abas: a caixa da aba e a largura intrínseca (`max-content`, que é também o `min-content`: o
+/// rótulo não quebra, `white-space: nowrap`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabFlexItem {
+    pub style: TabBoxStyle,
+    pub content_width: f64,
+}
+
+/// O resultado de [`layout_tabs_row`]: a largura (caixa de borda) e a linha de cada item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabsRowLayout {
+    pub widths: Vec<f64>,
+    /// A linha de cada item (`0` sem quebra).
+    pub lines: Vec<usize>,
+}
+
+/// Um item com as medidas já resolvidas (§9.2 e §9.7 de CSS Flexbox).
+struct ResolvedFlexItem {
+    base: f64,
+    hypothetical: f64,
+    min: f64,
+    max: f64,
+    grow: f64,
+    shrink: f64,
+    margin: f64,
+}
+
+impl ResolvedFlexItem {
+    fn new(item: &TabFlexItem) -> Self {
+        let style = &item.style;
+        let content = item.content_width;
+        let padding = style.padding_left + style.padding_right;
+        let min = match style.min_width {
+            // O mínimo automático de um item flex: o menor entre o tamanho do conteúdo e o `width` especificado.
+            CssLength::Auto => content.min(style.width.unwrap_or(content)),
+            CssLength::Px(value) => value,
+            CssLength::FitContent => content,
+        }
+        .max(padding);
+        let max = match style.max_width {
+            CssLength::Auto => f64::INFINITY,
+            CssLength::Px(value) => value,
+            CssLength::FitContent => content,
+        };
+        let base = style.flex_basis.or(style.width).unwrap_or(content).max(padding);
+        let hypothetical = base.min(max).max(min);
+
+        Self { base, hypothetical, min, max, grow: style.flex_grow, shrink: style.flex_shrink, margin: style.margin_end }
+    }
+
+    fn outer_hypothetical(&self) -> f64 {
+        self.hypothetical + self.margin
+    }
+}
+
+/// `resolve the flexible lengths` (CSS Flexbox §9.7) de uma linha de itens.
+fn resolve_flexible_lengths(items: &[ResolvedFlexItem], line: &[usize], available: f64) -> Vec<f64> {
+    let growing = line.iter().map(|&index| items[index].outer_hypothetical()).sum::<f64>() < available;
+    let factor = |item: &ResolvedFlexItem| if growing { item.grow } else { item.shrink };
+    let mut target = vec![0.0; line.len()];
+    let mut frozen = vec![false; line.len()];
+
+    // Size inflexible items.
+    for (slot, &index) in line.iter().enumerate() {
+        let item = &items[index];
+        let inflexible = factor(item) == 0.0 || (growing && item.base > item.hypothetical) || (!growing && item.base < item.hypothetical);
+        if inflexible {
+            frozen[slot] = true;
+            target[slot] = item.hypothetical;
+        }
+    }
+
+    let used_space = |target: &[f64], frozen: &[bool]| -> f64 {
+        line.iter().enumerate().map(|(slot, &index)| (if frozen[slot] { target[slot] } else { items[index].base }) + items[index].margin).sum()
+    };
+    let initial_free_space = available - used_space(&target, &frozen);
+
+    // Loop: distribute the free space and freeze the items that violate a min or max constraint.
+    while frozen.iter().any(|is_frozen| !is_frozen) {
+        let unfrozen: Vec<usize> = (0..line.len()).filter(|&slot| !frozen[slot]).collect();
+        let sum_factors: f64 = unfrozen.iter().map(|&slot| factor(&items[line[slot]])).sum();
+        let mut remaining = available - used_space(&target, &frozen);
+        if sum_factors < 1.0 {
+            let scaled = initial_free_space * sum_factors;
+            if scaled.abs() < remaining.abs() {
+                remaining = scaled;
+            }
+        }
+
+        let sum_scaled_shrink: f64 = unfrozen.iter().map(|&slot| items[line[slot]].shrink * items[line[slot]].base).sum();
+        for &slot in &unfrozen {
+            let item = &items[line[slot]];
+            target[slot] = if remaining == 0.0 {
+                item.base
+            } else if growing {
+                item.base + remaining * item.grow / sum_factors
+            } else if sum_scaled_shrink > 0.0 {
+                item.base - remaining.abs() * (item.shrink * item.base) / sum_scaled_shrink
+            } else {
+                item.base
+            };
+        }
+
+        // Fix min/max violations.
+        let mut violations = vec![0.0; line.len()];
+        let mut total_violation = 0.0;
+        for &slot in &unfrozen {
+            let item = &items[line[slot]];
+            let clamped = target[slot].min(item.max).max(item.min);
+            violations[slot] = clamped - target[slot];
+            total_violation += violations[slot];
+            target[slot] = clamped;
+        }
+        for &slot in &unfrozen {
+            if total_violation == 0.0 || (total_violation > 0.0 && violations[slot] > 0.0) || (total_violation < 0.0 && violations[slot] < 0.0) {
+                frozen[slot] = true;
+            }
+        }
+    }
+
+    target
+}
+
+/// A linha de abas como contêiner flex (`.tabs-container { display: flex }`, com `flex-wrap: wrap` quando
+/// `tabs-and-actions-container.wrapping`): quebra os itens em linhas pela largura hipotética e resolve os comprimentos
+/// flexíveis de cada linha. `container_width` é a largura interna do contêiner de abas.
+pub fn layout_tabs_row(items: &[TabFlexItem], container_width: f64, wrap: bool) -> TabsRowLayout {
+    let resolved: Vec<ResolvedFlexItem> = items.iter().map(ResolvedFlexItem::new).collect();
+
+    // Collect flex items into flex lines.
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    for (index, item) in resolved.iter().enumerate() {
+        let outer = item.outer_hypothetical();
+        let starts_new_line = match lines.last() {
+            None => true,
+            Some(line) => wrap && line.iter().map(|&other| resolved[other].outer_hypothetical()).sum::<f64>() + outer > container_width,
+        };
+        if starts_new_line {
+            lines.push(Vec::new());
+        }
+        if let Some(line) = lines.last_mut() {
+            line.push(index);
+        }
+    }
+
+    let mut widths = vec![0.0; items.len()];
+    let mut line_of = vec![0usize; items.len()];
+    for (line_index, line) in lines.iter().enumerate() {
+        let targets = resolve_flexible_lengths(&resolved, line, container_width);
+        for (slot, &index) in line.iter().enumerate() {
+            widths[index] = targets[slot];
+            line_of[index] = line_index;
+        }
+    }
+
+    TabsRowLayout { widths, lines: line_of }
+}
+
+/// O que os seletores da opacidade de `.tab > .tab-actions .action-label` testam: as classes da raiz, do grupo e do contêiner,
+/// e o estado da aba (`:hover` e `:focus`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TabActionLabelContext {
+    /// `.modern-ui-tabs` na raiz.
+    pub modern_ui_tabs: bool,
+    /// `.modern-ui-connected-editor-tabs` na raiz.
+    pub connected_editor_tabs: bool,
+    /// `.hc-black` ou `.hc-light` na raiz.
+    pub high_contrast: bool,
+    /// `.editor-group-container.active`.
+    pub group_active: bool,
+    /// `.title.tab-actions-reserve-space`.
+    pub title_reserves_action_space: bool,
+    pub active: bool,
+    pub dirty: bool,
+    pub sticky: bool,
+    pub pinned_action_off: bool,
+    pub close_action_off: bool,
+    /// `.tab:hover`.
+    pub hovered: bool,
+    /// `.tab:focus-within`.
+    pub focus_within: bool,
+    /// `.action-label:focus`.
+    pub label_focused: bool,
+}
+
+/// A opacidade computada do `.action-label` de uma aba: a cascata das regras de `multieditortabscontrol.css` (linhas 480 a
+/// 525), de `tabs.css` (linhas 709 a 992) e de `connectedEditorTabs.css` (linhas 550 a 566), cada uma com a especificidade do
+/// seletor (as classes e pseudoclasses; `:not(X)` e `:is(...)` contam como o argumento) e `!important` onde a regra o traz.
+pub fn tab_action_label_opacity(context: &TabActionLabelContext) -> f64 {
+    let c = context;
+    let mut opacity = Cascade::<f64>::new();
+    let sticky_with_pin_action = c.sticky && !c.pinned_action_off;
+
+    // multieditortabscontrol.css, L480: opacidade 1 no grupo ativo
+    if c.group_active {
+        if c.active {
+            opacity.declare(12, 1.0);
+        }
+        if c.label_focused {
+            opacity.declare(12, 1.0);
+        }
+        if c.hovered {
+            opacity.declare(12, 1.0);
+        }
+        if c.active && c.hovered {
+            opacity.declare(13, 1.0);
+        }
+        if sticky_with_pin_action {
+            opacity.declare(13, 1.0);
+        }
+        if c.dirty {
+            opacity.declare(12, 1.0);
+        }
+    }
+
+    // multieditortabscontrol.css, L515: a ação esmaecida (grupo inativo)
+    if c.active {
+        opacity.declare(11, 0.5);
+    }
+    if c.active && c.hovered {
+        opacity.declare(12, 0.5);
+    }
+    if c.dirty {
+        opacity.declare(11, 0.5);
+    }
+    if sticky_with_pin_action {
+        opacity.declare(12, 0.5);
+    }
+    if c.hovered {
+        opacity.declare(11, 0.5);
+    }
+
+    // multieditortabscontrol.css, L523
+    opacity.declare(10, 0.0);
+
+    if c.modern_ui_tabs {
+        let at_rest = !c.active && !c.dirty && !c.sticky && !c.hovered;
+
+        // tabs.css, L709 e L714
+        if at_rest && !c.label_focused {
+            opacity.declare(16, 0.0);
+        }
+        if c.dirty {
+            opacity.declare(12, 1.0);
+        }
+        if sticky_with_pin_action {
+            opacity.declare(13, 1.0);
+        }
+        if !c.close_action_off && c.hovered {
+            opacity.declare(13, 1.0);
+        }
+        if c.label_focused {
+            opacity.declare(12, 1.0);
+        }
+
+        if c.high_contrast {
+            // tabs.css, L977 e L984 (`!important`)
+            if !c.connected_editor_tabs && !c.title_reserves_action_space && at_rest && !c.label_focused {
+                opacity.declare_important(17, 0.0);
+            }
+            if c.dirty || sticky_with_pin_action || c.hovered || c.label_focused {
+                opacity.declare_important(17, 1.0);
+            }
+
+            // tabs.css, L988 e L992: a aba ativa conectada, por grupo ativo ou inativo
+            if c.connected_editor_tabs && c.active && !c.close_action_off {
+                opacity.declare(17, if c.group_active { 1.0 } else { 0.5 });
+            }
+        }
+
+        // connectedEditorTabs.css, L551 e L560
+        if c.connected_editor_tabs {
+            if at_rest && !c.focus_within {
+                opacity.declare(18, 0.0);
+            }
+            if c.active && !c.close_action_off {
+                opacity.declare(15, 1.0);
+            }
+            if c.dirty {
+                opacity.declare(14, 1.0);
+            }
+        }
+    }
+
+    opacity.value_or(0.0)
+}
+
+//#endregion
+
 impl MultiEditorTabsControlState {
     /// `getFitTabWidths`.
     fn fit_tab_widths(&self, indexes: &[usize], measurer: &dyn TabsMeasurer) -> Vec<f64> {
