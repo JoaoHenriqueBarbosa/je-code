@@ -3583,4 +3583,40 @@ fn only_the_bottom_wrapped_row_joins_the_document_and_upper_row_resets_when_unwr
     );
 }
 
+#[test]
+fn connected_fixed_widths_settle_wrapping_on_the_first_scheduled_layout() {
+    let mut fx = Fixture::new();
+    fx.connected_group();
+    fx.close_all_editors();
+    // Seis entradas de nome `.markdown` com recursos distintos, a primeira ativa.
+    for index in 0..6usize {
+        let concrete = fx.suite.disposables.add_rc(NamedInput::new(".markdown", &format!("/path/file{index}.markdown"), None));
+        let editor: EditorInputRef = concrete;
+        open!(fx.model, editor, index: index as i64, pinned: true, active: index == 0);
+    }
+    fx.open_editors();
+    fx.update_options(|options| {
+        options.wrap_tabs = true;
+        options.tab_sizing = TabSizing::Fixed;
+        options.tab_sizing_fixed_min_width = 50.0;
+        options.tab_sizing_fixed_max_width = 160.0;
+        options.editor_actions_location = EditorActionsLocation::Hidden;
+        options.has_icons = false;
+    });
+
+    let mut unstable_layouts = Vec::new();
+    for width in [230.0, 360.0, 400.0, 420.0, 440.0, 460.0, 480.0] {
+        fx.layout(width);
+        let first_pass = (fx.geometry().tops, fx.state.container.wrapping);
+        fx.layout(width);
+        let second_pass = (fx.geometry().tops, fx.state.container.wrapping);
+        if first_pass != second_pass {
+            unstable_layouts.push((width as i64, first_pass, second_pass));
+        }
+    }
+    let widths_within_configured_range = fx.geometry().widths.iter().all(|width| (50.0..=160.0).contains(width));
+
+    assert_eq!((unstable_layouts, widths_within_configured_range), (Vec::new(), true));
+}
+
 //#endregion

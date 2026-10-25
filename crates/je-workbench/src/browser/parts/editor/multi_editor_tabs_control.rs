@@ -2615,7 +2615,7 @@ pub enum AddTabPresence {
 }
 
 /// O que `doLayoutTabs` lê dos irmãos desta barra de abas no elemento pai.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabsBarContext {
     /// Esta é a primeira barra de abas visível do pai (`firstVisibleTabBar === tabsAndActionsContainer`).
     pub top_tab_bar: bool,
@@ -2623,6 +2623,13 @@ pub struct TabsBarContext {
     pub two_tab_bars: bool,
     /// Alguma outra barra de abas do pai tem a classe `wrapping`.
     pub other_bar_wrapping: bool,
+}
+
+impl Default for TabsBarContext {
+    /// Um grupo com uma única barra: ela é a primeira barra visível do pai, sem `two-tab-bars` e sem irmã quebrada.
+    fn default() -> Self {
+        Self { top_tab_bar: true, two_tab_bars: false, other_bar_wrapping: false }
+    }
 }
 
 /// O `connectedTabOverflowEdge`: posição, variáveis e classes.
