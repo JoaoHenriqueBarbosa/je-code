@@ -1055,7 +1055,7 @@ mod recorded_sessions {
                 &[
                     "\x1b[?25l\x1b[93mf\x1b[97m\x1b[2m\x1b[3makecommand\x1b[3;4H\x1b[?25h",
                     "\x1b[m",
-                    "\x1b[93mfo\x1b[9X",
+                    "\x1b[93m\x08fo\x1b[9X",
                     "\x1b[m",
                     "\x1b[?25l\x1b[93m\x1b[3;3Hfoo\x1b[?25h",
                     "\x1b[m",
@@ -1073,7 +1073,7 @@ mod recorded_sessions {
             replay_events(&t, &["\x1b[?25l\x1b[93me\x1b[97m\x1b[2m\x1b[3mcho \"hello world\"\x1b[3;4H\x1b[?25h", "\x1b[m"]);
             t.assert_prompt_input("e|[cho \"hello world\"]").await;
 
-            replay_events(&t, &["\x1b[?25l\x1b[93mec\x1b[97m\x1b[2m\x1b[3mho \"hello world\"\x1b[3;5H\x1b[?25h", "\x1b[m"]);
+            replay_events(&t, &["\x1b[?25l\x1b[93m\x08ec\x1b[97m\x1b[2m\x1b[3mho \"hello world\"\x1b[3;5H\x1b[?25h", "\x1b[m"]);
             t.assert_prompt_input("ec|[ho \"hello world\"]").await;
 
             replay_events(&t, &["\x1b[?25l\x1b[93m\x1b[3;3Hech\x1b[97m\x1b[2m\x1b[3mo \"hello world\"\x1b[3;6H\x1b[?25h", "\x1b[m"]);
@@ -1124,7 +1124,7 @@ mod recorded_sessions {
                 &[
                     "\x1b[?25l\x1b[93mG\x1b[97m\x1b[2m\x1b[3mit push\x1b[3;4H\x1b[?25h",
                     "\x1b[m",
-                    "\x1b[?25l\x1b[93mGe\x1b[97m\x1b[2m\x1b[3mt-ChildItem -Path a\x1b[3;5H\x1b[?25h",
+                    "\x1b[?25l\x1b[93m\x08Ge\x1b[97m\x1b[2m\x1b[3mt-ChildItem -Path a\x1b[3;5H\x1b[?25h",
                     "\x1b[m",
                     "\x1b[?25l\x1b[93m\x1b[3;3HGet\x1b[97m\x1b[2m\x1b[3m-ChildItem -Path a\x1b[3;6H\x1b[?25h",
                 ],
