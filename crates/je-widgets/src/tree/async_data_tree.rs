@@ -311,6 +311,11 @@ where
         this
     }
 
+    /// A árvore abstrata por baixo (para quem precisa do `Rc`, como o `Deref` não dá).
+    pub fn abstract_tree(&self) -> &Rc<AbstractTree<B::Model>> {
+        &self.tree
+    }
+
     // Eventos traduzidos
 
     /// `onDidChangeFocus`.

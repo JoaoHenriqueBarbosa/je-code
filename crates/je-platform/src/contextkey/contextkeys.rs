@@ -21,6 +21,8 @@ macro_rules! raw_keys {
     )*};
 }
 
+pub(crate) use raw_keys;
+
 fn platform<T>(f: impl FnOnce(&Platform) -> T) -> T {
     PLATFORM.with(f)
 }
