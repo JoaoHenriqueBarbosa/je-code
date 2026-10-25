@@ -471,7 +471,7 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
     progress::define_class(runner, &state.progress_reporters);
     text_editors::define_classes(runner, &state.text_objects);
     terminal::define_classes(runner, &state.terminal_objects);
-    tree_views::define_classes(runner, &state.tree_view_objects, table);
+    let tree_view_classes = tree_views::define_classes(runner, &state.tree_view_objects, table);
     quick_session::define_classes(runner, &state.quick_sessions, table);
     let theme_color = runner.define_class(ClassSpec {
         name: "ThemeColor".to_owned(),
@@ -485,9 +485,11 @@ pub fn classes(runner: &NodeRunner, state: &WindowState, table: &Rc<DisposableTa
         statics: vec![],
         parent: None,
     });
-    vec![
+    let mut classes = vec![
         ("ThemeColor".to_owned(), JsData::Handle(Rc::new(theme_color))),
         ("TerminalProfile".to_owned(), terminal::terminal_profile_class(runner)),
         ("TreeItem".to_owned(), tree_views::tree_item_class(runner)),
-    ]
+    ];
+    classes.extend(tree_view_classes);
+    classes
 }

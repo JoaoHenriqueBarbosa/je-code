@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use harness::{run_extension, Workbench};
 use je_base::buffer::VSBuffer;
+use je_base::cancellation::CancellationToken;
 use je_base::dynamic::Dynamic;
 use je_base::errors::Error;
 use je_base::lifecycle::IDisposable;
@@ -25,7 +26,8 @@ use je_base::promise::Promise;
 use je_editor::languages::StringOrMarkdown;
 use je_exthost::in_process::IMainThreadBinder;
 use je_workbench::api::common::ext_host_protocol::{
-    ExtHostContext, ExtHostTreeViewsShape, IMainContext, ItemsToRefresh, MainContext, MainThreadTreeViewsShape, RevealItemInfo, TreeChildrenBatch, TreeViewRegistrationOptions,
+    CheckboxUpdate, DataTransferDto, DataTransferItemDto, ExtHostContext, ExtHostTreeViewsShape, IMainContext, ItemsToRefresh, MainContext, MainThreadTreeViewsShape,
+    RevealItemInfo, TreeChildrenBatch, TreeViewRegistrationOptions,
 };
 use je_workbench::common::views::{IRevealOptions, IViewBadge, RevealExpand};
 
@@ -86,8 +88,60 @@ exports.activate = (context) => {
   command('t.setTitle', () => { view.title = 'Minha árvore'; view.description = 'detalhe'; view.message = 'olá'; return 'ok'; });
   command('t.reveal', async () => { await view.reveal(leaf2, { select: true, focus: true, expand: true }); return 'revealed'; });
   command('t.fire', () => { provider.changed.fire(root1); return 'fired'; });
+
+  // A visão com caixas de seleção, selo, mensagem e controlador de arrastar e soltar.
+  const box1 = new Node('box1');
+  const box2 = new Node('box2');
+  const checkboxProvider = {
+    getTreeItem: (node) => {
+      const item = new vscode.TreeItem(node.label);
+      item.id = node.label;
+      item.checkboxState = node === box1 ? vscode.TreeItemCheckboxState.Checked : { state: vscode.TreeItemCheckboxState.Unchecked, tooltip: 'marcar ' + node.label };
+      return item;
+    },
+    getChildren: (node) => (node ? [] : [box1, box2]),
+  };
+  const dnd = {
+    dragMimeTypes: ['text/plain'],
+    dropMimeTypes: ['text/plain', 'application/x-je'],
+    handleDrag(sources, dataTransfer, token) {
+      log('drag:' + sources.map((node) => node.label).join(',') + ':' + (token ? 'token' : 'sem-token'));
+      dataTransfer.set('text/plain', new vscode.DataTransferItem('arrastado:' + sources.map((node) => node.label).join(',')));
+    },
+    async handleDrop(target, dataTransfer, token) {
+      const mimes = [];
+      dataTransfer.forEach((item, mime) => mimes.push(mime));
+      const text = await dataTransfer.get('TEXT/PLAIN').asString();
+      log('drop:' + (target ? target.label : 'raiz') + ':' + text + ':' + mimes.join('|') + ':' + typeof dataTransfer.get('ausente'));
+    },
+  };
+  const checkboxView = vscode.window.createTreeView('je.checkbox', { treeDataProvider: checkboxProvider, dragAndDropController: dnd });
+  subscribe(checkboxView);
+  subscribe(checkboxView.onDidChangeCheckboxState((event) => log('checkbox:' + event.items.map(([node, state]) => node.label + '=' + state).join(','))));
+  command('t.badge', () => {
+    checkboxView.badge = { value: 3.7, tooltip: 'três pendentes' };
+    return JSON.stringify(checkboxView.badge);
+  });
+  command('t.clearBadge', () => { checkboxView.badge = undefined; return String(checkboxView.badge); });
+  command('t.markdown', () => {
+    try { checkboxView.message = new vscode.MarkdownString('**oi**'); return 'aceitou'; } catch (error) { return 'recusou'; }
+  });
+  command('t.transfer', async () => {
+    const transfer = new vscode.DataTransfer([['Text/Plain', new vscode.DataTransferItem('um')]]);
+    transfer.set('text/plain', new vscode.DataTransferItem({ n: 2 }));
+    return JSON.stringify([await transfer.get('text/plain').asString(), typeof transfer.get('x'), transfer.get('text/plain').asFile()]);
+  });
 };
 "#;
+
+/// Os tipos e os manipuladores de arrastar e soltar que o registro anunciou.
+#[derive(Debug, Default, PartialEq)]
+struct DragAndDrop {
+    drag_mime_types: Vec<String>,
+    drop_mime_types: Vec<String>,
+    has_handle_drag: bool,
+    has_handle_drop: bool,
+}
 
 /// O que o dublê guarda do registro de cada visão.
 #[derive(Debug, PartialEq)]
@@ -95,6 +149,13 @@ struct Registration {
     view_id: String,
     show_collapse_all: bool,
     can_select_many: bool,
+    drag_and_drop: DragAndDrop,
+}
+
+impl Registration {
+    fn plain(view_id: &str, show_collapse_all: bool) -> Registration {
+        Registration { view_id: view_id.to_owned(), show_collapse_all, can_select_many: false, drag_and_drop: DragAndDrop::default() }
+    }
 }
 
 /// O papel da thread principal: o `MainThreadTreeViewsShape` que anota os pedidos.
@@ -105,6 +166,7 @@ struct Renderer {
     refreshes: RefCell<Vec<(String, Option<Vec<String>>)>>,
     titles: RefCell<Vec<(String, String, Option<String>)>>,
     messages: RefCell<Vec<(String, String)>>,
+    badges: RefCell<Vec<(String, Option<IViewBadge>)>>,
 }
 
 impl Renderer {
@@ -116,6 +178,7 @@ impl Renderer {
             refreshes: RefCell::new(Vec::new()),
             titles: RefCell::new(Vec::new()),
             messages: RefCell::new(Vec::new()),
+            badges: RefCell::new(Vec::new()),
         })
     }
 
@@ -130,7 +193,17 @@ impl IDisposable for Renderer {
 
 impl MainThreadTreeViewsShape for Renderer {
     fn rpc_register_tree_view_data_provider(&self, tree_view_id: &str, options: TreeViewRegistrationOptions) -> Promise<()> {
-        self.registrations.borrow_mut().push(Registration { view_id: tree_view_id.to_owned(), show_collapse_all: options.show_collapse_all, can_select_many: options.can_select_many });
+        self.registrations.borrow_mut().push(Registration {
+            view_id: tree_view_id.to_owned(),
+            show_collapse_all: options.show_collapse_all,
+            can_select_many: options.can_select_many,
+            drag_and_drop: DragAndDrop {
+                drag_mime_types: options.drag_mime_types,
+                drop_mime_types: options.drop_mime_types,
+                has_handle_drag: options.has_handle_drag,
+                has_handle_drop: options.has_handle_drop,
+            },
+        });
         Promise::resolved(())
     }
 
@@ -157,7 +230,9 @@ impl MainThreadTreeViewsShape for Renderer {
         self.titles.borrow_mut().push((tree_view_id.to_owned(), title.to_owned(), description.map(str::to_owned)));
     }
 
-    fn rpc_set_badge(&self, _tree_view_id: &str, _badge: Option<IViewBadge>) {}
+    fn rpc_set_badge(&self, tree_view_id: &str, badge: Option<IViewBadge>) {
+        self.badges.borrow_mut().push((tree_view_id.to_owned(), badge));
+    }
 
     fn rpc_resolve_drop_file_data(&self, _destination_view_id: &str, _request_id: f64, _data_item_id: &str) -> Promise<VSBuffer> {
         Promise::rejected(Error::new("o dublê não arrasta arquivos"))
@@ -241,8 +316,19 @@ fn create_tree_view_and_register_tree_data_provider_reach_the_main_thread() {
         assert_eq!(
             *renderer.registrations.borrow(),
             vec![
-                Registration { view_id: "je.tree".to_owned(), show_collapse_all: true, can_select_many: false },
-                Registration { view_id: "je.plain".to_owned(), show_collapse_all: false, can_select_many: false },
+                Registration::plain("je.tree", true),
+                Registration::plain("je.plain", false),
+                Registration {
+                    view_id: "je.checkbox".to_owned(),
+                    show_collapse_all: false,
+                    can_select_many: false,
+                    drag_and_drop: DragAndDrop {
+                        drag_mime_types: vec!["text/plain".to_owned()],
+                        drop_mime_types: vec!["text/plain".to_owned(), "application/x-je".to_owned()],
+                        has_handle_drag: true,
+                        has_handle_drop: true,
+                    },
+                },
             ]
         );
     });
@@ -311,5 +397,90 @@ fn on_did_change_tree_data_refreshes_the_changed_item() {
         std::thread::sleep(Duration::from_millis(300));
         workbench.pump();
         assert_eq!(*renderer.refreshes.borrow(), vec![("je.tree".to_owned(), Some(vec!["1/root1".to_owned()]))]);
+    });
+}
+
+/// `handle|isChecked|tooltip` da caixa de seleção de cada item de um lote de filhos.
+fn checkboxes(workbench: &Workbench, renderer: &Renderer, view_id: &str) -> Vec<String> {
+    let result = renderer.ext_host().rpc_get_children(view_id, None);
+    workbench.pump();
+    let Some(Ok(Some(batches))) = result.result() else { panic!("$getChildren não assentou com filhos") };
+    batches[0]
+        .children
+        .iter()
+        .map(|child| match &child.checkbox {
+            Some(checkbox) => format!("{}|{}|{}", child.handle, checkbox.is_checked, checkbox.tooltip.clone().unwrap_or_default()),
+            None => format!("{}|sem caixa", child.handle),
+        })
+        .collect()
+}
+
+#[test]
+fn checkbox_state_reaches_the_main_thread_and_changes_come_back_as_an_event() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        assert_eq!(
+            checkboxes(workbench, &renderer, "je.checkbox"),
+            vec!["1/box1|true|", "1/box2|false|marcar box2"],
+            "o `checkboxState` do item vira a caixa do ITreeItem, em número ou em objeto com tooltip"
+        );
+
+        renderer.ext_host().rpc_change_checkbox_state(
+            "je.checkbox",
+            vec![CheckboxUpdate { tree_item_handle: "1/box1".to_owned(), new_state: false }, CheckboxUpdate { tree_item_handle: "1/box2".to_owned(), new_state: true }],
+        );
+        workbench.pump();
+        assert_eq!(events(workbench), r#"["checkbox:box1=0,box2=1"]"#, "onDidChangeCheckboxState entrega [elemento, TreeItemCheckboxState] com a identidade dos elementos");
+    });
+}
+
+#[test]
+fn badge_and_markdown_message_flow_to_the_main_thread() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        assert_eq!(run(workbench, "t.badge"), Dynamic::string(r#"{"value":3,"tooltip":"três pendentes"}"#), "o valor do selo é arredondado para baixo");
+        assert_eq!(run(workbench, "t.clearBadge"), Dynamic::string("undefined"));
+        assert_eq!(
+            *renderer.badges.borrow(),
+            vec![("je.checkbox".to_owned(), Some(IViewBadge { tooltip: "três pendentes".to_owned(), value: 3.0 })), ("je.checkbox".to_owned(), None)]
+        );
+
+        // A mensagem em markdown é a proposta `treeViewMarkdownMessage`: a extensão de exemplo não a declara.
+        assert_eq!(run(workbench, "t.markdown"), Dynamic::string("recusou"));
+        assert!(renderer.messages.borrow().is_empty(), "a mensagem recusada não chega à thread principal");
+    });
+}
+
+#[test]
+fn drag_and_drop_controller_runs_handlers_with_data_transfer() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, renderer| {
+        checkboxes(workbench, &renderer, "je.checkbox");
+
+        let dragged = renderer.ext_host().rpc_handle_drag("je.checkbox", vec!["1/box1".to_owned()], "operation-1", CancellationToken::None);
+        workbench.pump();
+        let Some(Ok(Some(transfer))) = dragged.result() else { panic!("$handleDrag não assentou com a transferência") };
+        let texts: Vec<(String, String)> = transfer.items.iter().map(|(mime, item)| (mime.clone(), item.as_string.clone())).collect();
+        assert_eq!(texts, vec![("text/plain".to_owned(), "arrastado:box1".to_owned())], "o item que o handleDrag pôs no DataTransfer chega como texto");
+
+        let dropped = renderer.ext_host().rpc_handle_drop(
+            "je.checkbox",
+            1.0,
+            DataTransferDto {
+                items: vec![("text/plain".to_owned(), DataTransferItemDto { id: "0".to_owned(), as_string: "carga".to_owned(), file_data: None, uri_list_data: None })],
+            },
+            Some("1/box2".to_owned()),
+            CancellationToken::None,
+            None,
+            None,
+            None,
+        );
+        workbench.pump();
+        assert!(matches!(dropped.result(), Some(Ok(()))), "$handleDrop assenta depois do handleDrop da extensão");
+        assert_eq!(events(workbench), r#"["drag:box1:token","drop:box2:carga:text/plain:undefined"]"#);
+    });
+}
+
+#[test]
+fn data_transfer_classes_are_available_to_the_extension() {
+    run_extension(EXTENSION_SOURCE, setup, |workbench, _renderer| {
+        assert_eq!(run(workbench, "t.transfer"), Dynamic::string(r#"["{\"n\":2}","undefined",null]"#), "set sobrescreve o tipo (sem diferenciar caixa), get devolve undefined se falta e asFile é undefined");
     });
 }
