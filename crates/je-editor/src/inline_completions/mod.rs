@@ -32,8 +32,19 @@
 //! - fatia 4b (ghost text pronto): `view/ghost_text_view` (`GhostTextView`, `AdditionalLinesWidget`, as decorações
 //!   inline e o realce). A `View` do editor ainda não tem porte: as view zones e o `onMouseUp` chegam pelo
 //!   `IGhostTextViewHost`. A `InlineSuggestionsView`, que junta ghost text, hints e inline edits, vem depois;
-//! - fatia 4c: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os
-//!   serviços injetados;
+//! - fatia 4c: as views e o controller. Em ordem de dependência:
+//!   - 4c-1 (pronta): a base do inline edits, em `view/inline_edits/` (`inlineEditsViewInterface`, `inlineEditWithChanges`,
+//!     `inlineEditsModel`, `theme` e `utils/` com `utils` e `flexBoxLayout`; o `towersLayout` e o `scrollToReveal` do
+//!     `longDistanceHint` seguem em `towers_layout` e `long_distance_hint`), mais o `Rect` de `core_2d` e o
+//!     `getNewLineRanges` e o `toLineEdit` de `edits/line_edit`;
+//!   - 4c-2: as views de inline edits (`inlineEditsViews/*`: inserção em linha, inserção em várias linhas, substituição
+//!     de palavras, substituição de linhas, lado a lado, exclusão, colapsada, long distance hint);
+//!   - 4c-3: o gutter indicator (`inlineEditsGutterIndicator` e as partes do gutter);
+//!   - 4c-4: a `InlineEditsView` e o producer (`inlineEditsViewProducer`);
+//!   - 4c-5: a `InlineSuggestionsView` (junta ghost text, hints e inline edits) e o hints widget
+//!     (`hintsWidget/*`, com o `StatusBarViewItem`);
+//!   - 4c-6: o controller (`inlineCompletionsController`), que implementa o `InlineCompletionsEditorHost` e os serviços
+//!     injetados;
 //! - fatia 4d: os utilitários de teste de `test/browser/utils.ts` (`GhostTextContext`,
 //!   `withAsyncTestCodeEditorAndInlineCompletionsModel`, provedor de teste) e os 28 casos de `inlineCompletions.test.ts`
 //!   do oráculo.
