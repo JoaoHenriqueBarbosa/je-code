@@ -3,7 +3,11 @@
 //!
 //! O restante da classe (o `RenderedContentHover` com as partes renderizadas, o fragmento de DOM, os
 //! ouvintes de foco, o botão de cópia por parte e a atualização de verbosidade) monta o widget em DOM, que a UI
-//! nativa troca pelos widgets, e fica para o porte deles; por isso o tipo não tem campos.
+//! nativa troca pelos widgets, e fica para o porte deles (fatia H2); por isso o tipo não tem campos. Os tipos de que o
+//! construtor depende ([`ContentHoverResult`](crate::hover::content_hover_types::ContentHoverResult),
+//! [`EditorHoverStatusBar`](crate::hover::content_hover_status_bar::EditorHoverStatusBar) e
+//! [`HoverStartSource`](crate::hover::hover_operation::HoverStartSource)) já existem; falta o
+//! `IEditorHoverRenderContext` e o `renderHoverParts` dos participantes.
 
 use crate::code_editor_widget::{CodeEditorWidget, ICodeEditor};
 use crate::cursor_common::CursorSimpleModel;

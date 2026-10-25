@@ -14,6 +14,7 @@ pub mod hover_api;
 pub mod text;
 pub mod global_pointer_move_monitor;
 pub mod sash;
+pub mod resizable;
 pub mod scrollbar;
 pub mod grid;
 pub mod list;
