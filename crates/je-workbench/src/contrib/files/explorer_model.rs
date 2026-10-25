@@ -161,6 +161,22 @@ impl IDisposable for ExplorerModel {
     }
 }
 
+/// Um `ExplorerItem` é comparado por identidade, como o objeto do original (a árvore do explorador e os mapas por item
+/// o usam como chave): dois itens são iguais só quando são o mesmo item.
+impl PartialEq for ExplorerItem {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for ExplorerItem {}
+
+impl std::hash::Hash for ExplorerItem {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::ptr::hash(self, state);
+    }
+}
+
 /// `ExplorerItem`.
 pub struct ExplorerItem {
     this: Weak<ExplorerItem>,
