@@ -44,6 +44,7 @@ use je_base::layout::{AnchorPosition, ILayoutAnchor, IRect, LayoutAnchorPosition
 use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_base::promise::Promise;
 use je_base::runtime::{TimerId, clear_timeout, queue_microtask, set_timeout};
+use je_base::uri::URI;
 
 use crate::contextview::context_view::{AnchorTarget, IContextViewCloseAnimation, IContextViewService, get_anchor_rect};
 use crate::contextview::view_element::{UiKeyEvent, ViewElement};
@@ -69,6 +70,35 @@ const DEFAULT_HEADER_HEIGHT: f64 = 36.0;
 /// O espaço vertical que o `.action-widget` reserva em volta do conteúdo: `padding: 4px` e `border: 1px` nos dois lados
 /// (`actionWidget.css`). É o que `computeActionWidgetVerticalChromeHeight` lê do estilo calculado.
 pub const ACTION_WIDGET_VERTICAL_CHROME_HEIGHT: f64 = 10.0;
+
+/// A largura da barra de rolagem vertical da lista (`verticalScrollbarSize` do `List`).
+pub const LIST_VERTICAL_SCROLLBAR_SIZE: f64 = 10.0;
+
+/// O `padding-right` da linha (`padding: 0 12px 0 6px`) e o da linha com detalhe (`padding-right: 6px`), e a margem direita
+/// que a barra de ferramentas da linha com detalhe ganha (`var(--vscode-spacing-size60, 6px)`).
+const ROW_PADDING_RIGHT: f64 = 12.0;
+const ROW_DETAIL_PADDING_RIGHT: f64 = 6.0;
+const ROW_DETAIL_TOOLBAR_MARGIN_RIGHT: f64 = 6.0;
+/// A altura da linha do título com detalhe (`.title { line-height: 14px }`), a do detalhe (`line-height: 14px`) e a da barra
+/// de ferramentas (ícone de 16px mais o enchimento de 3px de cada lado do `.action-label`).
+const DETAIL_TITLE_LINE_HEIGHT: f64 = 14.0;
+const DETAIL_LINE_HEIGHT: f64 = 14.0;
+const TOOLBAR_HEIGHT: f64 = 22.0;
+
+/// A geometria calculada da barra de ferramentas de uma linha: o `getComputedStyle` e os retângulos que o teste confere.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowToolbarGeometry {
+    pub row_height: f64,
+    /// `detail.getBoundingClientRect().top` (zero para a linha sem detalhe: o topo da linha).
+    pub detail_top: f64,
+    /// `getComputedStyle(toolbar).display` e `.visibility`.
+    pub display: &'static str,
+    pub visibility: &'static str,
+    /// `getComputedStyle(toolbar).marginRight`, em px.
+    pub margin_right: f64,
+    /// `row.getBoundingClientRect().right - toolbar.getBoundingClientRect().right`.
+    pub right_inset: f64,
+}
 
 // #region contrato
 
@@ -178,6 +208,15 @@ pub struct IActionListItemHover {
     pub align_to_parent_bottom: bool,
 }
 
+/// `IActionListHeaderLink`: o link do cabeçalho e da linha com detalhe.
+#[derive(Clone)]
+pub struct IActionListHeaderLink {
+    /// Visible link text (e.g. "Learn more"). Should be localized.
+    pub label: String,
+    /// Target opened via the link handler when the link is activated.
+    pub uri: URI,
+}
+
 /// `IActionListItemInlineToggle`.
 #[derive(Clone)]
 pub struct IActionListItemInlineToggle {
@@ -193,7 +232,7 @@ pub struct IActionListItemInlineToggle {
 pub type OnRemove = Rc<dyn Fn() -> Promise<()>>;
 
 /// `IActionListItem<T>`: os campos de dados. O hover, o atalho resolvido, os ícones por classe, `onDidBecomeVisible`,
-/// `badgeBeforeLabel`, `additionalBadges`, `ariaDescription`, `opensDialog`, `toolbarDialogActionIds`, `detailLink`,
+/// `badgeBeforeLabel`, `additionalBadges`, `ariaDescription`, `opensDialog`, `toolbarDialogActionIds`,
 /// `hideIcon` e `tooltip` por linha pertencem à renderização e ao hover (ver a nota do módulo).
 #[derive(Clone)]
 pub struct IActionListItem<T: ActionListItemData> {
@@ -204,6 +243,8 @@ pub struct IActionListItem<T: ActionListItemData> {
     pub label: Option<String>,
     /// Optional detail text displayed as a second line below the label.
     pub detail: Option<String>,
+    /// Optional link rendered at the end of the detail line.
+    pub detail_link: Option<IActionListHeaderLink>,
     pub inline_toggle: Option<IActionListItemInlineToggle>,
     pub standalone_toggle: Option<IActionListItemInlineToggle>,
     pub description: Option<String>,
@@ -245,6 +286,7 @@ impl<T: ActionListItemData> IActionListItem<T> {
             disabled: false,
             label: None,
             detail: None,
+            detail_link: None,
             inline_toggle: None,
             standalone_toggle: None,
             description: None,
@@ -309,6 +351,14 @@ pub struct IActionListUpdateOptions {
     pub animate_item_move: bool,
 }
 
+/// `reserveSubmenuSpace?: boolean | 'always'`: `Never` é `false`, `WhenAnyHasSubmenu` é `true` (o padrão) e `Always` é `'always'`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReserveSubmenuSpace {
+    Never,
+    WhenAnyHasSubmenu,
+    Always,
+}
+
 /// `IActionListOptions`: os campos que mudam o estado ou a altura. As opções de renderização, de hover e de ponteiro
 /// (`linkHandler`, `inlineDescription`, `persistentHover` e o painel de hover, `submenuPointerIntent`,
 /// `submenuHoverDelay`, `reserveSubmenuSpace`, `hideDefaultKeybindingTooltip`, `stopToolbarPointerPropagation`,
@@ -346,6 +396,13 @@ pub struct IActionListOptions {
     /// Optional action item id to focus when the list opens.
     pub initial_focus_item_id: Option<String>,
     pub persistent_hover: bool,
+    /// Opens links of the list (the detail link of a row) instead of the opener service. O original também recebe o item; a
+    /// opção não é genérica no item, então só a `URI` chega.
+    pub link_handler: Option<Rc<dyn Fn(&URI)>>,
+    /// Optional dismiss ("x") button on the header banner; invoked on click, and the banner is removed.
+    pub header_dismiss: Option<Rc<dyn Fn()>>,
+    /// Reserve a gutter for the row chevron: `Always`, never, or only when some item of the list opens a panel (padrão).
+    pub reserve_submenu_space: Option<ReserveSubmenuSpace>,
     /// Keeps a hover panel open while the pointer travels toward it.
     pub submenu_pointer_intent: bool,
     /// Delay (ms) before a hovered row opens its panel. Defaults to 500.
@@ -568,6 +625,8 @@ pub enum KeyTarget {
     SubmenuPanel,
     /// Um controle embutido na lista: `input`, `textarea`, `button`, `a` ou um elemento `contenteditable`.
     EmbeddedControl,
+    /// O link `.monaco-link` do detalhe da linha focada (`Link` trata o `Enter` e abre o destino).
+    DetailLink,
     /// O próprio `domNode` (`widget.domNode.dispatchEvent(...)`), fora da lista.
     DomNode,
 }
@@ -630,6 +689,10 @@ struct WidgetState<T: ActionListItemData> {
     filter_request: Option<Rc<FilterRequest>>,
     group_title_by_index: BTreeMap<usize, String>,
     standalone_toggles: Vec<(Rc<IActionListItem<T>>, bool)>,
+    /// `_itemDetailLinks`: o link `.monaco-link` renderizado no detalhe de cada linha com `detailLink`.
+    detail_links: Vec<(Rc<IActionListItem<T>>, Rc<HoverElement>)>,
+    /// `_list.scrollTop`.
+    scroll_top: f64,
     /// `_submenuContainer.style.display === 'none'`.
     panel_hidden: bool,
     /// O que o painel mostra como cabeçalho (`hoverHeader`).
@@ -673,7 +736,10 @@ pub struct ActionListWidget<T: ActionListItemData> {
     filter_input: Option<Rc<FilterInput>>,
     filter_container: Option<Rc<ViewElement>>,
     footer_container: Option<Rc<ViewElement>>,
-    header_container: Option<Rc<ViewElement>>,
+    /// `_headerContainer`: some até o botão de dispensa remover o banner.
+    header_container: RefCell<Option<Rc<ViewElement>>>,
+    /// O `span.action-list-header-dismiss` do banner.
+    header_dismiss_button: Option<Rc<ViewElement>>,
     on_did_request_layout: Rc<Emitter<()>>,
     state: RefCell<WidgetState<T>>,
     measurer: RefCell<ItemMeasurer<T>>,
@@ -755,6 +821,11 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             if show_filter || secondary_heading.is_some() { Some(ViewElement::with_classes(&["action-list-filter"])) } else { None };
         let footer_container = option(&|o| o.footer_text.clone()).map(|_| ViewElement::with_classes(&["action-list-footer"]));
         let header_container = option(&|o| o.header_text.clone()).map(|_| ViewElement::with_classes(&["action-list-header"]));
+        let header_dismiss_button = if header_container.is_some() && options.as_deref().is_some_and(|o| o.header_dismiss.is_some()) {
+            Some(ViewElement::with_classes(&["action-list-header-dismiss"]))
+        } else {
+            None
+        };
 
         let widget = Rc::new_cyclic(|this| Self {
             this: this.clone(),
@@ -766,7 +837,8 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             filter_input,
             filter_container,
             footer_container,
-            header_container,
+            header_container: RefCell::new(header_container),
+            header_dismiss_button,
             on_did_request_layout: Emitter::new(),
             state: RefCell::new(WidgetState {
                 all_menu_items: items.to_vec(),
@@ -787,6 +859,8 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 filter_request: None,
                 group_title_by_index: BTreeMap::new(),
                 standalone_toggles: Vec::new(),
+                detail_links: Vec::new(),
+                scroll_top: 0.0,
                 panel_hidden: true,
                 panel_header: None,
                 panel_animated: false,
@@ -843,7 +917,41 @@ impl<T: ActionListItemData> ActionListWidget<T> {
 
     /// `headerContainer`.
     pub fn header_container(&self) -> Option<Rc<ViewElement>> {
-        self.header_container.clone()
+        self.header_container.borrow().clone()
+    }
+
+    /// `headerContainer.querySelector('.action-list-header-dismiss')`.
+    pub fn header_dismiss_button(&self) -> Option<Rc<ViewElement>> {
+        self.header_dismiss_button.clone()
+    }
+
+    /// O `mouseup` do botão de dispensa (`addDisposableGenericMouseUpListener`).
+    pub fn header_dismiss_mouse_up(&self) {
+        self.dismiss_header();
+    }
+
+    /// O `keydown` do botão de dispensa: `Enter` e espaço dispensam o banner.
+    pub fn header_dismiss_key_down(&self, e: &UiKeyEvent) {
+        if e.key == "Enter" || e.key == " " {
+            e.prevent_default();
+            self.dismiss_header();
+        }
+    }
+
+    fn dismiss_header(&self) {
+        let Some(on_dismiss) = self.opts().and_then(|o| o.header_dismiss.clone()) else {
+            return;
+        };
+        on_dismiss();
+        // Refocus the widget first so removing the focused button doesn't trip close-on-blur.
+        self.focus();
+        let header = self.header_container.borrow_mut().take();
+        if let Some(header) = header {
+            header.set_parent(None);
+        }
+        // Drop the reference so the banner no longer reserves header height, then request a re-layout so the popup shrinks to
+        // fit the remaining content.
+        self.on_did_request_layout.fire(());
     }
 
     /// `filterInput`.
@@ -1442,6 +1550,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
                 let Some(element) = self.element(index) else { continue };
                 if Self::focus_condition(&element) && element.item_id().as_deref() == Some(initial_focus_item_id.as_str()) {
                     self.set_focus(Some(index));
+                    self.reveal(index);
                     return;
                 }
             }
@@ -1449,6 +1558,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         let focused_index = self.state.borrow().focus;
         if let Some(focused_index) = focused_index {
             if self.element(focused_index).is_some_and(|element| Self::focus_condition(&element)) {
+                self.reveal(focused_index);
                 return;
             }
         }
@@ -1457,11 +1567,46 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             let Some(element) = self.element(index) else { continue };
             if Self::focus_condition(&element) && element.item.as_ref().is_some_and(ActionListItemData::list_item_checked) {
                 self.set_focus(Some(index));
+                self.reveal(index);
                 return;
             }
         }
         // Set focus on the first focusable item without moving DOM focus
         self.list_focus_first();
+        let focus = self.state.borrow().focus;
+        if let Some(index) = focus {
+            self.reveal(index);
+        }
+    }
+
+    /// `_list.reveal(index)`: rola o mínimo para a linha ficar inteira na área visível da lista (a altura do `domNode`).
+    fn reveal(&self, index: usize) {
+        let viewport = self.dom_node.size().height;
+        let (top, height, content) = {
+            let state = self.state.borrow();
+            let height_of = |item: &Rc<IActionListItem<T>>| Self::item_height_with(item, self.opts());
+            let top: f64 = state.visible_menu_items.iter().take(index).map(height_of).sum();
+            let height = state.visible_menu_items.get(index).map_or(0.0, height_of);
+            (top, height, state.visible_menu_items.iter().map(height_of).sum::<f64>())
+        };
+        let mut state = self.state.borrow_mut();
+        let mut scroll_top = state.scroll_top;
+        if top < scroll_top {
+            scroll_top = top;
+        } else if top + height > scroll_top + viewport {
+            scroll_top = top + height - viewport;
+        }
+        state.scroll_top = scroll_top.min((content - viewport).max(0.0)).max(0.0);
+    }
+
+    /// `rows.style.top` do `.monaco-list-rows`: o deslocamento negativo da rolagem.
+    pub fn rows_top(&self) -> f64 {
+        -self.state.borrow().scroll_top
+    }
+
+    /// `rows.clientHeight` do `.monaco-list-rows`: a altura de todas as linhas visíveis.
+    pub fn rows_height(&self) -> f64 {
+        self.compute_list_height()
     }
 
     /// `focus()`.
@@ -1781,6 +1926,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         match target {
             KeyTarget::FilterInput => self.filter_input_key_down(e),
             KeyTarget::SubmenuPanel => self.submenu_panel_key_down(e),
+            KeyTarget::DetailLink => self.detail_link_key_down(e),
             KeyTarget::List | KeyTarget::EmbeddedControl | KeyTarget::DomNode => {}
         }
         // `stopPropagation()` no campo ou no painel impede o evento de subir até o `domNode`.
@@ -1855,7 +2001,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         if self.filter_input.is_some() || self.opts().is_some_and(|o| o.on_type.is_some()) {
             let on_type = self.opts().is_some_and(|o| o.on_type.is_some());
             let combobox = self.opts().is_some_and(|o| o.filter_as_combobox);
-            let is_editable_target = matches!(target, KeyTarget::FilterInput | KeyTarget::EmbeddedControl);
+            let is_editable_target = matches!(target, KeyTarget::FilterInput | KeyTarget::EmbeddedControl | KeyTarget::DetailLink);
             if (on_type || combobox) && (is_editable_target || target == KeyTarget::SubmenuPanel) {
                 return;
             }
@@ -2309,6 +2455,48 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         self.row_rect(index)
     }
 
+    /// A geometria que o motor de layout do DOM calcularia para a barra de ferramentas da linha `index` (`actionWidget.css`):
+    /// `focused_or_hovered` é a classe `focused` (ou o `:hover`) da linha. `None` se a linha não tem barra.
+    pub fn row_toolbar_geometry(&self, index: usize, focused_or_hovered: bool) -> Option<RowToolbarGeometry> {
+        let element = self.element(index)?;
+        let mut action_count = element.toolbar_actions.as_ref().map_or(0, Vec::len);
+        if element.on_remove.is_some() {
+            action_count += 1;
+        }
+        if element.kind != ActionListItemKind::Action || action_count == 0 {
+            return None;
+        }
+        let zoom = self.state.borrow().zoom;
+        let row = self.row_rect(index);
+        let has_detail = element.detail.as_deref().is_some_and(|detail| !detail.is_empty());
+        // `.has-detail.has-toolbar` mantém a barra no fluxo (`display: flex`) e só esconde com `visibility`, para a linha não
+        // mudar de geometria quando a barra aparece; nas outras linhas a barra só entra no fluxo com o foco ou o ponteiro.
+        let (display, visibility) = match (has_detail, focused_or_hovered) {
+            (_, true) => ("flex", "visible"),
+            (true, false) => ("flex", "hidden"),
+            (false, false) => ("none", "visible"),
+        };
+        let margin_right = if has_detail { ROW_DETAIL_TOOLBAR_MARGIN_RIGHT } else { 0.0 };
+        let padding_right = if has_detail { ROW_DETAIL_PADDING_RIGHT } else { ROW_PADDING_RIGHT };
+        // Com detalhe a linha quebra em duas: a primeira tem a maior das caixas (título e barra), a segunda tem o detalhe, e o
+        // conteúdo fica centrado na altura da linha (`align-content: center`).
+        let detail_top = if has_detail {
+            let first_line = DETAIL_TITLE_LINE_HEIGHT.max(TOOLBAR_HEIGHT);
+            let content_height = first_line + DETAIL_LINE_HEIGHT;
+            row.top + ((row.height / zoom - content_height) / 2.0 + first_line) * zoom
+        } else {
+            row.top
+        };
+        Some(RowToolbarGeometry {
+            row_height: row.height / zoom,
+            detail_top,
+            display,
+            visibility,
+            margin_right,
+            right_inset: padding_right + margin_right,
+        })
+    }
+
 
     /// `_createSubmenuItems(submenuActions)`.
     fn create_submenu_items(submenu_actions: &[ActionRef]) -> Vec<Rc<IActionListItem<ActionRef>>> {
@@ -2628,13 +2816,73 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         element.hover.as_ref().and_then(|hover| hover.get_tabbable_elements.clone()).map(|get| get()).unwrap_or_default()
     }
 
-    /// `_getTabThroughPanelControls`: abre o painel do item se preciso e devolve os controles dele.
+    /// `_itemDetailLinks.get(element) ?? []`: o link do detalhe da linha, criado na primeira vez que a linha o renderiza.
+    fn item_detail_links(&self, element: &Rc<IActionListItem<T>>) -> Vec<Rc<HoverElement>> {
+        let renders_link = element.detail.as_deref().is_some_and(|detail| !detail.is_empty()) && element.detail_link.is_some();
+        if !renders_link {
+            return Vec::new();
+        }
+        let mut state = self.state.borrow_mut();
+        if let Some((_, link)) = state.detail_links.iter().find(|(item, _)| Rc::ptr_eq(item, element)) {
+            return vec![link.clone()];
+        }
+        let label = element.detail_link.as_ref().map(|link| link.label.clone()).unwrap_or_default();
+        let link = HoverElement::new(&label);
+        state.detail_links.push((element.clone(), link.clone()));
+        vec![link]
+    }
+
+    /// `row.querySelector('.detail .monaco-link')` da linha visível `index`.
+    pub fn detail_link_element(&self, index: usize) -> Option<Rc<HoverElement>> {
+        let element = self.element(index)?;
+        self.item_detail_links(&element).into_iter().next()
+    }
+
+    /// `document.activeElement === control`.
+    pub fn is_control_focused(&self, control: &Rc<HoverElement>) -> bool {
+        self.focus_state.control_focused.borrow().as_ref().is_some_and(|focused| Rc::ptr_eq(focused, control))
+    }
+
+    /// O abridor do `Link` do detalhe: `opener: linkHandler && (() => linkHandler(uri, element))`. Ativar o link nunca seleciona
+    /// a linha. Sem `linkHandler`, o original usa o serviço de abertura, que esta lista não recebe: nada é aberto.
+    fn open_detail_link(&self, element: &IActionListItem<T>) {
+        let Some(link) = &element.detail_link else {
+            return;
+        };
+        if let Some(handler) = self.opts().and_then(|o| o.link_handler.clone()) {
+            handler(&link.uri);
+        }
+    }
+
+    /// `link.click()` no link do detalhe da linha visível `index`.
+    pub fn click_detail_link(&self, index: usize) {
+        if let Some(element) = self.element(index) {
+            self.open_detail_link(&element);
+        }
+    }
+
+    /// O `keydown` do `Link`: `Enter` abre o destino e não deixa o evento chegar à lista (que selecionaria a linha).
+    fn detail_link_key_down(&self, e: &UiKeyEvent) {
+        if e.key_code != KeyCode::Enter {
+            return;
+        }
+        let Some(element) = self.state.borrow().focus.and_then(|index| self.element(index)) else {
+            return;
+        };
+        e.stop();
+        self.open_detail_link(&element);
+    }
+
+    /// `_getTabThroughPanelControls`: abre o painel do item se preciso e devolve os controles dele, com o link do detalhe
+    /// na frente.
     fn get_tab_through_panel_controls(&self, element: &Rc<IActionListItem<T>>) -> Vec<Rc<HoverElement>> {
         let is_current = self.state.borrow().current_submenu_element.as_ref().is_some_and(|current| Rc::ptr_eq(current, element));
         if element.hover.as_ref().is_some_and(|hover| hover.tab_through_panel) && !is_current {
             self.show_submenu_for_element(element);
         }
-        self.panel_tabbable_controls(element)
+        let mut controls = self.item_detail_links(element);
+        controls.extend(self.panel_tabbable_controls(element));
+        controls
     }
 
     /// `_focusFirstTabThroughPanelControl`.
@@ -2657,7 +2905,7 @@ impl<T: ActionListItemData> ActionListWidget<T> {
         let Some(element) = self.element(index) else {
             return;
         };
-        if !element.hover.as_ref().is_some_and(|hover| hover.tab_through_panel) {
+        if !element.hover.as_ref().is_some_and(|hover| hover.tab_through_panel) && self.item_detail_links(&element).is_empty() {
             return;
         }
         let active_control = self.focus_state.control_focused.borrow().clone();
@@ -3006,6 +3254,16 @@ pub fn toggle_info_icon_center_offset(line_height: f64) -> f64 {
     icon_center - text_center
 }
 
+/// A calha do chevron da linha: com chevron (`Shown`), só reservada para alinhar as outras linhas (`visibility: hidden`) ou
+/// sem espaço (`display: none`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubmenuGutter {
+    Shown,
+    Hidden,
+    #[default]
+    None,
+}
+
 /// Um selo renderizado: o texto e o `className` do elemento.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowBadge {
@@ -3079,6 +3337,8 @@ pub struct RowState {
     pub inline_toggle_label_count: usize,
     /// `.action-list-submenu-indicator.has-submenu`.
     pub submenu_indicator: bool,
+    /// O estado da calha do chevron (`style.display` e `style.visibility` do `.action-list-submenu-indicator`).
+    pub submenu_gutter: SubmenuGutter,
     /// `role` da linha (`getRole`): `option` para ações, `separator` para o resto.
     pub role: String,
     /// `aria-setsize` e `aria-posinset` (`getSetSize` e `getPosInSet`): só as ações contam.
@@ -3296,6 +3556,14 @@ impl<T: ActionListItemData> ActionListWidget<T> {
             .collect();
 
         row.submenu_indicator = has_submenu_indicator(&element);
+        row.submenu_gutter = if row.submenu_indicator {
+            SubmenuGutter::Shown
+        } else if self.reserves_submenu_space() {
+            // Reserve space for alignment when other items have submenus
+            SubmenuGutter::Hidden
+        } else {
+            SubmenuGutter::None
+        };
         if has_expandable_panel(&element) {
             row.aria_haspopup = Some(if element.hover.as_ref().is_some_and(|hover| hover.expandable) { "dialog" } else { "menu" }.to_owned());
             let expanded = self.state.borrow().expanded_trigger.as_ref().is_some_and(|trigger| Rc::ptr_eq(trigger, &element));
@@ -3352,6 +3620,43 @@ impl<T: ActionListItemData> ActionListWidget<T> {
     /// O painel de hover ou de submenu está visível (`style.display !== 'none'`).
     pub fn panel_displayed(&self) -> bool {
         !self.state.borrow().panel_hidden
+    }
+
+    /// `reservesSubmenuSpace()`, lido a cada renderização: se algum item abre um painel pode mudar quando os itens são
+    /// reconstruídos no lugar, e uma resposta velha desloca toda linha pela largura de um chevron.
+    fn reserves_submenu_space(&self) -> bool {
+        match self.opts().and_then(|o| o.reserve_submenu_space).unwrap_or(ReserveSubmenuSpace::WhenAnyHasSubmenu) {
+            ReserveSubmenuSpace::Always => true,
+            ReserveSubmenuSpace::Never => false,
+            ReserveSubmenuSpace::WhenAnyHasSubmenu => self.state.borrow().all_menu_items.iter().any(|item| has_submenu_indicator(item)),
+        }
+    }
+
+    /// O `role` do painel de um hover expansível (`dialog`): o painel que carrega uma lista de submenu deixa a semântica
+    /// para a lista. `None` com o painel fechado.
+    pub fn panel_role(&self) -> Option<String> {
+        self.expandable_panel_element().map(|_| "dialog".to_owned())
+    }
+
+    /// O `aria-label` do painel de um hover expansível: o rótulo da linha que o abriu.
+    pub fn panel_aria_label(&self) -> Option<String> {
+        self.expandable_panel_element().and_then(|element| element.label.clone().filter(|label| !label.is_empty()))
+    }
+
+    fn expandable_panel_element(&self) -> Option<Rc<IActionListItem<T>>> {
+        let state = self.state.borrow();
+        if state.panel_hidden {
+            return None;
+        }
+        state.current_submenu_element.clone().filter(|element| element.hover.as_ref().is_some_and(|hover| hover.expandable))
+    }
+
+    /// `panel.querySelector('.action-list-submenu-hover-header')?.textContent`.
+    pub fn panel_hover_text(&self) -> Option<String> {
+        match self.state.borrow().panel_header.clone()? {
+            PanelHeader::Text(text) => Some(text),
+            PanelHeader::Element(element) => Some(element.text()),
+        }
     }
 
     /// `panel.textContent`: o cabeçalho de hover e os rótulos das linhas do submenu.
