@@ -18,12 +18,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use je_base::JsString;
+use je_base::diff::string_diff;
 use je_base::errors::Error;
 use je_base::js_regexp::JsRegExp;
 use je_base::js_string::{substring, trim};
 use je_base::promise::Promise;
 use je_base::uri::URI;
 
+use crate::code_action::languages::TextEdit;
 use crate::diff::default_lines_diff_computer::default_lines_diff_computer::DefaultLinesDiffComputer;
 use crate::diff::legacy_lines_diff_computer::LegacyLinesDiffComputer;
 use crate::diff::lines_diff_computer::{ILinesDiffComputer, LinesDiffComputerOptions};
@@ -35,6 +37,7 @@ use crate::model::Eol;
 use crate::position_to_offset::PositionOffsetTransformerBase;
 use crate::range::Range;
 use crate::text::abstract_text::{AbstractText, StringText};
+use crate::text_model::TextModel;
 use crate::text_model_events::ModelContentChangedEvent;
 use crate::word_helper::WordAtPosition;
 
@@ -142,6 +145,106 @@ pub fn is_numeric_word(word: &[u16]) -> bool {
     }
     // Só dígitos, ponto, expoente e sinal: o `parse` do Rust também aceitaria `inf` e `nan`.
     text.chars().all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-')) && text.parse::<f64>().is_ok()
+}
+
+/// `EditorWorker._diffLimit`.
+const DIFF_LIMIT: usize = 100_000;
+
+/// `text.replace(/\r\n|\n|\r/g, model.eol)`.
+fn normalize_eol(text: &str, eol: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                result.push_str(eol);
+            }
+            '\n' => result.push_str(eol),
+            other => result.push(other),
+        }
+    }
+    result
+}
+
+/// `EditorWorker.$computeMoreMinimalEdits(modelUrl, edits, pretty)` sobre o modelo que o worker espelha. O worker roda no
+/// mesmo thread e o espelho é o próprio `model`, então o `modelUrl` e o `if (!model) return edits` não existem: quem chama
+/// já resolveu o modelo (o `IEditorWorkerService` que o tem).
+///
+/// O `eol` de uma edição só de fim de linha (sem texto) é guardado e vira a última edição, com o intervalo zerado.
+pub fn compute_more_minimal_edits(model: &TextModel, mut edits: Vec<TextEdit>, pretty: bool) -> Vec<TextEdit> {
+    let mut result: Vec<TextEdit> = Vec::new();
+    let mut last_eol = None;
+
+    edits.sort_by(|a, b| Range::compare_ranges_using_starts(Some(&a.range), Some(&b.range)).cmp(&0));
+
+    // merge adjacent edits
+    let mut write_index = 0;
+    for read_index in 1..edits.len() {
+        if edits[write_index].range.get_end_position() == edits[read_index].range.get_start_position() {
+            let range = Range::from_positions(edits[write_index].range.get_start_position(), edits[read_index].range.get_end_position());
+            let text = edits[read_index].text.clone();
+            edits[write_index].range = range;
+            edits[write_index].text.push_str(&text);
+        } else {
+            write_index += 1;
+            edits[write_index] = edits[read_index].clone();
+        }
+    }
+    edits.truncate(write_index + 1);
+
+    let eol = match model.get_eol() {
+        Eol::Lf => "\n",
+        Eol::CrLf => "\r\n",
+    };
+
+    for TextEdit { range, text, eol: edit_eol, .. } in edits {
+        if edit_eol.is_some() {
+            last_eol = edit_eol;
+        }
+
+        if range.is_empty() && text.is_empty() {
+            // empty change
+            continue;
+        }
+
+        let original = model.get_value_in_range(&range);
+        let text = JsString::from(normalize_eol(&text, eol));
+
+        if original == text {
+            // noop
+            continue;
+        }
+
+        // make sure diff won't take too long
+        if text.len().max(original.len()) > DIFF_LIMIT {
+            result.push(TextEdit { range, text: text.to_string_lossy(), eol: None, insert_as_snippet: None, keep_whitespace: None });
+            continue;
+        }
+
+        // compute diff between original and edit.text
+        let changes = string_diff(original, text.clone(), pretty);
+        let edit_offset = model.get_offset_at(range.get_start_position()) as i64;
+
+        for change in changes {
+            let start = model.get_position_at(edit_offset + i64::from(change.original_start));
+            let end = model.get_position_at(edit_offset + i64::from(change.original_start) + i64::from(change.original_length));
+            let new_text = JsString::from(substring(text.units(), i64::from(change.modified_start), i64::from(change.modified_start) + i64::from(change.modified_length)));
+            let new_range = Range::new(start.line_number, start.column, end.line_number, end.column);
+
+            if model.get_value_in_range(&new_range) != new_text {
+                result.push(TextEdit { range: new_range, text: new_text.to_string_lossy(), eol: None, insert_as_snippet: None, keep_whitespace: None });
+            }
+        }
+    }
+
+    if last_eol.is_some() {
+        result.push(TextEdit { range: Range::new(0, 0, 0, 0), text: String::new(), eol: last_eol, insert_as_snippet: None, keep_whitespace: None });
+    }
+
+    result
 }
 
 /// `EditorWorker`.
