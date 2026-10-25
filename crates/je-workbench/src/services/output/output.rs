@@ -20,6 +20,18 @@ use je_base::uri::URI;
 /// `OUTPUT_VIEW_ID`.
 pub const OUTPUT_VIEW_ID: &str = "workbench.panel.output";
 
+/// `OUTPUT_MIME`.
+pub const OUTPUT_MIME: &str = "text/x-code-output";
+
+/// `OUTPUT_MODE_ID`.
+pub const OUTPUT_MODE_ID: &str = "Log";
+
+/// `LOG_MIME`.
+pub const LOG_MIME: &str = "text/x-code-log-output";
+
+/// `LOG_MODE_ID`.
+pub const LOG_MODE_ID: &str = "log";
+
 /// `OutputChannelUpdateMode`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputChannelUpdateMode {
