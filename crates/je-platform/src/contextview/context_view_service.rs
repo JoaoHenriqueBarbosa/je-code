@@ -20,7 +20,7 @@ use je_base::lifecycle::{DisposableRef, DisposableStore, IDisposable};
 use je_instantiation::{Injectable, service_impl};
 
 use super::context_view::{
-    CONTEXT_VIEW_CLOSE_ANIMATION_DURATION_VARIABLE, IContextViewDelegate, IContextViewService, get_anchor_rect, has_required_ancestor_classes,
+    CONTEXT_VIEW_CLOSE_ANIMATION_DURATION_VARIABLE, HideData, IContextViewDelegate, IContextViewService, get_anchor_rect, has_required_ancestor_classes,
 };
 use super::view_element::ViewElement;
 use crate::layout::layout_service::ILayoutService;
@@ -181,7 +181,7 @@ impl ContextViewService {
         });
     }
 
-    fn hide(&self, data: Option<bool>, skip_animation: bool) {
+    fn hide(&self, data: Option<HideData>, skip_animation: bool) {
         if self.state.borrow().hiding.is_some() {
             if skip_animation {
                 self.complete_hide_animation();
@@ -248,7 +248,7 @@ impl IContextViewService for ContextViewService {
         self.show(delegate);
     }
 
-    fn hide_context_view(&self, data: Option<bool>) {
+    fn hide_context_view(&self, data: Option<HideData>) {
         self.hide(data, false);
     }
 

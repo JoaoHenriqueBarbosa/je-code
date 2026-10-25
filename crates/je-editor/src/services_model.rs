@@ -2,9 +2,10 @@
 //!
 //! Divergências:
 //! - O trait é um recorte do contrato: `getModel` (que o `TextResourceConfigurationService` usa), `getModels` e
-//!   `onModelAdded` (que o `SearchResultImpl` usa), `getCreationOptions` (as ações de indentação) e `createModel`,
-//!   `updateModel` e `destroyModel` (o `BaseTextEditorModel`). O resto do contrato (`onModelRemoved`,
-//!   `onModelLanguageChanged` e o `DocumentTokensProvider`) é do `ModelService` (`model_service.rs`), que implementa este
+//!   `onModelAdded` (que o `SearchResultImpl` usa), `onModelLanguageChanged` (que o `ResourceLabels` usa), `getCreationOptions`
+//!   (as ações de indentação) e `createModel`,
+//!   `updateModel` e `destroyModel` (o `BaseTextEditorModel`). O resto do contrato (`onModelRemoved`
+//!   e o `DocumentTokensProvider`) é do `ModelService` (`model_service.rs`), que implementa este
 //!   trait e traz esses membros como métodos próprios.
 //!   `createModel` e `updateModel` do trait recebem o [`TextSource`] (`string | ITextBufferFactory | ITextSnapshot`).
 //! - `ITextModel` é o [`TextModel`] concreto (o porte não tem a interface), e `ITextModel | null` é `Option`.
@@ -18,6 +19,7 @@ use je_base::uri::URI;
 
 use crate::language_service::ILanguageSelection;
 use crate::model::TextModelCreationOptions;
+use crate::model_service::ModelLanguageChanged;
 use crate::text_model::{TextModel, TextSource};
 use crate::text_model_edit_source::TextModelEditSource;
 
@@ -35,6 +37,12 @@ pub trait IModelService {
     /// `onModelRemoved`: disparado quando um modelo é destruído. O padrão é um evento que nunca dispara, para quem não
     /// tem o evento.
     fn on_model_removed(&self) -> Event<Rc<TextModel>> {
+        Event::none()
+    }
+
+    /// `onModelLanguageChanged`: disparado quando o idioma de um modelo muda. O padrão é um evento que nunca dispara, para
+    /// quem não o tem.
+    fn on_model_language_changed(&self) -> Event<ModelLanguageChanged> {
         Event::none()
     }
 
